@@ -1,0 +1,29 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+*.log
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment files
+.env
+.env.*
+
+# Runtime data (keep folder)
+instance/*
+!instance/.gitkeep
+*.sqlite
+*.db
+
+# Local/test data sources
+datasources/*.csv
+datasources/*.xlsx
+datasources/*.xls
+datasources/*.json
+
+# IDE/editor
+.idea/
+.vscode/

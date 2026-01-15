@@ -1,0 +1,383 @@
+"""
+Verification Reports Routes
+Course listings with TCE status from UKDIG data
+"""
+from flask import Blueprint, render_template, request, Response, flash, redirect, url_for, jsonify
+from flask_login import login_required, current_user
+from app.models import db
+from app.models.course import Course, College, Department, Instructor, SyncLog
+from app.models.admin import Admin
+from sqlalchemy import func, case
+import csv
+import io
+from datetime import datetime
+
+verification_bp = Blueprint('verification', __name__)
+
+
+@verification_bp.route('/')
+@login_required
+def list_courses():
+    """List courses with TCE verification status"""
+    # Get filter parameters
+    college_filter = request.args.get('college', '')
+    dept_filter = request.args.get('department', '')
+    tce_filter = request.args.get('tce_status', '')  # marked, not_marked, zero_enrollment
+    search = request.args.get('search', '').strip()
+    page = request.args.get('page', 1, type=int)
+    per_page = 50
+    
+    # Base query based on user's access
+    query = Course.query
+    
+    # Apply access restrictions
+    if not current_user.is_super_admin():
+        if current_user.is_college_admin():
+            query = query.filter(Course.college_code == current_user.college_code)
+        else:
+            query = query.filter(
+                Course.college_code == current_user.college_code,
+                Course.department_id == current_user.department_id
+            )
+    
+    # Apply filters
+    if college_filter:
+        query = query.filter(Course.college_code == college_filter)
+    if dept_filter:
+        query = query.filter(Course.department_id == dept_filter)
+    if tce_filter == 'marked':
+        query = query.filter(Course.marked_for_tce == True)
+    elif tce_filter == 'not_marked':
+        query = query.filter(Course.marked_for_tce == False)
+    elif tce_filter == 'zero_enrollment':
+        query = query.filter(Course.marked_for_tce == True, Course.student_count == 0)
+    
+    if search:
+        query = query.filter(
+            db.or_(
+                Course.class_code.ilike(f'%{search}%'),
+                Course.section_title.ilike(f'%{search}%'),
+                Course.section_id.ilike(f'%{search}%')
+            )
+        )
+    
+    # Get total count before pagination
+    total_count = query.count()
+    
+    # Paginate results
+    courses = query.order_by(
+        Course.college_code, 
+        Course.department_id, 
+        Course.class_code
+    ).paginate(page=page, per_page=per_page, error_out=False)
+    
+    # Get statistics for the filtered data
+    stats = get_verification_stats(current_user, college_filter, dept_filter)
+    
+    # Get colleges/departments for filters
+    if current_user.is_super_admin():
+        colleges = College.query.order_by(College.name).all()
+    elif current_user.is_college_admin():
+        colleges = College.query.filter_by(code=current_user.college_code).all()
+    else:
+        colleges = []
+    
+    # Get departments (filtered by college if selected)
+    if college_filter:
+        departments = Department.query.filter_by(college_code=college_filter).order_by(Department.name).all()
+    elif current_user.is_super_admin():
+        departments = Department.query.order_by(Department.name).all()
+    elif current_user.is_college_admin():
+        departments = Department.query.filter_by(college_code=current_user.college_code).order_by(Department.name).all()
+    else:
+        departments = []
+    
+    # Get last sync time
+    last_sync = SyncLog.query.filter_by(status='completed').order_by(SyncLog.completed_at.desc()).first()
+    
+    return render_template('verification/list.html',
+                         courses=courses,
+                         colleges=colleges,
+                         departments=departments,
+                         stats=stats,
+                         last_sync=last_sync,
+                         total_count=total_count,
+                         current_filters={
+                             'college': college_filter,
+                             'department': dept_filter,
+                             'tce_status': tce_filter,
+                             'search': search
+                         })
+
+
+@verification_bp.route('/course/<path:section_key>')
+@login_required
+def course_detail(section_key):
+    """View course details including instructors"""
+    course = Course.query.get_or_404(section_key)
+    
+    # Check access
+    if not current_user.is_super_admin():
+        if current_user.is_college_admin():
+            if course.college_code != current_user.college_code:
+                flash('You do not have access to this course.', 'danger')
+                return redirect(url_for('verification.list_courses'))
+        else:
+            if course.college_code != current_user.college_code or \
+               course.department_id != current_user.department_id:
+                flash('You do not have access to this course.', 'danger')
+                return redirect(url_for('verification.list_courses'))
+    
+    # Get crosslisted courses
+    crosslisted = []
+    if course.crosslisted_id:
+        crosslisted = Course.query.filter(
+            Course.crosslisted_id == course.crosslisted_id,
+            Course.section_key != course.section_key
+        ).all()
+    
+    return render_template('verification/detail.html', course=course, crosslisted=crosslisted)
+
+
+@verification_bp.route('/export')
+@login_required
+def export_courses():
+    """Export filtered courses to CSV"""
+    # Get same filters as list view
+    college_filter = request.args.get('college', '')
+    dept_filter = request.args.get('department', '')
+    tce_filter = request.args.get('tce_status', '')
+    
+    # Build query with same logic as list view
+    query = Course.query
+    
+    if not current_user.is_super_admin():
+        if current_user.is_college_admin():
+            query = query.filter(Course.college_code == current_user.college_code)
+        else:
+            query = query.filter(
+                Course.college_code == current_user.college_code,
+                Course.department_id == current_user.department_id
+            )
+    
+    if college_filter:
+        query = query.filter(Course.college_code == college_filter)
+    if dept_filter:
+        query = query.filter(Course.department_id == dept_filter)
+    if tce_filter == 'marked':
+        query = query.filter(Course.marked_for_tce == True)
+    elif tce_filter == 'not_marked':
+        query = query.filter(Course.marked_for_tce == False)
+    elif tce_filter == 'zero_enrollment':
+        query = query.filter(Course.marked_for_tce == True, Course.student_count == 0)
+    
+    courses = query.order_by(Course.college_code, Course.class_code).all()
+    
+    # Create CSV
+    output = io.StringIO()
+    fieldnames = ['class_code', 'section_id', 'section_title', 'college', 'department',
+                  'marked_for_tce', 'student_count', 'course_start', 'course_end',
+                  'tce_start', 'tce_end', 'instructors', 'crosslisted_id']
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    
+    for course in courses:
+        instructors = ', '.join([f"{i.first_name} {i.last_name}" for i in course.instructors])
+        writer.writerow({
+            'class_code': course.class_code,
+            'section_id': course.section_id,
+            'section_title': course.section_title,
+            'college': course.college_code,
+            'department': course.department_id,
+            'marked_for_tce': 'Yes' if course.marked_for_tce else 'No',
+            'student_count': course.student_count,
+            'course_start': course.course_start.isoformat() if course.course_start else '',
+            'course_end': course.course_end.isoformat() if course.course_end else '',
+            'tce_start': course.tce_start.isoformat() if course.tce_start else '',
+            'tce_end': course.tce_end.isoformat() if course.tce_end else '',
+            'instructors': instructors,
+            'crosslisted_id': course.crosslisted_id or ''
+        })
+    
+    output.seek(0)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f'tce_verification_report_{timestamp}.csv'
+    
+    return Response(
+        output.getvalue(),
+        mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename={filename}'}
+    )
+
+
+@verification_bp.route('/api/departments/<college_code>')
+@login_required
+def get_departments_api(college_code):
+    """API endpoint to get departments for a college"""
+    departments = Department.query.filter_by(college_code=college_code).order_by(Department.name).all()
+    return jsonify([{'id': d.id, 'name': d.name} for d in departments])
+
+
+@verification_bp.route('/api/stats')
+@login_required
+def get_stats_api():
+    """API endpoint to get verification statistics"""
+    college_filter = request.args.get('college', '')
+    dept_filter = request.args.get('department', '')
+    
+    stats = get_verification_stats(current_user, college_filter, dept_filter)
+    return jsonify(stats)
+
+
+@verification_bp.route('/sync', methods=['GET', 'POST'])
+@login_required
+def sync_data():
+    """Sync course data from CSV files"""
+    if not current_user.is_super_admin():
+        flash('Only super administrators can sync data.', 'danger')
+        return redirect(url_for('verification.list_courses'))
+    
+    if request.method == 'POST':
+        from app.services.course_sync import CourseSyncService
+        import os
+        
+        # Check for uploaded files or use default path
+        datasources_path = './datasources'
+        
+        # Handle file uploads
+        files_uploaded = False
+        if 'courses_file' in request.files and request.files['courses_file'].filename:
+            os.makedirs(datasources_path, exist_ok=True)
+            request.files['courses_file'].save(os.path.join(datasources_path, 'Courses.csv'))
+            files_uploaded = True
+        if 'instructors_file' in request.files and request.files['instructors_file'].filename:
+            os.makedirs(datasources_path, exist_ok=True)
+            request.files['instructors_file'].save(os.path.join(datasources_path, 'Instructor_Course.csv'))
+            files_uploaded = True
+        if 'students_file' in request.files and request.files['students_file'].filename:
+            os.makedirs(datasources_path, exist_ok=True)
+            request.files['students_file'].save(os.path.join(datasources_path, 'Student_Course.csv'))
+            files_uploaded = True
+        
+        try:
+            sync = CourseSyncService(datasources_path)
+            result = sync.sync_all()
+            
+            if result['success']:
+                flash(f"Sync completed! Added {result['stats']['courses_added']} courses, "
+                      f"{result['stats']['instructors_added']} instructors. "
+                      f"{result['stats']['students_counted']} students counted.", 'success')
+            else:
+                flash('Sync completed with errors. Check the logs.', 'warning')
+                
+        except Exception as e:
+            flash(f'Sync failed: {str(e)}', 'danger')
+        
+        return redirect(url_for('verification.list_courses'))
+    
+    # GET - show sync form
+    last_sync = SyncLog.query.filter_by(status='completed').order_by(SyncLog.completed_at.desc()).first()
+    sync_logs = SyncLog.query.order_by(SyncLog.started_at.desc()).limit(10).all()
+    
+    return render_template('verification/sync.html', last_sync=last_sync, sync_logs=sync_logs)
+
+
+@verification_bp.route('/reset-departments', methods=['POST'])
+@login_required
+def reset_departments():
+    """Clear all departments and resync from Courses.csv.
+
+    This fixes issues where department names are wrong (e.g., from sample data
+    that was synced before real Courses.csv data).
+    """
+    if not current_user.is_super_admin():
+        flash('Only super administrators can reset departments.', 'danger')
+        return redirect(url_for('verification.sync_data'))
+
+    from app.services.course_sync import CourseSyncService
+    from app.models.course import Department
+
+    try:
+        # Count before deletion
+        dept_count = Department.query.count()
+
+        # Delete all departments (will cascade or be recreated)
+        Department.query.delete()
+        db.session.commit()
+
+        # Resync to recreate departments from Courses.csv
+        datasources_path = './datasources'
+        sync = CourseSyncService(datasources_path)
+        result = sync.sync_all()
+
+        if result['success']:
+            new_count = Department.query.count()
+            flash(f'Departments reset! Deleted {dept_count} old records, created {new_count} from Courses.csv.', 'success')
+        else:
+            flash('Reset completed but sync had errors. Check the logs.', 'warning')
+
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Reset failed: {str(e)}', 'danger')
+
+    return redirect(url_for('verification.sync_data'))
+
+
+def get_verification_stats(user, college_filter='', dept_filter=''):
+    """Calculate verification statistics based on user access and filters"""
+    
+    # Base query
+    query = Course.query
+    
+    # Apply access restrictions
+    if not user.is_super_admin():
+        if user.is_college_admin():
+            query = query.filter(Course.college_code == user.college_code)
+        else:
+            query = query.filter(
+                Course.college_code == user.college_code,
+                Course.department_id == user.department_id
+            )
+    
+    # Apply filters
+    if college_filter:
+        query = query.filter(Course.college_code == college_filter)
+    if dept_filter:
+        query = query.filter(Course.department_id == dept_filter)
+    
+    # Calculate statistics
+    total = query.count()
+    marked = query.filter(Course.marked_for_tce == True).count()
+    not_marked = query.filter(Course.marked_for_tce == False).count()
+    zero_enrollment = query.filter(
+        Course.marked_for_tce == True,
+        Course.student_count == 0
+    ).count()
+    
+    # Total students in marked courses
+    total_students = db.session.query(func.sum(Course.student_count)).filter(
+        Course.marked_for_tce == True
+    )
+    if not user.is_super_admin():
+        if user.is_college_admin():
+            total_students = total_students.filter(Course.college_code == user.college_code)
+        else:
+            total_students = total_students.filter(
+                Course.college_code == user.college_code,
+                Course.department_id == user.department_id
+            )
+    if college_filter:
+        total_students = total_students.filter(Course.college_code == college_filter)
+    if dept_filter:
+        total_students = total_students.filter(Course.department_id == dept_filter)
+    
+    total_students = total_students.scalar() or 0
+    
+    return {
+        'total': total,
+        'marked': marked,
+        'not_marked': not_marked,
+        'zero_enrollment': zero_enrollment,
+        'total_students': total_students,
+        'marked_percentage': round((marked / total * 100) if total > 0 else 0, 1)
+    }

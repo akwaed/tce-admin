@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}Import Administrators{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('admin.list_admins') }}">Admin List</a></li>
+            <li class="breadcrumb-item active">Import</li>
+        </ol>
+    </nav>
+    <h1><i class="bi bi-upload me-2"></i>Import Administrators</h1>
+</div>
+
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-body">
+                <div class="alert alert-info">
+                    <h5><i class="bi bi-info-circle me-2"></i>CSV Format Requirements</h5>
+                    <p class="mb-2">Your CSV file should have the following columns:</p>
+                    <code>id, linkblue, first_name, last_name, primary_contact, contact_type, college, department, course, prefix, level_type</code>
+                    <hr>
+                    <p class="mb-0 small">
+                        <strong>Notes:</strong><br>
+                        • <code>linkblue</code>, <code>first_name</code>, and <code>last_name</code> are required<br>
+                        • <code>primary_contact</code> should be "true" or "false"<br>
+                        • <code>contact_type</code> can be "College", "Department", or "Course Coordinator"<br>
+                        • Existing administrators (by linkblue) will be skipped
+                    </p>
+                </div>
+                
+                <form method="POST" action="{{ url_for('admin.import_admins') }}" enctype="multipart/form-data">
+                    <div class="mb-4">
+                        <label for="file" class="form-label">Select CSV File</label>
+                        <input type="file" class="form-control" id="file" name="file" accept=".csv" required>
+                    </div>
+                    
+                    <div class="d-flex justify-content-between">
+                        <a href="{{ url_for('admin.list_admins') }}" class="btn btn-outline-secondary">
+                            <i class="bi bi-x-lg me-1"></i>Cancel
+                        </a>
+                        <button type="submit" class="btn btn-uk-primary">
+                            <i class="bi bi-upload me-1"></i>Import Administrators
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        
+        <!-- Sample Download -->
+        <div class="card mt-4">
+            <div class="card-header">
+                <i class="bi bi-file-earmark-spreadsheet me-2"></i>Sample File
+            </div>
+            <div class="card-body">
+                <p>Download a sample CSV file to see the expected format:</p>
+                <a href="{{ url_for('admin.export_admins') }}" class="btn btn-outline-primary">
+                    <i class="bi bi-download me-1"></i>Export Current Admins as CSV
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

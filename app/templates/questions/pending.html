@@ -1,0 +1,447 @@
+{% extends "base.html" %}
+
+{% block title %}Pending Approvals{% endblock %}
+
+{% block extra_css %}
+<style>
+    .pending-card {
+        background: white;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        padding: 1.25rem;
+        margin-bottom: 1rem;
+        transition: box-shadow 0.2s;
+    }
+    
+    .pending-card:hover {
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    
+    .pending-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: 0.75rem;
+    }
+    
+    .change-type {
+        font-size: 0.75rem;
+        padding: 0.25rem 0.75rem;
+        border-radius: 20px;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
+    
+    .change-type.add { background: #e8f5e9; color: #2e7d32; }
+    .change-type.remove { background: #ffebee; color: #c62828; }
+    .change-type.edit { background: #e3f2fd; color: #1565c0; }
+    
+    .pending-meta {
+        font-size: 0.85rem;
+        color: #666;
+    }
+    
+    .pending-meta strong { color: #333; }
+    
+    .pending-details {
+        background: #f8f9fa;
+        border-radius: 4px;
+        padding: 0.75rem 1rem;
+        margin: 0.75rem 0;
+        font-size: 0.9rem;
+    }
+    
+    .pending-details .label {
+        font-weight: 600;
+        color: #666;
+        display: inline-block;
+        min-width: 100px;
+    }
+    
+    .diff-old {
+        background: #ffebee;
+        padding: 0.5rem;
+        border-radius: 4px;
+        margin-bottom: 0.5rem;
+        text-decoration: line-through;
+        color: #c62828;
+    }
+    
+    .diff-new {
+        background: #e8f5e9;
+        padding: 0.5rem;
+        border-radius: 4px;
+        color: #2e7d32;
+    }
+    
+    .pending-actions {
+        display: flex;
+        gap: 0.5rem;
+        justify-content: flex-end;
+        margin-top: 1rem;
+        padding-top: 1rem;
+        border-top: 1px solid #e0e0e0;
+    }
+    
+    .btn-approve {
+        background: #28a745;
+        color: white;
+        border: none;
+        padding: 0.5rem 1.25rem;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: background 0.2s;
+    }
+    
+    .btn-approve:hover { background: #218838; }
+    
+    .btn-reject {
+        background: #dc3545;
+        color: white;
+        border: none;
+        padding: 0.5rem 1.25rem;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: background 0.2s;
+    }
+    
+    .btn-reject:hover { background: #c82333; }
+    
+    .empty-state {
+        text-align: center;
+        padding: 3rem;
+        color: #999;
+    }
+    
+    .empty-state i {
+        font-size: 4rem;
+        margin-bottom: 1rem;
+        opacity: 0.5;
+    }
+    
+    /* Reject Modal */
+    .reject-modal {
+        display: none;
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.5);
+        z-index: 1000;
+        align-items: center;
+        justify-content: center;
+    }
+    
+    .reject-modal.show { display: flex; }
+    
+    .reject-modal-content {
+        background: white;
+        border-radius: 8px;
+        width: 400px;
+        max-width: 90vw;
+        padding: 1.5rem;
+    }
+    
+    .reject-modal h5 {
+        margin: 0 0 1rem 0;
+        color: #dc3545;
+    }
+    
+    .reject-modal textarea {
+        width: 100%;
+        min-height: 100px;
+        padding: 0.5rem;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        resize: vertical;
+        margin-bottom: 1rem;
+    }
+    
+    .reject-modal-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.5rem;
+    }
+    
+    /* Toast */
+    .toast-container {
+        position: fixed;
+        bottom: 1.5rem;
+        right: 1.5rem;
+        z-index: 2000;
+    }
+    
+    .toast {
+        background: #333;
+        color: white;
+        padding: 0.75rem 1.25rem;
+        border-radius: 8px;
+        margin-top: 0.5rem;
+        animation: slideIn 0.3s ease;
+    }
+    
+    .toast.success { background: #28a745; }
+    .toast.error { background: #dc3545; }
+
+    .status-banner {
+        display: none;
+        border-radius: 8px;
+        padding: 0.75rem 1rem;
+        margin-bottom: 1rem;
+        font-weight: 600;
+    }
+    .status-banner.success { background: #e8f5e9; color: #2e7d32; }
+    .status-banner.warning { background: #fff8e1; color: #8a6d00; }
+    .status-banner.error { background: #ffebee; color: #c62828; }
+    .status-banner.info { background: #e3f2fd; color: #1565c0; }
+    
+    @keyframes slideIn {
+        from { transform: translateX(100%); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="d-flex justify-content-between align-items-center">
+        <div>
+            <h1><i class="bi bi-clock-history me-2"></i>Pending Approvals</h1>
+            <p class="text-muted mb-0">Review and approve question bank changes from department administrators</p>
+        </div>
+        <a href="{{ url_for('questions.browser') }}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left me-1"></i>Back to Browser
+        </a>
+    </div>
+</div>
+
+<div id="actionStatus" class="status-banner"></div>
+
+{% if pending_changes %}
+<div class="mb-3">
+    <span class="badge bg-warning text-dark fs-6" id="pendingCountBadge">{{ pending_changes|length }} pending change(s)</span>
+</div>
+
+<div id="pendingList">
+{% for change in pending_changes %}
+<div class="pending-card" data-id="{{ change.id }}">
+    <div class="pending-header">
+        <div>
+            <span class="change-type {{ change.type }}">
+                {% if change.type == 'add' %}
+                <i class="bi bi-plus-circle me-1"></i>Add
+                {% elif change.type == 'remove' %}
+                <i class="bi bi-dash-circle me-1"></i>Remove
+                {% else %}
+                <i class="bi bi-pencil me-1"></i>Edit
+                {% endif %}
+            </span>
+        </div>
+        <div class="pending-meta text-end">
+            <div>Submitted by <strong>{{ change.submitted_by }}</strong></div>
+            <div class="small">{{ change.submitted_at[:16].replace('T', ' ') }}</div>
+        </div>
+    </div>
+    
+    <div class="pending-details">
+        {% if change.type == 'edit' %}
+        <div class="mb-2">
+            <span class="label">Question ID:</span> <code>{{ change.question_id }}</code>
+        </div>
+        {% if change.old_type or change.new_type %}
+        <div class="mb-2">
+            <span class="label">Type:</span>
+            {{ change.old_type or 'Unknown' }} → {{ change.new_type or change.old_type or 'Unknown' }}
+        </div>
+        {% endif %}
+        {% if change.old_value %}
+        <div class="diff-old">
+            <strong>Old:</strong> {{ change.old_value[:200] }}{% if change.old_value|length > 200 %}...{% endif %}
+        </div>
+        {% endif %}
+        {% if change.new_text %}
+        <div class="diff-new">
+            <strong>New:</strong> {{ change.new_text[:200] }}{% if change.new_text|length > 200 %}...{% endif %}
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="mb-1">
+            <span class="label">Unit Type:</span> {{ change.unit_type }}
+        </div>
+        <div class="mb-1">
+            <span class="label">Unit ID:</span> <code>{{ change.unit_id }}</code>
+        </div>
+        <div class="mb-1">
+            <span class="label">Placeholder:</span> <code>{{ change.placeholder }}</code>
+        </div>
+        <div>
+            <span class="label">Question ID:</span> <code>{{ change.question_id }}</code>
+        </div>
+        {% endif %}
+    </div>
+    
+    <div class="pending-actions">
+        <button class="btn-reject" onclick="openRejectModal({{ change.id }})">
+            <i class="bi bi-x-circle me-1"></i>Reject
+        </button>
+        <button class="btn-approve" onclick="approveChange({{ change.id }})">
+            <i class="bi bi-check-circle me-1"></i>Approve
+        </button>
+    </div>
+</div>
+{% endfor %}
+</div>
+
+{% else %}
+<div class="card">
+    <div class="empty-state">
+        <i class="bi bi-check-circle"></i>
+        <h4>No Pending Changes</h4>
+        <p class="text-muted">All question bank changes have been reviewed.</p>
+        <a href="{{ url_for('questions.browser') }}" class="btn btn-uk-primary mt-3">
+            <i class="bi bi-arrow-left me-1"></i>Back to Question Bank
+        </a>
+    </div>
+</div>
+{% endif %}
+
+<div class="card" id="pendingEmptyState" style="display: none;">
+    <div class="empty-state">
+        <i class="bi bi-check-circle"></i>
+        <h4>No Pending Changes</h4>
+        <p class="text-muted">All question bank changes have been reviewed.</p>
+        <a href="{{ url_for('questions.browser') }}" class="btn btn-uk-primary mt-3">
+            <i class="bi bi-arrow-left me-1"></i>Back to Question Bank
+        </a>
+    </div>
+</div>
+
+<!-- Reject Modal -->
+<div class="reject-modal" id="rejectModal">
+    <div class="reject-modal-content">
+        <h5><i class="bi bi-x-circle me-2"></i>Reject Change</h5>
+        <p class="text-muted">Provide a reason for rejection (optional):</p>
+        <textarea id="rejectReason" placeholder="Enter reason..."></textarea>
+        <div class="reject-modal-actions">
+            <button class="btn btn-outline-secondary" onclick="closeRejectModal()">Cancel</button>
+            <button class="btn btn-danger" onclick="confirmReject()">Reject</button>
+        </div>
+    </div>
+</div>
+
+<!-- Toast Container -->
+<div class="toast-container" id="toastContainer"></div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let rejectingId = null;
+
+async function approveChange(id) {
+    if (!confirm('Approve this change? The modification will be applied immediately.')) return;
+    
+    try {
+        const response = await fetch('/questions/api/pending/approve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ change_id: id })
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+            showToast('Change approved and applied', 'success');
+            removePendingCard(id);
+        } else {
+            showToast(data.error || 'Failed to approve', 'error');
+        }
+    } catch {
+        showToast('Error approving change', 'error');
+    }
+}
+
+function openRejectModal(id) {
+    rejectingId = id;
+    document.getElementById('rejectReason').value = '';
+    document.getElementById('rejectModal').classList.add('show');
+}
+
+function closeRejectModal() {
+    document.getElementById('rejectModal').classList.remove('show');
+    rejectingId = null;
+}
+
+async function confirmReject() {
+    if (!rejectingId) return;
+    
+    const reason = document.getElementById('rejectReason').value.trim();
+    
+    try {
+        const response = await fetch('/questions/api/pending/reject', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ change_id: rejectingId, reason })
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+            closeRejectModal();
+            showToast('Change rejected', 'success');
+            removePendingCard(rejectingId);
+        } else {
+            showToast(data.error || 'Failed to reject', 'error');
+        }
+    } catch {
+        showToast('Error rejecting change', 'error');
+    }
+}
+
+function removePendingCard(id) {
+    const card = document.querySelector(`.pending-card[data-id="${id}"]`);
+    if (card) {
+        card.remove();
+    }
+    checkEmpty();
+}
+
+function checkEmpty() {
+    const remaining = document.querySelectorAll('.pending-card').length;
+    const badge = document.getElementById('pendingCountBadge');
+    if (badge) {
+        badge.textContent = `${remaining} pending change(s)`;
+    }
+
+    if (remaining === 0) {
+        const list = document.getElementById('pendingList');
+        const empty = document.getElementById('pendingEmptyState');
+        if (badge) {
+            badge.style.display = 'none';
+        }
+        if (list) {
+            list.style.display = 'none';
+        }
+        if (empty) {
+            empty.style.display = 'block';
+        }
+    }
+}
+
+function showToast(message, type) {
+    const banner = document.getElementById('actionStatus');
+    if (banner) {
+        banner.textContent = message;
+        banner.className = `status-banner ${type}`;
+        banner.style.display = 'block';
+        clearTimeout(banner._hideTimer);
+        banner._hideTimer = setTimeout(() => { banner.style.display = 'none'; }, 5000);
+    }
+
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.textContent = message;
+    document.getElementById('toastContainer').appendChild(toast);
+    setTimeout(() => toast.remove(), 4000);
+}
+
+document.getElementById('rejectModal').addEventListener('click', function(e) {
+    if (e.target === this) closeRejectModal();
+});
+</script>
+{% endblock %}

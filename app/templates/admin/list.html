@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+
+{% block title %}Admin List{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="d-flex justify-content-between align-items-center">
+        <div>
+            <h1><i class="bi bi-people me-2"></i>Administrator List</h1>
+            <p class="text-muted mb-0">Manage TCE administrators for {{ current_user.scope_display }}</p>
+        </div>
+        <div>
+            {% if current_user.is_super_admin() or (current_user.is_college_admin() and current_user.is_primary_contact) %}
+            <a href="{{ url_for('admin.add_admin') }}" class="btn btn-uk-primary">
+                <i class="bi bi-plus-lg me-1"></i>Add Admin
+            </a>
+            {% endif %}
+            {% if current_user.can_export_admins() %}
+            <a href="{{ url_for('admin.export_admins') }}" class="btn btn-uk-secondary">
+                <i class="bi bi-download me-1"></i>Export CSV
+            </a>
+            <a href="{{ url_for('admin.import_admins') }}" class="btn btn-outline-secondary">
+                <i class="bi bi-upload me-1"></i>Import CSV
+            </a>
+            {% if current_user.is_super_admin() %}
+            <a href="{{ url_for('admin.fix_department_ids') }}" class="btn btn-outline-warning">
+                <i class="bi bi-wrench me-1"></i>Fix Dept IDs
+            </a>
+            <a href="{{ url_for('admin.cleanup_admins') }}" class="btn btn-outline-danger">
+                <i class="bi bi-trash me-1"></i>Cleanup
+            </a>
+            {% endif %}
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" action="{{ url_for('admin.list_admins') }}">
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <input type="text" class="form-control" name="search" 
+                           placeholder="Search name or LinkBlue..." 
+                           value="{{ current_filters.search }}">
+                </div>
+                <div class="col-md-2">
+                    <select name="college" class="form-select">
+                        <option value="">All Colleges</option>
+                        {% for college in unique_colleges %}
+                        <option value="{{ college }}" {% if current_filters.college == college %}selected{% endif %}>
+                            {{ college }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <select name="type" class="form-select">
+                        <option value="">All Types</option>
+                        <option value="College" {% if current_filters.type == 'College' %}selected{% endif %}>College</option>
+                        <option value="Department" {% if current_filters.type == 'Department' %}selected{% endif %}>Department</option>
+                        <option value="Course Coordinator" {% if current_filters.type == 'Course Coordinator' %}selected{% endif %}>Course Coordinator</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <select name="primary" class="form-select">
+                        <option value="">All</option>
+                        <option value="yes" {% if current_filters.primary == 'yes' %}selected{% endif %}>Primary Only</option>
+                        <option value="no" {% if current_filters.primary == 'no' %}selected{% endif %}>Non-Primary</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <button type="submit" class="btn btn-uk-primary">
+                        <i class="bi bi-search me-1"></i>Filter
+                    </button>
+                    <a href="{{ url_for('admin.list_admins') }}" class="btn btn-outline-secondary">
+                        <i class="bi bi-x-lg me-1"></i>Clear
+                    </a>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Results Table -->
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-uk table-hover mb-0" id="adminsTable">
+                <thead>
+                    <tr>
+                        <th class="sortable" onclick="sortTable(0)">Name</th>
+                        <th class="sortable" onclick="sortTable(1)">LinkBlue</th>
+                        <th class="sortable" onclick="sortTable(2)">Type</th>
+                        <th class="sortable" onclick="sortTable(3)">College</th>
+                        <th class="sortable" onclick="sortTable(4)">Department</th>
+                        <th class="sortable" onclick="sortTable(5)">Primary</th>
+                        <th>Access</th>
+                        <th style="width: 120px;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for admin in admins %}
+                    <tr>
+                        <td>
+                            {% if admin.is_primary_contact %}
+                            <span class="primary-badge" title="Primary Contact"></span>
+                            {% endif %}
+                            {{ admin.first_name }} {{ admin.last_name }}
+                        </td>
+                        <td><code>{{ admin.linkblue }}</code></td>
+                        <td>
+                            <span class="badge {% if admin.contact_type == 'College' %}bg-primary{% elif admin.contact_type == 'Course Coordinator' %}bg-info{% else %}bg-secondary{% endif %}">
+                                {{ admin.contact_type }}
+                            </span>
+                        </td>
+                        <td>{{ admin.college_code or '-' }}</td>
+                        <td>
+                            {% if admin.contact_type == 'College' %}
+                            <span class="text-muted">All</span>
+                            {% elif admin.contact_type == 'Course Coordinator' %}
+                            {{ admin.department.name if admin.department else (admin.department_id or '-') }}
+                            {% if admin.course_prefix %}
+                            <br><small class="text-muted">{{ admin.course_prefix }} {{ admin.course_number }}</small>
+                            {% endif %}
+                            {% else %}
+                            {{ admin.department.name if admin.department else (admin.department_id or '-') }}
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if admin.is_primary_contact %}
+                            <span class="badge bg-success">Yes</span>
+                            {% else %}
+                            <span class="badge bg-light text-dark">No</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if admin.has_dashboard_access %}
+                            <span class="badge bg-info" title="Dashboard">D</span>
+                            {% endif %}
+                            {% if admin.has_static_report_access %}
+                            <span class="badge bg-info" title="Static Reports">S</span>
+                            {% endif %}
+                            {% if admin.has_qb_access %}
+                            <span class="badge bg-warning text-dark" title="Question Bank">QB</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if current_user.can_edit_admin(admin) %}
+                            <a href="{{ url_for('admin.edit_admin', admin_id=admin.id) }}" 
+                               class="btn btn-sm btn-outline-primary" title="Edit">
+                                <i class="bi bi-pencil"></i>
+                            </a>
+                            {% if admin.id != current_user.id %}
+                            <form action="{{ url_for('admin.delete_admin', admin_id=admin.id) }}" 
+                                  method="POST" class="d-inline" 
+                                  onsubmit="return confirm('Are you sure you want to deactivate {{ admin.full_name }}?');">
+                                <button type="submit" class="btn btn-sm btn-outline-danger" title="Deactivate">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </form>
+                            {% endif %}
+                            {% else %}
+                            <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="8" class="text-center text-muted py-4">
+                            <i class="bi bi-inbox fs-1 d-block mb-2"></i>
+                            No administrators found matching your filters.
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <div class="card-footer text-muted">
+        Showing {{ admins|length }} administrator(s)
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let currentSortColumn = -1;
+let sortDirection = 1;
+
+function sortTable(columnIndex) {
+    const table = document.getElementById('adminsTable');
+    const tbody = table.tBodies[0];
+    const rows = Array.from(tbody.rows);
+    
+    // Reset sort indicators
+    table.querySelectorAll('th').forEach(th => {
+        th.classList.remove('sort-asc', 'sort-desc');
+    });
+    
+    // Toggle sort direction
+    if (currentSortColumn === columnIndex) {
+        sortDirection *= -1;
+    } else {
+        currentSortColumn = columnIndex;
+        sortDirection = 1;
+    }
+    
+    // Update header
+    const header = table.rows[0].cells[columnIndex];
+    header.classList.add(sortDirection === 1 ? 'sort-asc' : 'sort-desc');
+    
+    // Sort
+    rows.sort((a, b) => {
+        const aValue = a.cells[columnIndex].textContent.trim().toLowerCase();
+        const bValue = b.cells[columnIndex].textContent.trim().toLowerCase();
+        
+        if (aValue < bValue) return -1 * sortDirection;
+        if (aValue > bValue) return 1 * sortDirection;
+        return 0;
+    });
+    
+    // Reinsert
+    rows.forEach(row => tbody.appendChild(row));
+}
+</script>
+{% endblock %}

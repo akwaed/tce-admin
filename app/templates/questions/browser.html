@@ -1,0 +1,875 @@
+{% extends "base.html" %}
+
+{% block title %}Question Bank Browser{% endblock %}
+
+{% block extra_css %}
+<style>
+    .qb-container {
+        display: flex;
+        gap: 1.5rem;
+        height: calc(100vh - 220px);
+        min-height: 500px;
+    }
+    
+    /* Left Panel - Hierarchy Tree */
+    .tree-panel {
+        width: 380px;
+        min-width: 320px;
+        background: white;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+    
+    .tree-header {
+        padding: 1rem;
+        border-bottom: 1px solid #e0e0e0;
+        background: #f8f9fa;
+    }
+    
+    .tree-search {
+        width: 100%;
+        padding: 0.5rem 0.75rem;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        font-size: 0.875rem;
+    }
+    
+    .tree-content {
+        flex: 1;
+        overflow-y: auto;
+        padding: 0.5rem;
+    }
+    
+    .tree-item { margin-left: 0.5rem; }
+    
+    .tree-node {
+        display: flex;
+        align-items: center;
+        padding: 0.4rem 0.5rem;
+        cursor: pointer;
+        border-radius: 4px;
+        transition: background 0.15s;
+        font-size: 0.875rem;
+    }
+    
+    .tree-node:hover { background: rgba(0, 51, 160, 0.08); }
+    .tree-node.selected { background: rgba(0, 51, 160, 0.15); font-weight: 600; }
+    .tree-node.has-questions { font-weight: 600; color: var(--uk-blue); }
+    
+    .tree-toggle {
+        width: 20px;
+        height: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-right: 0.25rem;
+        color: #666;
+        transition: transform 0.2s;
+    }
+
+    .tree-toggle.has-child-questions {
+        color: #0033a0 !important;
+        background: linear-gradient(135deg, #ffc107 0%, #ff9800 100%);
+        border-radius: 50%;
+        font-weight: bold;
+        box-shadow: 0 0 8px rgba(255, 193, 7, 0.6);
+    }
+    .tree-toggle.expanded i { transform: rotate(90deg); }
+    
+    .tree-children {
+        display: none;
+        margin-left: 0.75rem;
+        border-left: 1px solid #e0e0e0;
+    }
+    
+    .tree-children.show { display: block; }
+    
+    .tree-label {
+        flex: 1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    
+    .tree-badge {
+        background: var(--uk-blue);
+        color: white;
+        font-size: 0.7rem;
+        padding: 0.15rem 0.4rem;
+        border-radius: 10px;
+        margin-left: 0.5rem;
+    }
+    
+    /* Right Panel */
+    .questions-panel {
+        flex: 1;
+        background: white;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+    
+    .questions-header {
+        padding: 1rem 1.25rem;
+        border-bottom: 1px solid #e0e0e0;
+        background: #f8f9fa;
+    }
+    
+    .questions-header h5 { margin: 0; color: var(--uk-blue); }
+    .questions-header .unit-info { font-size: 0.8rem; color: #666; margin-top: 0.25rem; }
+    
+    .questions-tabs {
+        display: flex;
+        border-bottom: 1px solid #e0e0e0;
+        background: #fff;
+    }
+    
+    .questions-tab {
+        padding: 0.75rem 1.25rem;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+        font-weight: 500;
+        color: #666;
+        transition: all 0.2s;
+    }
+    
+    .questions-tab:hover { color: var(--uk-blue); }
+    .questions-tab.active { color: var(--uk-blue); border-bottom-color: var(--uk-blue); }
+    
+    .questions-tab .count {
+        background: #e0e0e0;
+        padding: 0.1rem 0.5rem;
+        border-radius: 10px;
+        font-size: 0.75rem;
+        margin-left: 0.5rem;
+    }
+    
+    .questions-tab.active .count { background: var(--uk-blue); color: white; }
+    
+    .questions-content { flex: 1; overflow-y: auto; padding: 1rem; }
+    
+    .questions-empty { text-align: center; padding: 3rem; color: #999; }
+    .questions-empty i { font-size: 3rem; margin-bottom: 1rem; opacity: 0.5; }
+    
+    /* Question Cards */
+    .question-card {
+        background: #f8f9fa;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 0.75rem;
+        transition: box-shadow 0.2s;
+    }
+    
+    .question-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    
+    .question-card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: 0.5rem;
+    }
+    
+    .question-type {
+        font-size: 0.7rem;
+        padding: 0.2rem 0.5rem;
+        border-radius: 4px;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
+    
+    .question-type.selection { background: #e3f2fd; color: #1565c0; }
+    .question-type.comment { background: #fff3e0; color: #ef6c00; }
+    
+    .question-actions { display: flex; gap: 0.25rem; }
+    
+    .question-actions button {
+        padding: 0.25rem 0.5rem;
+        font-size: 0.75rem;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+    
+    .btn-edit { background: #e3f2fd; color: #1565c0; }
+    .btn-edit:hover { background: #bbdefb; }
+    .btn-remove { background: #ffebee; color: #c62828; }
+    .btn-remove:hover { background: #ffcdd2; }
+    
+    .question-text { font-size: 0.9rem; line-height: 1.5; color: #333; }
+    .question-meta { font-size: 0.75rem; color: #888; margin-top: 0.5rem; }
+    
+    /* Edit Mode */
+    .question-edit-form { display: none; }
+    .question-card.editing .question-text,
+    .question-card.editing .question-actions { display: none; }
+    .question-card.editing .question-edit-form { display: block; }
+    
+    .question-edit-form textarea {
+        width: 100%;
+        min-height: 80px;
+        padding: 0.5rem;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        font-size: 0.9rem;
+        resize: vertical;
+    }
+    
+    .question-edit-form .edit-buttons {
+        margin-top: 0.5rem;
+        display: flex;
+        gap: 0.5rem;
+        justify-content: flex-end;
+    }
+    
+    /* Add Question Section */
+    .add-question-section {
+        border-top: 1px solid #e0e0e0;
+        padding: 1rem;
+        background: #f8f9fa;
+    }
+    
+    .add-question-btn {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.75rem 1rem;
+        background: white;
+        border: 2px dashed #ccc;
+        border-radius: 8px;
+        color: #666;
+        cursor: pointer;
+        width: 100%;
+        justify-content: center;
+        transition: all 0.2s;
+    }
+    
+    .add-question-btn:hover {
+        border-color: var(--uk-blue);
+        color: var(--uk-blue);
+        background: rgba(0, 51, 160, 0.05);
+    }
+    
+    /* Modal */
+    .add-modal {
+        display: none;
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.5);
+        z-index: 1000;
+        align-items: center;
+        justify-content: center;
+    }
+    
+    .add-modal.show { display: flex; }
+    
+    .add-modal-content {
+        background: white;
+        border-radius: 12px;
+        width: 600px;
+        max-width: 90vw;
+        max-height: 80vh;
+        display: flex;
+        flex-direction: column;
+    }
+    
+    .add-modal-header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid #e0e0e0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    
+    .add-modal-header h5 { margin: 0; color: var(--uk-blue); }
+    .add-modal-body { padding: 1.5rem; overflow-y: auto; flex: 1; }
+    
+    .add-modal-footer {
+        padding: 1rem 1.5rem;
+        border-top: 1px solid #e0e0e0;
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.5rem;
+    }
+    
+    .search-results {
+        max-height: 300px;
+        overflow-y: auto;
+        border: 1px solid #e0e0e0;
+        border-radius: 4px;
+        margin-top: 0.5rem;
+    }
+    
+    .search-result-item {
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid #f0f0f0;
+        cursor: pointer;
+        transition: background 0.15s;
+    }
+    
+    .search-result-item:hover { background: #f5f5f5; }
+    .search-result-item.selected { background: rgba(0, 51, 160, 0.1); border-left: 3px solid var(--uk-blue); }
+    .search-result-item:last-child { border-bottom: none; }
+    
+    /* Toast */
+    .toast-container { position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 2000; }
+    
+    .toast {
+        background: #333;
+        color: white;
+        padding: 0.75rem 1.25rem;
+        border-radius: 8px;
+        margin-top: 0.5rem;
+        animation: slideIn 0.3s ease;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    
+    .toast.success { background: #28a745; }
+    .toast.warning { background: #ffc107; color: #333; }
+    .toast.error { background: #dc3545; }
+
+    .status-banner {
+        display: none;
+        border-radius: 8px;
+        padding: 0.75rem 1rem;
+        margin-bottom: 1rem;
+        font-weight: 600;
+    }
+    .status-banner.success { background: #e8f5e9; color: #2e7d32; }
+    .status-banner.warning { background: #fff8e1; color: #8a6d00; }
+    .status-banner.error { background: #ffebee; color: #c62828; }
+    .status-banner.info { background: #e3f2fd; color: #1565c0; }
+    
+    @keyframes slideIn {
+        from { transform: translateX(100%); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+    }
+    
+    .term-filters { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; }
+    .term-checkbox { display: flex; align-items: center; gap: 0.25rem; font-size: 0.875rem; }
+    
+    .approval-notice {
+        background: #fff3e0;
+        border: 1px solid #ffcc80;
+        border-radius: 4px;
+        padding: 0.5rem 1rem;
+        margin-bottom: 1rem;
+        font-size: 0.85rem;
+        color: #e65100;
+    }
+    
+    @media (max-width: 992px) {
+        .qb-container { flex-direction: column; height: auto; }
+        .tree-panel { width: 100%; max-height: 300px; }
+        .questions-panel { min-height: 400px; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="d-flex justify-content-between align-items-start flex-wrap gap-3">
+        <div>
+            <h1><i class="bi bi-question-circle me-2"></i>Question Bank</h1>
+            <p class="text-muted mb-0">Manage additional questions for TCE surveys</p>
+        </div>
+        <div class="d-flex gap-2 flex-wrap">
+            {% if user_role == 'dept_admin' %}
+            <a href="{{ url_for('questions.my_pending_changes') }}" class="btn btn-outline-warning">
+                <i class="bi bi-hourglass-split me-1"></i>My Pending Requests
+                {% if my_pending_count > 0 %}
+                <span class="badge bg-dark ms-1">{{ my_pending_count }}</span>
+                {% endif %}
+            </a>
+            {% endif %}
+            {% if can_approve and pending_count > 0 %}
+            <a href="{{ url_for('questions.pending_changes') }}" class="btn btn-warning">
+                <i class="bi bi-clock-history me-1"></i>Pending Approval
+                <span class="badge bg-dark ms-1">{{ pending_count }}</span>
+            </a>
+            {% endif %}
+            {% if is_super_admin %}
+            <a href="{{ url_for('questions.import_files') }}" class="btn btn-outline-secondary">
+                <i class="bi bi-upload me-1"></i>Import
+            </a>
+            <div class="dropdown">
+                <button class="btn btn-uk-secondary dropdown-toggle" data-bs-toggle="dropdown">
+                    <i class="bi bi-download me-1"></i>Export
+                </button>
+                <ul class="dropdown-menu">
+                    <li><a class="dropdown-item" href="{{ url_for('questions.export_qb') }}">Question Bank (QB.xlsx)</a></li>
+                    <li><a class="dropdown-item" href="{{ url_for('questions.export_qm') }}">Question Mapping (QM.xlsx)</a></li>
+                </ul>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<div id="actionStatus" class="status-banner"></div>
+
+<!-- Term Filters -->
+<div class="card mb-3">
+    <div class="card-body py-2">
+        <form method="GET" class="term-filters">
+            <strong class="me-2">Terms:</strong>
+            {% for term in terms %}
+            <label class="term-checkbox">
+                <input type="checkbox" name="term" value="{{ term }}" 
+                       {% if term in selected_terms %}checked{% endif %}
+                       onchange="this.form.submit()">
+                {{ term }}
+            </label>
+            {% endfor %}
+        </form>
+    </div>
+</div>
+
+{% if user_role == 'dept_admin' %}
+<div class="approval-notice">
+    <i class="bi bi-info-circle me-1"></i>
+    <strong>Note:</strong> Your changes will require approval from a College or Super Administrator before taking effect.
+</div>
+{% endif %}
+
+<!-- Main Container -->
+<div class="qb-container">
+    <!-- Left Panel -->
+    <div class="tree-panel">
+        <div class="tree-header">
+            <input type="text" class="tree-search" placeholder="Search courses..." id="treeSearch" onkeyup="filterTree(this.value)">
+        </div>
+        <div class="tree-content" id="hierarchyTree">
+            {{ hierarchy_html|safe }}
+        </div>
+    </div>
+    
+    <!-- Right Panel -->
+    <div class="questions-panel">
+        <div class="questions-header">
+            <h5 id="selectedUnitName">Select a unit to view questions</h5>
+            <div class="unit-info" id="selectedUnitInfo"></div>
+        </div>
+        
+        <div class="questions-tabs" id="questionsTabs" style="display: none;">
+            <div class="questions-tab active" data-tab="course" onclick="switchTab('course')">
+                Course Questions <span class="count" id="courseCount">0</span>
+            </div>
+            <div class="questions-tab" data-tab="instructor" onclick="switchTab('instructor')">
+                Instructor Questions <span class="count" id="instructorCount">0</span>
+            </div>
+        </div>
+        
+        <div class="questions-content" id="questionsContent">
+            <div class="questions-empty">
+                <i class="bi bi-arrow-left-circle"></i>
+                <p><strong>Select a unit to view questions</strong></p>
+                <p class="mb-3">Select a department, course, or section from the tree to view and manage questions.</p>
+                <div class="small text-muted" style="max-width: 450px; margin: 0 auto; line-height: 1.6;">
+                    <i class="bi bi-info-circle me-1"></i>
+                    <strong class="text-primary">Bold text</strong> - Unit has questions directly assigned |
+                    <span class="d-inline-flex align-items-center">
+                        <span style="display: inline-block; width: 16px; height: 16px; background: linear-gradient(135deg, #ffc107 0%, #ff9800 100%); border-radius: 50%; margin: 0 4px; box-shadow: 0 0 4px rgba(255, 193, 7, 0.6);"></span>
+                        <strong>Yellow glow</strong>
+                    </span>
+                    - Click to expand and find questions in sub-units
+                </div>
+            </div>
+        </div>
+        
+        <div class="add-question-section" id="addQuestionSection" style="display: none;">
+            <button class="add-question-btn" onclick="openAddModal()">
+                <i class="bi bi-plus-circle"></i> Add Question
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Add Question Modal -->
+<div class="add-modal" id="addModal">
+    <div class="add-modal-content">
+        <div class="add-modal-header">
+            <h5><i class="bi bi-plus-circle me-2"></i>Add Question</h5>
+            <button class="btn-close" onclick="closeAddModal()"></button>
+        </div>
+        <div class="add-modal-body">
+            <!-- Mode Tabs -->
+            <ul class="nav nav-tabs mb-3" role="tablist">
+                <li class="nav-item">
+                    <button class="nav-link active" id="existing-tab" data-bs-toggle="tab" data-bs-target="#existing-pane"
+                            type="button" role="tab" onclick="switchAddMode('existing')">
+                        <i class="bi bi-search me-1"></i>Select Existing
+                    </button>
+                </li>
+                <li class="nav-item">
+                    <button class="nav-link" id="new-tab" data-bs-toggle="tab" data-bs-target="#new-pane"
+                            type="button" role="tab" onclick="switchAddMode('new')">
+                        <i class="bi bi-plus-lg me-1"></i>Create New
+                    </button>
+                </li>
+            </ul>
+
+            <div class="tab-content">
+                <!-- Existing Question Tab -->
+                <div class="tab-pane fade show active" id="existing-pane" role="tabpanel">
+                    <div class="mb-3">
+                        <label class="form-label">Search Questions</label>
+                        <input type="text" class="form-control" id="questionSearch" placeholder="Search by ID or text..." onkeyup="searchQuestions(this.value)">
+                    </div>
+                    <div class="search-results" id="searchResults">
+                        <div class="text-center text-muted py-3">Type to search questions</div>
+                    </div>
+                </div>
+
+                <!-- New Question Tab -->
+                <div class="tab-pane fade" id="new-pane" role="tabpanel">
+                    <div class="mb-3">
+                        <label class="form-label">Question Type</label>
+                        <select class="form-select" id="newQuestionType" onchange="updateAddButton()">
+                            <option value="">Select type...</option>
+                            <option value="Selection">Multiple Choice (Selection)</option>
+                            <option value="Comment">Open-Ended (Comment)</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Target</label>
+                        <select class="form-select" id="newQuestionTarget" onchange="updateAddButton()">
+                            <option value="course">Course Question</option>
+                            <option value="instructor">Instructor Question</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Question Text</label>
+                        <textarea class="form-control" id="newQuestionText" rows="4"
+                                  placeholder="Enter your question text here..." onkeyup="updateAddButton()"></textarea>
+                        <div class="form-text">This will be auto-assigned the next available placeholder.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="add-modal-footer">
+            <button class="btn btn-outline-secondary" onclick="closeAddModal()">Cancel</button>
+            <button class="btn btn-uk-primary" id="addQuestionConfirm" onclick="confirmAddQuestion()" disabled>
+                {% if user_role == 'dept_admin' %}Submit for Approval{% else %}Add Question{% endif %}
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Toast Container -->
+<div class="toast-container" id="toastContainer"></div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let selectedUnit = { type: null, id: null, name: null };
+let currentTab = 'course';
+let courseQuestions = [];
+let instructorQuestions = [];
+let availablePlaceholders = [];
+let selectedQuestionId = null;
+let addMode = 'existing';  // 'existing' or 'new'
+let needsApproval = {{ 'true' if user_role == 'dept_admin' else 'false' }};
+
+function toggleTree(el, event) {
+    event.stopPropagation();
+    const item = el.closest('.tree-item');
+    const children = item.querySelector('.tree-children');
+    if (children) {
+        children.classList.toggle('show');
+        el.classList.toggle('expanded');
+    }
+}
+
+function selectUnit(el, type, id, name) {
+    document.querySelectorAll('.tree-node.selected').forEach(n => n.classList.remove('selected'));
+    el.classList.add('selected');
+    selectedUnit = { type, id, name };
+    document.getElementById('selectedUnitName').textContent = name;
+    document.getElementById('selectedUnitInfo').textContent = `${type} • ${id}`;
+    loadQuestions(type, id);
+}
+
+function filterTree(search) {
+    const items = document.querySelectorAll('.tree-item');
+    const searchLower = search.toLowerCase();
+    items.forEach(item => {
+        const label = item.querySelector('.tree-label');
+        if (label) {
+            const text = label.textContent.toLowerCase();
+            const matches = text.includes(searchLower);
+            item.style.display = matches || !search ? '' : 'none';
+            if (matches && search) {
+                let parent = item.parentElement;
+                while (parent && parent.classList.contains('tree-children')) {
+                    parent.classList.add('show');
+                    parent = parent.parentElement.parentElement;
+                }
+            }
+        }
+    });
+}
+
+async function loadQuestions(type, id) {
+    const content = document.getElementById('questionsContent');
+    content.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary"></div></div>';
+
+    try {
+        const response = await fetch(`/questions/api/questions/${type}/${id}`);
+        const data = await response.json();
+
+        if (data.error) {
+            console.error('API Error:', data.error);
+            content.innerHTML = `<div class="alert alert-danger text-center">Error loading questions: ${escapeHtml(data.error)}</div>`;
+            return;
+        }
+
+        courseQuestions = data.course_questions || [];
+        instructorQuestions = data.instructor_questions || [];
+        availablePlaceholders = data.available_placeholders || [];
+
+        document.getElementById('courseCount').textContent = courseQuestions.length;
+        document.getElementById('instructorCount').textContent = instructorQuestions.length;
+        document.getElementById('questionsTabs').style.display = 'flex';
+        document.getElementById('addQuestionSection').style.display = 'block';
+
+        renderQuestions();
+    } catch (error) {
+        console.error('Fetch error:', error);
+        content.innerHTML = '<div class="alert alert-danger text-center py-4">Error loading questions. Please try again.</div>';
+    }
+}
+
+function renderQuestions() {
+    const questions = currentTab === 'course' ? courseQuestions : instructorQuestions;
+    const content = document.getElementById('questionsContent');
+    
+    if (questions.length === 0) {
+        content.innerHTML = `<div class="questions-empty"><i class="bi bi-inbox"></i><p>No ${currentTab} questions assigned.</p><p class="small text-muted">Click "Add Question" below to assign questions.</p></div>`;
+        return;
+    }
+    
+    content.innerHTML = questions.map(q => `
+        <div class="question-card" data-id="${q.id}" data-placeholder="${q.placeholder}">
+            <div class="question-card-header">
+                <span class="question-type ${q.type.toLowerCase()}">${q.type}</span>
+                <div class="question-actions">
+                    <button class="btn-edit" onclick="editQuestion('${q.id}')" title="Edit"><i class="bi bi-pencil"></i></button>
+                    <button class="btn-remove" onclick="removeQuestion('${q.placeholder}')" title="Remove"><i class="bi bi-trash"></i></button>
+                </div>
+            </div>
+            <div class="question-text">${escapeHtml(q.text)}</div>
+            <div class="question-edit-form">
+                <div class="mb-2">
+                    <label class="form-label">Question Type</label>
+                    <select class="form-select form-select-sm" id="type-${q.id}">
+                        <option value="">Select type...</option>
+                        <option value="Selection" ${q.type === 'Selection' ? 'selected' : ''}>Selection</option>
+                        <option value="Comment" ${q.type === 'Comment' ? 'selected' : ''}>Comment</option>
+                    </select>
+                </div>
+                <textarea id="edit-${q.id}">${escapeHtml(q.text)}</textarea>
+                <div class="edit-buttons">
+                    <button class="btn btn-sm btn-outline-secondary" onclick="cancelEdit('${q.id}')">Cancel</button>
+                    <button class="btn btn-sm btn-uk-primary" onclick="saveEdit('${q.id}')">${needsApproval ? 'Submit for Approval' : 'Save'}</button>
+                </div>
+            </div>
+            <div class="question-meta"><code>${q.id}</code> • ${q.placeholder}</div>
+        </div>
+    `).join('');
+}
+
+function switchTab(tab) {
+    currentTab = tab;
+    document.querySelectorAll('.questions-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+    renderQuestions();
+}
+
+function editQuestion(id) {
+    document.querySelector(`.question-card[data-id="${id}"]`)?.classList.add('editing');
+}
+
+function cancelEdit(id) {
+    document.querySelector(`.question-card[data-id="${id}"]`)?.classList.remove('editing');
+}
+
+async function saveEdit(id) {
+    const newText = document.getElementById(`edit-${id}`).value.trim();
+    if (!newText) { showToast('Question text cannot be empty', 'error'); return; }
+    const newType = document.getElementById(`type-${id}`).value || null;
+    
+    try {
+        const response = await fetch('/questions/api/question/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question_id: id, question_text: newText, question_type: newType })
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+            showToast(data.pending ? 'Change submitted for approval' : 'Question updated', data.pending ? 'warning' : 'success');
+            loadQuestions(selectedUnit.type, selectedUnit.id);
+        } else { showToast(data.error || 'Failed to update', 'error'); }
+    } catch { showToast('Error saving changes', 'error'); }
+}
+
+async function removeQuestion(placeholder) {
+    if (!confirm(needsApproval ? 'Submit request to remove this question?' : 'Remove this question?')) return;
+    
+    try {
+        const response = await fetch('/questions/api/question/remove', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ unit_type: selectedUnit.type, unit_id: selectedUnit.id, placeholder })
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+            showToast(data.pending ? 'Removal submitted for approval' : 'Question removed', data.pending ? 'warning' : 'success');
+            loadQuestions(selectedUnit.type, selectedUnit.id);
+        } else { showToast(data.error || 'Failed', 'error'); }
+    } catch { showToast('Error removing question', 'error'); }
+}
+
+function openAddModal() {
+    selectedQuestionId = null;
+    addMode = 'existing';
+    document.getElementById('questionSearch').value = '';
+    document.getElementById('searchResults').innerHTML = '<div class="text-center text-muted py-3">Type to search questions</div>';
+    document.getElementById('newQuestionType').value = '';
+    document.getElementById('newQuestionTarget').value = 'course';
+    document.getElementById('newQuestionText').value = '';
+    document.getElementById('existing-tab').classList.add('active');
+    document.getElementById('new-tab').classList.remove('active');
+    document.getElementById('existing-pane').classList.add('show', 'active');
+    document.getElementById('new-pane').classList.remove('show', 'active');
+    document.getElementById('addQuestionConfirm').disabled = true;
+    document.getElementById('addModal').classList.add('show');
+}
+
+function closeAddModal() { document.getElementById('addModal').classList.remove('show'); }
+
+function switchAddMode(mode) {
+    addMode = mode;
+    updateAddButton();
+}
+
+function updateAddButton() {
+    const btn = document.getElementById('addQuestionConfirm');
+
+    if (addMode === 'existing') {
+        btn.disabled = !selectedQuestionId;
+    } else {
+        const type = document.getElementById('newQuestionType').value;
+        const text = document.getElementById('newQuestionText').value.trim();
+        btn.disabled = !type || !text;
+    }
+}
+
+let searchTimeout;
+function searchQuestions(query) {
+    clearTimeout(searchTimeout);
+    if (query.length < 2) {
+        document.getElementById('searchResults').innerHTML = '<div class="text-center text-muted py-3">Type at least 2 characters</div>';
+        return;
+    }
+    searchTimeout = setTimeout(async () => {
+        try {
+            const response = await fetch(`/questions/api/questions/search?q=${encodeURIComponent(query)}`);
+            const results = await response.json();
+            
+            document.getElementById('searchResults').innerHTML = results.length === 0 
+                ? '<div class="text-center text-muted py-3">No questions found</div>'
+                : results.map(q => `<div class="search-result-item" onclick="selectQuestion('${q.id}', this)">
+                    <div class="d-flex justify-content-between"><strong>${q.id}</strong><span class="question-type ${q.type.toLowerCase()}">${q.type}</span></div>
+                    <div class="small text-muted mt-1">${escapeHtml(q.text)}</div></div>`).join('');
+        } catch { document.getElementById('searchResults').innerHTML = '<div class="text-danger text-center py-3">Search failed</div>'; }
+    }, 300);
+}
+
+function selectQuestion(id, el) {
+    document.querySelectorAll('.search-result-item.selected').forEach(e => e.classList.remove('selected'));
+    el.classList.add('selected');
+    selectedQuestionId = id;
+    updateAddButton();
+}
+
+async function confirmAddQuestion() {
+    const payload = {
+        unit_type: selectedUnit.type,
+        unit_id: selectedUnit.id
+    };
+
+    if (addMode === 'existing') {
+        // Adding existing question
+        if (!selectedQuestionId) {
+            showToast('Please select a question', 'error');
+            return;
+        }
+        payload.question_id = selectedQuestionId;
+    } else {
+        // Creating new question
+        const questionType = document.getElementById('newQuestionType').value;
+        const questionText = document.getElementById('newQuestionText').value.trim();
+        const isInstructor = document.getElementById('newQuestionTarget').value === 'instructor';
+
+        if (!questionType || !questionText) {
+            showToast('Please fill in all fields', 'error');
+            return;
+        }
+
+        payload.question_text = questionText;
+        payload.question_type = questionType;
+        payload.is_instructor = isInstructor;
+    }
+
+    try {
+        const response = await fetch('/questions/api/question/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+
+        if (data.success) {
+            closeAddModal();
+            showToast(data.pending ? 'Submitted for approval' : 'Question added successfully', data.pending ? 'warning' : 'success');
+            loadQuestions(selectedUnit.type, selectedUnit.id);
+        } else {
+            showToast(data.error || 'Failed to add question', 'error');
+        }
+    } catch (error) {
+        showToast('Error adding question', 'error');
+    }
+}
+
+function showToast(message, type = 'info') {
+    const banner = document.getElementById('actionStatus');
+    if (banner) {
+        banner.textContent = message;
+        banner.className = `status-banner ${type}`;
+        banner.style.display = 'block';
+        clearTimeout(banner._hideTimer);
+        banner._hideTimer = setTimeout(() => { banner.style.display = 'none'; }, 5000);
+    }
+
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.innerHTML = `<i class="bi bi-${type === 'success' ? 'check-circle' : type === 'error' ? 'x-circle' : 'exclamation-circle'}"></i> ${message}`;
+    document.getElementById('toastContainer').appendChild(toast);
+    setTimeout(() => toast.remove(), 4000);
+}
+
+function escapeHtml(text) { const div = document.createElement('div'); div.textContent = text; return div.innerHTML; }
+
+document.getElementById('addModal').addEventListener('click', function(e) { if (e.target === this) closeAddModal(); });
+</script>
+{% endblock %}

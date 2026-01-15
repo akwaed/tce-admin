@@ -1,0 +1,283 @@
+{% extends "base.html" %}
+
+{% block title %}Edit Administrator{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('admin.list_admins') }}">Admin List</a></li>
+            <li class="breadcrumb-item active">Edit Administrator</li>
+        </ol>
+    </nav>
+    <h1><i class="bi bi-pencil me-2"></i>Edit Administrator</h1>
+    <p class="text-muted mb-0">Editing: {{ admin.full_name }} ({{ admin.linkblue }})</p>
+</div>
+
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('admin.edit_admin', admin_id=admin.id) }}">
+                    <!-- Basic Info -->
+                    <h5 class="mb-3"><i class="bi bi-person me-2"></i>Basic Information</h5>
+                    
+                    <div class="mb-3">
+                        <label for="linkblue" class="form-label">LinkBlue <span class="text-danger">*</span></label>
+                        <div class="input-group">
+                            <span class="input-group-text">@</span>
+                            <input type="text" class="form-control" id="linkblue" name="linkblue" 
+                                   required value="{{ admin.linkblue }}" pattern="[a-z0-9]+">
+                        </div>
+                    </div>
+                    
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="first_name" class="form-label">First Name <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="first_name" name="first_name" 
+                                   required value="{{ admin.first_name }}">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="last_name" class="form-label">Last Name <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="last_name" name="last_name" 
+                                   required value="{{ admin.last_name }}">
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="email" class="form-label">Email</label>
+                        <input type="email" class="form-control" id="email" name="email" 
+                               value="{{ admin.email or '' }}">
+                    </div>
+                    
+                    <hr class="my-4">
+                    
+                    <!-- Role & Scope -->
+                    <h5 class="mb-3"><i class="bi bi-diagram-3 me-2"></i>Role & Scope</h5>
+                    
+                    <div class="mb-3">
+                        <label for="contact_type" class="form-label">Contact Type <span class="text-danger">*</span></label>
+                        <select class="form-select" id="contact_type" name="contact_type" required>
+                            <option value="College" {% if admin.contact_type == 'College' %}selected{% endif %}>College</option>
+                            <option value="Department" {% if admin.contact_type == 'Department' %}selected{% endif %}>Department</option>
+                            <option value="Course Coordinator" {% if admin.contact_type == 'Course Coordinator' %}selected{% endif %}>Course Coordinator</option>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="college" class="form-label">College <span class="text-danger">*</span></label>
+                        <select class="form-select" id="college" name="college" required 
+                                {% if not current_user.is_super_admin() %}disabled{% endif %}>
+                            <option value="">Select College</option>
+                            {% for college in colleges %}
+                            <option value="{{ college.code or college.name }}" 
+                                    {% if (college.code or college.name) == admin.college_code %}selected{% endif %}>
+                                {{ college.name or college.code }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                        {% if not current_user.is_super_admin() %}
+                        <input type="hidden" name="college" value="{{ admin.college_code }}">
+                        {% endif %}
+                    </div>
+                    
+                    <div class="mb-3" id="department_group">
+                        <label for="department" class="form-label">Department <span class="text-danger" id="dept_required_star" style="display: none;">*</span></label>
+                        <select class="form-select" id="department" name="department">
+                            <option value="">Select Department</option>
+                            <!-- Will be populated by JavaScript -->
+                        </select>
+                        <div class="form-text" id="dept_help_text"></div>
+                    </div>
+                    
+                    <div class="mb-3" id="primary_group">
+                        <label class="form-label">Primary Contact</label>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="primary_contact" id="primary_no" 
+                                   value="no" {% if not admin.is_primary_contact %}checked{% endif %}>
+                            <label class="form-check-label" for="primary_no">No</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="primary_contact" id="primary_yes" 
+                                   value="yes" {% if admin.is_primary_contact %}checked{% endif %}>
+                            <label class="form-check-label" for="primary_yes">Yes (Main contact for this college)</label>
+                        </div>
+                    </div>
+                    
+                    <!-- Course Coordinator Fields -->
+                    <div id="course_fields" style="{% if admin.contact_type == 'College' %}display: none;{% endif %}">
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="prefix" class="form-label">Course Prefix</label>
+                                <input type="text" class="form-control" id="prefix" name="prefix" 
+                                       value="{{ admin.course_prefix or '' }}" maxlength="10">
+                            </div>
+                            <div class="col-md-6">
+                                <label for="course" class="form-label">Course Number</label>
+                                <input type="text" class="form-control" id="course" name="course" 
+                                       value="{{ admin.course_number or '' }}" maxlength="10">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <hr class="my-4">
+                    
+                    <!-- Access Settings -->
+                    <h5 class="mb-3"><i class="bi bi-shield-check me-2"></i>Access Settings</h5>
+                    
+                    <div class="mb-3">
+                        <label for="level_type" class="form-label">Level Type</label>
+                        <select class="form-select" id="level_type" name="level_type">
+                            <option value="Subject Viewer" {% if admin.level_type and 'subject' in admin.level_type.lower() %}selected{% endif %}>
+                                Subject Viewer
+                            </option>
+                            <option value="Report Viewer" {% if admin.level_type and 'report' in admin.level_type.lower() %}selected{% endif %}>
+                                Report Viewer
+                            </option>
+                        </select>
+                    </div>
+                    
+                    <div class="row mb-3">
+                        <div class="col-md-4">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="has_dashboard_access" 
+                                       name="has_dashboard_access" value="yes" 
+                                       {% if admin.has_dashboard_access %}checked{% endif %}>
+                                <label class="form-check-label" for="has_dashboard_access">
+                                    Dashboard Access
+                                </label>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="has_static_report_access" 
+                                       name="has_static_report_access" value="yes" 
+                                       {% if admin.has_static_report_access %}checked{% endif %}>
+                                <label class="form-check-label" for="has_static_report_access">
+                                    Static Report Access
+                                </label>
+                            </div>
+                        </div>
+                        {% if current_user.is_super_admin() or (current_user.is_college_admin() and current_user.is_primary_contact) %}
+                        <div class="col-md-4">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="has_qb_access" 
+                                       name="has_qb_access" value="yes" 
+                                       {% if admin.has_qb_access %}checked{% endif %}>
+                                <label class="form-check-label" for="has_qb_access">
+                                    Question Bank Access
+                                </label>
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                    
+                    <hr class="my-4">
+                    
+                    <!-- Audit Info -->
+                    <div class="text-muted small mb-4">
+                        <i class="bi bi-clock me-1"></i>
+                        Created: {{ admin.created_at.strftime('%Y-%m-%d %H:%M') if admin.created_at else 'Unknown' }}
+                        {% if admin.updated_at %}
+                        | Updated: {{ admin.updated_at.strftime('%Y-%m-%d %H:%M') }}
+                        {% endif %}
+                    </div>
+                    
+                    <div class="d-flex justify-content-between">
+                        <a href="{{ url_for('admin.list_admins') }}" class="btn btn-outline-secondary">
+                            <i class="bi bi-x-lg me-1"></i>Cancel
+                        </a>
+                        <button type="submit" class="btn btn-uk-primary">
+                            <i class="bi bi-check-lg me-1"></i>Save Changes
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const collegeDepts = {{ college_depts|tojson }};
+    const currentDepartment = "{{ admin.department_id or '' }}";
+    const contactType = document.getElementById('contact_type');
+    const collegeSelect = document.getElementById('college');
+    const deptSelect = document.getElementById('department');
+    const deptGroup = document.getElementById('department_group');
+    const primaryGroup = document.getElementById('primary_group');
+    const courseFields = document.getElementById('course_fields');
+    const deptRequiredStar = document.getElementById('dept_required_star');
+    const deptHelpText = document.getElementById('dept_help_text');
+
+    function updateFormState() {
+        const isCollege = contactType.value === 'College';
+        const isDepartment = contactType.value === 'Department';
+
+        // Show/hide department - always show for Department type, hide for College type
+        deptGroup.style.display = isCollege ? 'none' : 'block';
+
+        // Department is required for Department contacts (they must have a specific department)
+        deptSelect.required = isDepartment;
+        deptRequiredStar.style.display = isDepartment ? 'inline' : 'none';
+        deptHelpText.textContent = isDepartment ? 'Department contacts must be assigned to a specific department' : '';
+
+        // Primary contact visibility
+        primaryGroup.style.display = isCollege ? 'block' : 'none';
+
+        // Course fields
+        courseFields.style.display = isCollege ? 'none' : 'block';
+    }
+
+    function updateDepartments(selectCurrent = false) {
+        const college = collegeSelect.value;
+        const isDepartment = contactType.value === 'Department';
+
+        // For Department contacts, no "All" option - they must select a specific department
+        if (isDepartment) {
+            deptSelect.innerHTML = '<option value="">Select Department</option>';
+        } else {
+            deptSelect.innerHTML = '<option value="">All (College-level)</option>';
+        }
+
+        if (college && collegeDepts[college]) {
+            collegeDepts[college].forEach(dept => {
+                const option = document.createElement('option');
+                option.value = dept.id;
+                option.textContent = dept.name;
+                if (selectCurrent && dept.id === currentDepartment) {
+                    option.selected = true;
+                }
+                deptSelect.appendChild(option);
+            });
+        }
+
+        // If department not found in list, add it
+        if (selectCurrent && currentDepartment && !deptSelect.querySelector(`option[value="${currentDepartment}"]`)) {
+            const option = document.createElement('option');
+            option.value = currentDepartment;
+            option.textContent = currentDepartment;
+            option.selected = true;
+            deptSelect.appendChild(option);
+        }
+    }
+    
+    // Event listeners
+    contactType.addEventListener('change', function() {
+        updateFormState();
+        if (contactType.value !== 'College') {
+            updateDepartments(true);
+        }
+    });
+    collegeSelect.addEventListener('change', function() {
+        updateDepartments(false);
+    });
+    
+    // Initialize
+    updateFormState();
+    updateDepartments(true);
+});
+</script>
+{% endblock %}

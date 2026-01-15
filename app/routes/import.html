@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block title %}Import Question Bank{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('questions.browser') }}">Question Bank</a></li>
+            <li class="breadcrumb-item active">Import Files</li>
+        </ol>
+    </nav>
+    <h1><i class="bi bi-upload me-2"></i>Import Question Bank Files</h1>
+    <p class="text-muted mb-0">Upload Question Bank and Question Mapping files from Explorance Blue</p>
+</div>
+
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-body">
+                <div class="alert alert-info">
+                    <h5><i class="bi bi-info-circle me-2"></i>File Requirements</h5>
+                    <p class="mb-2">Upload the following Excel files exported from Explorance Blue:</p>
+                    <ul class="mb-0">
+                        <li><strong>QB.xlsx</strong> - Question Bank file containing question definitions</li>
+                        <li><strong>QM.xlsx</strong> - Question Mapping file containing unit-to-question mappings</li>
+                    </ul>
+                </div>
+                
+                <form method="POST" action="{{ url_for('questions.import_files') }}" enctype="multipart/form-data">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="card mb-3">
+                                <div class="card-header">
+                                    <i class="bi bi-file-earmark-excel me-1"></i>Question Bank
+                                </div>
+                                <div class="card-body">
+                                    <div class="mb-3">
+                                        <label for="qb_file" class="form-label">QB.xlsx</label>
+                                        <input type="file" class="form-control" id="qb_file" name="qb_file" 
+                                               accept=".xlsx,.xls">
+                                        <div class="form-text">Contains question definitions and types</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-6">
+                            <div class="card mb-3">
+                                <div class="card-header">
+                                    <i class="bi bi-file-earmark-excel me-1"></i>Question Mapping
+                                </div>
+                                <div class="card-body">
+                                    <div class="mb-3">
+                                        <label for="qm_file" class="form-label">QM.xlsx</label>
+                                        <input type="file" class="form-control" id="qm_file" name="qm_file" 
+                                               accept=".xlsx,.xls">
+                                        <div class="form-text">Contains department/course/section mappings</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <hr class="my-4">
+                    
+                    <div class="d-flex justify-content-between">
+                        <a href="{{ url_for('questions.browser') }}" class="btn btn-outline-secondary">
+                            <i class="bi bi-x-lg me-1"></i>Cancel
+                        </a>
+                        <button type="submit" class="btn btn-uk-primary">
+                            <i class="bi bi-upload me-1"></i>Upload Files
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        
+        <!-- Current Files Info -->
+        <div class="card mt-4">
+            <div class="card-header">
+                <i class="bi bi-folder me-2"></i>Current Data Files
+            </div>
+            <div class="card-body">
+                <p class="text-muted">Files will be uploaded to the datasources directory.</p>
+                <p class="mb-0">
+                    <small class="text-muted">
+                        <i class="bi bi-info-circle me-1"></i>
+                        Uploading new files will replace existing Question Bank data.
+                    </small>
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

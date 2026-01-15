@@ -1,0 +1,341 @@
+{% extends "base.html" %}
+
+{% block title %}Verification Reports{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="d-flex justify-content-between align-items-center">
+        <div>
+            <h1><i class="bi bi-clipboard-check me-2"></i>Verification Reports</h1>
+            <p class="text-muted mb-0">Course listings with TCE status for {{ current_user.scope_display }}</p>
+        </div>
+        <div>
+            <a href="{{ url_for('verification.export_courses', **current_filters) }}" class="btn btn-uk-secondary">
+                <i class="bi bi-download me-1"></i>Export CSV
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- Statistics Cards -->
+<div class="row g-3 mb-4">
+    <div class="col-md-2">
+        <div class="card h-100 border-0 bg-light">
+            <div class="card-body text-center py-3">
+                <div class="fs-2 fw-bold text-primary">{{ stats.total }}</div>
+                <div class="small text-muted">Total Courses</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card h-100 border-0" style="background-color: #d4edda;">
+            <div class="card-body text-center py-3">
+                <div class="fs-2 fw-bold text-success">{{ stats.marked }}</div>
+                <div class="small text-muted">Marked for TCE</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card h-100 border-0" style="background-color: #e2e3e5;">
+            <div class="card-body text-center py-3">
+                <div class="fs-2 fw-bold text-secondary">{{ stats.not_marked }}</div>
+                <div class="small text-muted">Not Marked</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card h-100 border-0" style="background-color: #fff3cd;">
+            <div class="card-body text-center py-3">
+                <div class="fs-2 fw-bold text-warning">{{ stats.zero_enrollment }}</div>
+                <div class="small text-muted">Zero Enrollment</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card h-100 border-0 bg-light">
+            <div class="card-body text-center py-3">
+                <div class="fs-2 fw-bold text-info">{{ stats.total_students | default(0) }}</div>
+                <div class="small text-muted">Total Students</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card h-100 border-0 bg-light">
+            <div class="card-body text-center py-3">
+                <div class="fs-2 fw-bold text-primary">{{ stats.marked_percentage | default(0) }}%</div>
+                <div class="small text-muted">TCE Coverage</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" action="{{ url_for('verification.list_courses') }}" id="filterForm">
+            <div class="row g-3 align-items-end">
+                <div class="col-md-3">
+                    <label class="form-label small text-muted">Search</label>
+                    <input type="text" class="form-control" name="search" 
+                           placeholder="Course code or title..." 
+                           value="{{ current_filters.search }}">
+                </div>
+                {% if current_user.is_super_admin() %}
+                <div class="col-md-2">
+                    <label class="form-label small text-muted">College</label>
+                    <select name="college" class="form-select" id="collegeFilter" onchange="updateDepartments()">
+                        <option value="">All Colleges</option>
+                        {% for college in colleges %}
+                        <option value="{{ college.code }}" {% if current_filters.college == college.code %}selected{% endif %}>
+                            {{ college.code }} - {{ college.name[:20] }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                {% endif %}
+                <div class="col-md-2">
+                    <label class="form-label small text-muted">Department</label>
+                    <select name="department" class="form-select" id="deptFilter">
+                        <option value="">All Departments</option>
+                        {% for dept in departments %}
+                        <option value="{{ dept.id }}" {% if current_filters.department == dept.id %}selected{% endif %}>
+                            {{ dept.name[:25] }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small text-muted">TCE Status</label>
+                    <select name="tce_status" class="form-select">
+                        <option value="">All Statuses</option>
+                        <option value="marked" {% if current_filters.tce_status == 'marked' %}selected{% endif %}>
+                            ✓ Marked for TCE
+                        </option>
+                        <option value="not_marked" {% if current_filters.tce_status == 'not_marked' %}selected{% endif %}>
+                            ○ Not Marked
+                        </option>
+                        <option value="zero_enrollment" {% if current_filters.tce_status == 'zero_enrollment' %}selected{% endif %}>
+                            ⚠ Zero Enrollment
+                        </option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <button type="submit" class="btn btn-uk-primary">
+                        <i class="bi bi-search me-1"></i>Filter
+                    </button>
+                    <a href="{{ url_for('verification.list_courses') }}" class="btn btn-outline-secondary">
+                        <i class="bi bi-x-lg me-1"></i>Clear
+                    </a>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Quick Filter Buttons -->
+<div class="mb-3">
+    <div class="btn-group" role="group">
+        <a href="{{ url_for('verification.list_courses') }}" 
+           class="btn btn-sm {% if not current_filters.tce_status %}btn-primary{% else %}btn-outline-primary{% endif %}">
+            All ({{ stats.total }})
+        </a>
+        <a href="{{ url_for('verification.list_courses', tce_status='marked', college=current_filters.college, department=current_filters.department) }}" 
+           class="btn btn-sm {% if current_filters.tce_status == 'marked' %}btn-success{% else %}btn-outline-success{% endif %}">
+            Marked ({{ stats.marked }})
+        </a>
+        <a href="{{ url_for('verification.list_courses', tce_status='not_marked', college=current_filters.college, department=current_filters.department) }}" 
+           class="btn btn-sm {% if current_filters.tce_status == 'not_marked' %}btn-secondary{% else %}btn-outline-secondary{% endif %}">
+            Not Marked ({{ stats.not_marked }})
+        </a>
+        <a href="{{ url_for('verification.list_courses', tce_status='zero_enrollment', college=current_filters.college, department=current_filters.department) }}" 
+           class="btn btn-sm {% if current_filters.tce_status == 'zero_enrollment' %}btn-warning{% else %}btn-outline-warning{% endif %}">
+            Zero Enrollment ({{ stats.zero_enrollment }})
+        </a>
+    </div>
+</div>
+
+<!-- Results Table -->
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-uk table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th style="width: 120px;">Course</th>
+                        <th style="width: 80px;">Section</th>
+                        <th>Title</th>
+                        <th style="width: 80px;">College</th>
+                        <th>Department</th>
+                        <th style="width: 100px;">Status</th>
+                        <th style="width: 80px;" class="text-center">Students</th>
+                        <th>Instructor(s)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for course in courses.items %}
+                    <tr class="{% if course.marked_for_tce and course.student_count == 0 %}table-warning{% endif %}">
+                        <td>
+                            <strong>{{ course.class_code }}</strong>
+                            {% if course.crosslisted_id %}
+                            <i class="bi bi-link-45deg text-muted" title="Crosslisted"></i>
+                            {% endif %}
+                        </td>
+                        <td>{{ course.crs_section or course.section_id }}</td>
+                        <td>
+                            <a href="{{ url_for('verification.course_detail', section_key=course.section_key) }}" 
+                               class="text-decoration-none">
+                                {{ course.section_title[:45] }}{% if course.section_title|length > 45 %}...{% endif %}
+                            </a>
+                        </td>
+                        <td><span class="badge bg-light text-dark">{{ course.college_code }}</span></td>
+                        <td class="small">{{ course.department.name if course.department else course.department_id }}</td>
+                        <td>
+                            {% if course.marked_for_tce %}
+                                {% if course.student_count == 0 %}
+                                <span class="badge bg-warning text-dark">
+                                    <i class="bi bi-exclamation-triangle me-1"></i>Zero
+                                </span>
+                                {% else %}
+                                <span class="badge bg-success">
+                                    <i class="bi bi-check-circle me-1"></i>Marked
+                                </span>
+                                {% endif %}
+                            {% else %}
+                            <span class="badge bg-secondary">
+                                <i class="bi bi-dash-circle me-1"></i>Not Marked
+                            </span>
+                            {% endif %}
+                        </td>
+                        <td class="text-center">
+                            {% if course.student_count == 0 and course.marked_for_tce %}
+                            <span class="text-danger fw-bold">0</span>
+                            {% else %}
+                            {{ course.student_count }}
+                            {% endif %}
+                        </td>
+                        <td class="small">
+                            {% set instructor_list = course.instructors | list %}
+                            {% for instructor in instructor_list[:2] %}
+                            {{ instructor.last_name }}{% if not loop.last %}, {% endif %}
+                            {% endfor %}
+                            {% if instructor_list|length > 2 %}
+                            <span class="text-muted">+{{ instructor_list|length - 2 }}</span>
+                            {% endif %}
+                            {% if instructor_list|length == 0 %}
+                            <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="8" class="text-center text-muted py-5">
+                            <i class="bi bi-inbox fs-1 d-block mb-2"></i>
+                            No courses found.
+                            {% if stats.total == 0 %}
+                            <br><small>Run course sync to populate data.</small>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
+    <!-- Pagination & Footer -->
+    <div class="card-footer">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <div class="text-muted small">
+                Showing {{ ((courses.page - 1) * courses.per_page) + 1 }} - {{ ((courses.page - 1) * courses.per_page) + courses.items|length }} of {{ total_count }} courses
+                {% if last_sync %}
+                <span class="ms-3">
+                    <i class="bi bi-clock me-1"></i>Last sync: {{ last_sync.completed_at.strftime('%Y-%m-%d %H:%M') }}
+                </span>
+                {% endif %}
+            </div>
+        
+        {% if courses.pages > 1 %}
+        <nav>
+            <ul class="pagination pagination-sm mb-0">
+                {% if courses.has_prev %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('verification.list_courses', page=courses.prev_num, **current_filters) }}">
+                        <i class="bi bi-chevron-left"></i>
+                    </a>
+                </li>
+                {% endif %}
+                
+                {% for page_num in courses.iter_pages(left_edge=1, right_edge=1, left_current=2, right_current=2) %}
+                    {% if page_num %}
+                        <li class="page-item {% if page_num == courses.page %}active{% endif %}">
+                            <a class="page-link" href="{{ url_for('verification.list_courses', page=page_num, **current_filters) }}">
+                                {{ page_num }}
+                            </a>
+                        </li>
+                    {% else %}
+                        <li class="page-item disabled"><span class="page-link">...</span></li>
+                    {% endif %}
+                {% endfor %}
+                
+                {% if courses.has_next %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('verification.list_courses', page=courses.next_num, **current_filters) }}">
+                        <i class="bi bi-chevron-right"></i>
+                    </a>
+                </li>
+                {% endif %}
+            </ul>
+        </nav>
+        {% endif %}
+        </div>
+
+        <!-- Usage Hint -->
+        <div class="text-center text-muted small mt-2 pt-2 border-top">
+            <i class="bi bi-info-circle me-1"></i>
+            <strong>Bold text</strong> - Select to view assigned questions |
+            <span style="background-color: #ffc107; padding: 2px 6px; border-radius: 3px;">Yellow highlight</span> - Click to expand to find assigned questions
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+/* More visible highlight for courses with questions assigned below */
+.has-questions-below {
+    background-color: #ffc107 !important;
+    border-left: 4px solid #ff9800;
+}
+.has-questions-below:hover {
+    background-color: #ffb300 !important;
+}
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function updateDepartments() {
+    const collegeCode = document.getElementById('collegeFilter').value;
+    const deptSelect = document.getElementById('deptFilter');
+    
+    if (!collegeCode) {
+        // Show all departments or clear
+        deptSelect.innerHTML = '<option value="">All Departments</option>';
+        return;
+    }
+    
+    // Fetch departments for selected college
+    fetch(`{{ url_for('verification.get_departments_api', college_code='PLACEHOLDER') }}`.replace('PLACEHOLDER', collegeCode))
+        .then(response => response.json())
+        .then(departments => {
+            deptSelect.innerHTML = '<option value="">All Departments</option>';
+            departments.forEach(dept => {
+                const option = document.createElement('option');
+                option.value = dept.id;
+                option.textContent = dept.name;
+                deptSelect.appendChild(option);
+            });
+        });
+}
+</script>
+{% endblock %}

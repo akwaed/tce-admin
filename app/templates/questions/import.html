@@ -1,0 +1,273 @@
+{% extends "base.html" %}
+
+{% block title %}Import Question Bank{% endblock %}
+
+{% block extra_css %}
+<style>
+    .import-card {
+        background: white;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        padding: 2rem;
+        margin-bottom: 1.5rem;
+    }
+    
+    .import-card h5 {
+        color: var(--uk-blue);
+        margin-bottom: 1rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    
+    .file-upload-zone {
+        border: 2px dashed #ccc;
+        border-radius: 8px;
+        padding: 2rem;
+        text-align: center;
+        cursor: pointer;
+        transition: all 0.2s;
+        background: #fafafa;
+    }
+    
+    .file-upload-zone:hover {
+        border-color: var(--uk-blue);
+        background: rgba(0, 51, 160, 0.05);
+    }
+    
+    .file-upload-zone.dragover {
+        border-color: var(--uk-blue);
+        background: rgba(0, 51, 160, 0.1);
+    }
+    
+    .file-upload-zone.has-file {
+        border-color: #28a745;
+        background: #e8f5e9;
+    }
+    
+    .file-upload-zone i {
+        font-size: 2.5rem;
+        color: #999;
+        margin-bottom: 0.5rem;
+    }
+    
+    .file-upload-zone.has-file i {
+        color: #28a745;
+    }
+    
+    .file-upload-zone input {
+        display: none;
+    }
+    
+    .file-name {
+        font-weight: 600;
+        color: #28a745;
+        margin-top: 0.5rem;
+    }
+    
+    .format-info {
+        background: #f8f9fa;
+        border-radius: 4px;
+        padding: 1rem;
+        margin-top: 1rem;
+        font-size: 0.875rem;
+    }
+    
+    .format-info h6 {
+        margin: 0 0 0.5rem 0;
+        color: #666;
+    }
+    
+    .format-info ul {
+        margin: 0;
+        padding-left: 1.25rem;
+    }
+    
+    .current-status {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.75rem 1rem;
+        background: #f0f0f0;
+        border-radius: 4px;
+        margin-bottom: 1rem;
+    }
+    
+    .current-status.exists {
+        background: #e8f5e9;
+    }
+    
+    .current-status .status-icon {
+        font-size: 1.25rem;
+    }
+    
+    .current-status.exists .status-icon {
+        color: #28a745;
+    }
+    
+    .current-status.missing .status-icon {
+        color: #999;
+    }
+    
+    .submit-section {
+        margin-top: 2rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid #e0e0e0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="d-flex justify-content-between align-items-center">
+        <div>
+            <h1><i class="bi bi-upload me-2"></i>Import Question Bank</h1>
+            <p class="text-muted mb-0">Upload Question Bank and Question Mapping files</p>
+        </div>
+        <a href="{{ url_for('questions.browser') }}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left me-1"></i>Back to Browser
+        </a>
+    </div>
+</div>
+
+<form method="POST" enctype="multipart/form-data">
+    <div class="row">
+        <div class="col-md-6">
+            <div class="import-card">
+                <h5><i class="bi bi-file-earmark-spreadsheet"></i>Question Bank (QB.xlsx)</h5>
+                
+                {% for file in current_files if file.name == 'QB.xlsx' %}
+                <div class="current-status {{ 'exists' if file.exists else 'missing' }}">
+                    <span class="status-icon">
+                        <i class="bi bi-{{ 'check-circle-fill' if file.exists else 'x-circle' }}"></i>
+                    </span>
+                    <div>
+                        {% if file.exists %}
+                        <strong>Current file:</strong> {{ file.records }} questions
+                        <div class="small text-muted">Last modified: {{ file.modified }}</div>
+                        {% else %}
+                        <span class="text-muted">No file uploaded yet</span>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+                
+                <div class="file-upload-zone" id="qbZone" onclick="document.getElementById('qbFile').click()">
+                    <i class="bi bi-cloud-upload"></i>
+                    <div>Drop QB.xlsx here or click to browse</div>
+                    <div class="file-name" id="qbFileName"></div>
+                    <input type="file" id="qbFile" name="qb_file" accept=".xlsx,.xls">
+                </div>
+                
+                <div class="format-info">
+                    <h6>Expected Format:</h6>
+                    <ul>
+                        <li><strong>Sheet 1:</strong> "Question Bank Questions" with columns: Question Id, Question Type Definition Id, Question Title, etc.</li>
+                        <li><strong>Sheet 2:</strong> "Question Type Definitions" with columns: Question Type Definition Id, Question Type, Options 1-10</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-6">
+            <div class="import-card">
+                <h5><i class="bi bi-file-earmark-spreadsheet"></i>Question Mapping (QM.xlsx)</h5>
+                
+                {% for file in current_files if file.name == 'QM.xlsx' %}
+                <div class="current-status {{ 'exists' if file.exists else 'missing' }}">
+                    <span class="status-icon">
+                        <i class="bi bi-{{ 'check-circle-fill' if file.exists else 'x-circle' }}"></i>
+                    </span>
+                    <div>
+                        {% if file.exists %}
+                        <strong>Current file:</strong> {{ file.records }} mappings
+                        <div class="small text-muted">Last modified: {{ file.modified }}</div>
+                        {% else %}
+                        <span class="text-muted">No file uploaded yet</span>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+                
+                <div class="file-upload-zone" id="qmZone" onclick="document.getElementById('qmFile').click()">
+                    <i class="bi bi-cloud-upload"></i>
+                    <div>Drop QM.xlsx here or click to browse</div>
+                    <div class="file-name" id="qmFileName"></div>
+                    <input type="file" id="qmFile" name="qm_file" accept=".xlsx,.xls">
+                </div>
+                
+                <div class="format-info">
+                    <h6>Expected Format:</h6>
+                    <ul>
+                        <li><strong>Row 1:</strong> UUIDs (preserved for export)</li>
+                        <li><strong>Row 2:</strong> Placeholder column names</li>
+                        <li><strong>Row 3+:</strong> DEPARTMENT/COURSE/SECTION mappings</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="submit-section">
+        <div class="text-muted">
+            <i class="bi bi-info-circle me-1"></i>
+            You can upload one or both files. Existing files will be replaced.
+        </div>
+        <button type="submit" class="btn btn-uk-primary btn-lg">
+            <i class="bi bi-upload me-2"></i>Import Files
+        </button>
+    </div>
+</form>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// File upload handling
+['qb', 'qm'].forEach(prefix => {
+    const zone = document.getElementById(prefix + 'Zone');
+    const input = document.getElementById(prefix + 'File');
+    const nameDisplay = document.getElementById(prefix + 'FileName');
+    
+    // Click handling
+    input.addEventListener('change', function() {
+        if (this.files.length > 0) {
+            nameDisplay.textContent = this.files[0].name;
+            zone.classList.add('has-file');
+        } else {
+            nameDisplay.textContent = '';
+            zone.classList.remove('has-file');
+        }
+    });
+    
+    // Drag and drop
+    zone.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        zone.classList.add('dragover');
+    });
+    
+    zone.addEventListener('dragleave', function() {
+        zone.classList.remove('dragover');
+    });
+    
+    zone.addEventListener('drop', function(e) {
+        e.preventDefault();
+        zone.classList.remove('dragover');
+        
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            const file = files[0];
+            if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
+                input.files = files;
+                nameDisplay.textContent = file.name;
+                zone.classList.add('has-file');
+            } else {
+                alert('Please upload an Excel file (.xlsx or .xls)');
+            }
+        }
+    });
+});
+</script>
+{% endblock %}

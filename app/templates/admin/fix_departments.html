@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+
+{% block title %}Fix Department IDs{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('admin.list_admins') }}">Admin List</a></li>
+            <li class="breadcrumb-item active">Fix Department IDs</li>
+        </ol>
+    </nav>
+    <h1><i class="bi bi-wrench me-2"></i>Fix Department IDs</h1>
+    <p class="text-muted mb-0">Convert department names to proper CLASS_DEPARTMENT_ID values</p>
+</div>
+
+<div class="row justify-content-center">
+    <div class="col-lg-10">
+        <div class="card">
+            <div class="card-header bg-warning text-dark">
+                <i class="bi bi-exclamation-triangle me-2"></i>Department ID Repair
+            </div>
+            <div class="card-body">
+                <div class="alert alert-info">
+                    <i class="bi bi-info-circle me-2"></i>
+                    This tool fixes admin records where <code>department_id</code> contains a department name
+                    (like "Biology") instead of the proper CLASS_DEPARTMENT_ID (like "30000485").
+                </div>
+
+                {% if admins_to_fix %}
+                <h5 class="mb-3">Admins to Fix ({{ admins_to_fix|length }})</h5>
+                <div class="table-responsive">
+                    <table class="table table-sm table-striped">
+                        <thead>
+                            <tr>
+                                <th>Admin</th>
+                                <th>LinkBlue</th>
+                                <th>College</th>
+                                <th>Current Value (Name)</th>
+                                <th>Will Change To (ID)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in admins_to_fix %}
+                            <tr>
+                                <td>{{ item.admin.full_name }}</td>
+                                <td><code>{{ item.admin.linkblue }}</code></td>
+                                <td>{{ item.admin.college_code }}</td>
+                                <td><span class="badge bg-danger">{{ item.old_value }}</span></td>
+                                <td><span class="badge bg-success">{{ item.new_value }}</span></td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                <form method="POST" action="{{ url_for('admin.fix_department_ids') }}"
+                      onsubmit="return confirm('Fix {{ admins_to_fix|length }} admin records with correct department IDs?');">
+                    <div class="d-flex justify-content-between mt-4">
+                        <a href="{{ url_for('admin.list_admins') }}" class="btn btn-outline-secondary">
+                            <i class="bi bi-x-lg me-1"></i>Cancel
+                        </a>
+                        <button type="submit" class="btn btn-warning">
+                            <i class="bi bi-wrench me-1"></i>Fix {{ admins_to_fix|length }} Records
+                        </button>
+                    </div>
+                </form>
+                {% else %}
+                <div class="alert alert-success">
+                    <i class="bi bi-check-circle me-2"></i>
+                    <strong>All department IDs are correct!</strong><br>
+                    No admin records need fixing. All department_id values are valid CLASS_DEPARTMENT_ID values.
+                </div>
+                <a href="{{ url_for('admin.list_admins') }}" class="btn btn-outline-secondary">
+                    <i class="bi bi-arrow-left me-1"></i>Back to Admin List
+                </a>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card mt-4">
+            <div class="card-header">
+                <i class="bi bi-question-circle me-2"></i>Why This Matters
+            </div>
+            <div class="card-body">
+                <p>Department IDs must be CLASS_DEPARTMENT_ID values (like "30000485") to:</p>
+                <ul>
+                    <li>Properly link admins to departments from the Course data</li>
+                    <li>Correctly filter Question Bank by department</li>
+                    <li>Prevent duplicate department entries in dropdowns</li>
+                </ul>
+                <p class="mb-0 text-muted small">
+                    <strong>Prerequisite:</strong> Run Course Sync before using this tool to populate the Department table.
+                    There are currently {{ total_departments }} departments in the database.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

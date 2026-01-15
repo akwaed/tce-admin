@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1><i class="bi bi-speedometer2 me-2"></i>Dashboard</h1>
+    <p class="text-muted mb-0">Welcome back, {{ current_user.first_name }}!</p>
+</div>
+
+<!-- Overview Stats -->
+<div class="row g-4 mb-4">
+    {% if current_user.is_super_admin() %}
+    <div class="col-md-6 col-lg-3">
+        <div class="card stat-card h-100">
+            <div class="stat-number">{{ stats.total_colleges or 0 }}</div>
+            <div class="stat-label">Colleges</div>
+        </div>
+    </div>
+    {% endif %}
+    
+    <div class="col-md-6 col-lg-3">
+        <div class="card stat-card h-100">
+            <div class="stat-number">{{ stats.total_admins or 0 }}</div>
+            <div class="stat-label">Administrators</div>
+        </div>
+    </div>
+    
+    {% if stats.total_departments is defined %}
+    <div class="col-md-6 col-lg-3">
+        <div class="card stat-card h-100">
+            <div class="stat-number">{{ stats.total_departments or 0 }}</div>
+            <div class="stat-label">Departments</div>
+        </div>
+    </div>
+    {% endif %}
+    
+    <div class="col-md-6 col-lg-3">
+        <div class="card stat-card h-100">
+            <div class="stat-number">{{ stats.total_courses or 0 }}</div>
+            <div class="stat-label">Total Courses</div>
+        </div>
+    </div>
+</div>
+
+<!-- TCE Status Cards -->
+<div class="row g-4 mb-4">
+    <div class="col-md-6 col-lg-3">
+        <div class="card h-100 border-0" style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%);">
+            <div class="card-body text-white">
+                <div class="d-flex align-items-center">
+                    <div class="flex-shrink-0">
+                        <i class="bi bi-check-circle fs-1 opacity-75"></i>
+                    </div>
+                    <div class="flex-grow-1 ms-3 text-end">
+                        <h2 class="mb-0">{{ stats.courses_marked_tce or 0 }}</h2>
+                        <p class="mb-0 opacity-75">Marked for TCE</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6 col-lg-3">
+        <div class="card h-100 border-0" style="background: linear-gradient(135deg, #ffc107 0%, #fd7e14 100%);">
+            <div class="card-body text-dark">
+                <div class="d-flex align-items-center">
+                    <div class="flex-shrink-0">
+                        <i class="bi bi-exclamation-triangle fs-1 opacity-75"></i>
+                    </div>
+                    <div class="flex-grow-1 ms-3 text-end">
+                        <h2 class="mb-0">{{ stats.courses_zero_enrollment or 0 }}</h2>
+                        <p class="mb-0 opacity-75">Zero Enrollment</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6 col-lg-3">
+        <div class="card h-100 border-0" style="background: linear-gradient(135deg, #6c757d 0%, #495057 100%);">
+            <div class="card-body text-white">
+                <div class="d-flex align-items-center">
+                    <div class="flex-shrink-0">
+                        <i class="bi bi-dash-circle fs-1 opacity-75"></i>
+                    </div>
+                    <div class="flex-grow-1 ms-3 text-end">
+                        <h2 class="mb-0">{{ stats.courses_not_marked or 0 }}</h2>
+                        <p class="mb-0 opacity-75">Not Marked</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6 col-lg-3">
+        <div class="card h-100 border-0" style="background: linear-gradient(135deg, #0033A0 0%, #1a4db8 100%);">
+            <div class="card-body text-white">
+                <div class="d-flex align-items-center">
+                    <div class="flex-shrink-0">
+                        <i class="bi bi-people fs-1 opacity-75"></i>
+                    </div>
+                    <div class="flex-grow-1 ms-3 text-end">
+                        <h2 class="mb-0">{{ '{:,}'.format(stats.total_students or 0) }}</h2>
+                        <p class="mb-0 opacity-75">Total Students</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Actions & Info -->
+<div class="row g-4">
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-lightning me-2"></i>Quick Actions
+            </div>
+            <div class="card-body">
+                <div class="d-grid gap-2">
+                    <a href="{{ url_for('admin.list_admins') }}" class="btn btn-outline-primary text-start">
+                        <i class="bi bi-people me-2"></i>Manage Administrators
+                    </a>
+                    {% if current_user.has_dashboard_access %}
+                    <a href="{{ url_for('verification.list_courses') }}" class="btn btn-outline-primary text-start">
+                        <i class="bi bi-clipboard-check me-2"></i>View Verification Reports
+                    </a>
+                    <a href="{{ url_for('verification.list_courses', tce_status='zero_enrollment') }}" class="btn btn-outline-warning text-start">
+                        <i class="bi bi-exclamation-triangle me-2"></i>View Zero Enrollment ({{ stats.courses_zero_enrollment or 0 }})
+                    </a>
+                    {% endif %}
+                    {% if current_user.is_super_admin() %}
+                    <a href="{{ url_for('verification.sync_data') }}" class="btn btn-outline-secondary text-start">
+                        <i class="bi bi-arrow-repeat me-2"></i>Sync Course Data
+                    </a>
+                    {% endif %}
+                    {% if current_user.can_manage_qb() %}
+                    <a href="{{ url_for('questions.browser') }}" class="btn btn-outline-primary text-start">
+                        <i class="bi bi-question-circle me-2"></i>Manage Question Bank
+                    </a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-info-circle me-2"></i>Your Access
+            </div>
+            <div class="card-body">
+                <table class="table table-sm table-borderless mb-0">
+                    <tr>
+                        <td class="text-muted" style="width: 40%">Role:</td>
+                        <td><strong>{{ current_user.display_role }}</strong></td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Scope:</td>
+                        <td>{{ current_user.scope_display }}</td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Dashboard Access:</td>
+                        <td>
+                            {% if current_user.has_dashboard_access %}
+                            <span class="badge bg-success">Yes</span>
+                            {% else %}
+                            <span class="badge bg-secondary">No</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Static Reports:</td>
+                        <td>
+                            {% if current_user.has_static_report_access %}
+                            <span class="badge bg-success">Yes</span>
+                            {% else %}
+                            <span class="badge bg-secondary">No</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td class="text-muted">Question Bank:</td>
+                        <td>
+                            {% if current_user.has_qb_access %}
+                            <span class="badge bg-success">Yes</span>
+                            {% else %}
+                            <span class="badge bg-secondary">No</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% if current_user.is_primary_contact %}
+                    <tr>
+                        <td class="text-muted">Status:</td>
+                        <td><span class="badge badge-uk-primary">Primary Contact</span></td>
+                    </tr>
+                    {% endif %}
+                </table>
+                
+                {% if stats.last_sync %}
+                <hr>
+                <div class="small text-muted">
+                    <i class="bi bi-clock me-1"></i>Last data sync: {{ stats.last_sync }}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if current_user.is_super_admin() and stats.total_courses == 0 %}
+<!-- Setup Guide for new installation -->
+<div class="card mt-4 border-info">
+    <div class="card-header bg-info text-white">
+        <i class="bi bi-lightbulb me-2"></i>Getting Started
+    </div>
+    <div class="card-body">
+        <p>Welcome to the TCE Admin System! Here's how to get started:</p>
+        <ol>
+            <li><strong>Import Administrators:</strong> Go to <a href="{{ url_for('admin.import_admins') }}">Admin List → Import</a> to upload your contacts.csv file.</li>
+            <li><strong>Sync Course Data:</strong> Go to <a href="{{ url_for('verification.sync_data') }}">Verification → Sync</a> to upload UKDIG CSV files.</li>
+            <li><strong>Configure Question Banks:</strong> Enable question bank access for colleges that need it.</li>
+        </ol>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,193 @@
+{% extends "base.html" %}
+
+{% block title %}Course Detail{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('verification.list_courses') }}">Verification</a></li>
+            <li class="breadcrumb-item active">{{ course.class_code }}-{{ course.section_id }}</li>
+        </ol>
+    </nav>
+    <h1>{{ course.class_code }}-{{ course.section_id }}</h1>
+    <p class="text-muted mb-0">{{ course.section_title }}</p>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <!-- Course Info -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-book me-2"></i>Course Information
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <table class="table table-sm table-borderless">
+                            <tr>
+                                <td class="text-muted" style="width: 40%">Class Code:</td>
+                                <td><strong>{{ course.class_code }}</strong></td>
+                            </tr>
+                            <tr>
+                                <td class="text-muted">Section ID:</td>
+                                <td>{{ course.section_id }}</td>
+                            </tr>
+                            <tr>
+                                <td class="text-muted">College:</td>
+                                <td>{{ course.college_code }}</td>
+                            </tr>
+                            <tr>
+                                <td class="text-muted">Department:</td>
+                                <td>{{ course.department_id }}</td>
+                            </tr>
+                            <tr>
+                                <td class="text-muted">Crosslisted ID:</td>
+                                <td>{{ course.crosslisted_id or '-' }}</td>
+                            </tr>
+                        </table>
+                    </div>
+                    <div class="col-md-6">
+                        <table class="table table-sm table-borderless">
+                            <tr>
+                                <td class="text-muted" style="width: 40%">Course Start:</td>
+                                <td>{{ course.course_start.strftime('%Y-%m-%d') if course.course_start else '-' }}</td>
+                            </tr>
+                            <tr>
+                                <td class="text-muted">Course End:</td>
+                                <td>{{ course.course_end.strftime('%Y-%m-%d') if course.course_end else '-' }}</td>
+                            </tr>
+                            <tr>
+                                <td class="text-muted">TCE Start:</td>
+                                <td>{{ course.tce_start.strftime('%Y-%m-%d') if course.tce_start else '-' }}</td>
+                            </tr>
+                            <tr>
+                                <td class="text-muted">TCE End:</td>
+                                <td>{{ course.tce_end.strftime('%Y-%m-%d') if course.tce_end else '-' }}</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Instructors -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-person-badge me-2"></i>Instructors
+            </div>
+            <div class="card-body">
+                {% if course.instructors|list %}
+                <table class="table table-sm">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>LinkBlue</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for instructor in course.instructors %}
+                        <tr>
+                            <td>{{ instructor.first_name }} {{ instructor.last_name }}</td>
+                            <td><code>{{ instructor.user_id }}</code></td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p class="text-muted mb-0">No instructors assigned to this course.</p>
+                {% endif %}
+            </div>
+        </div>
+        
+        {% if crosslisted %}
+        <!-- Crosslisted Courses -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-link-45deg me-2"></i>Crosslisted Sections
+            </div>
+            <div class="card-body">
+                <table class="table table-sm">
+                    <thead>
+                        <tr>
+                            <th>Course</th>
+                            <th>Section</th>
+                            <th>Title</th>
+                            <th>Students</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for xl in crosslisted %}
+                        <tr>
+                            <td>
+                                <a href="{{ url_for('verification.course_detail', section_key=xl.section_key) }}">
+                                    {{ xl.class_code }}
+                                </a>
+                            </td>
+                            <td>{{ xl.section_id }}</td>
+                            <td>{{ xl.section_title[:40] }}...</td>
+                            <td>{{ xl.student_count }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    
+    <div class="col-md-4">
+        <!-- Status Card -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-check-circle me-2"></i>TCE Status
+            </div>
+            <div class="card-body text-center">
+                {% if course.marked_for_tce %}
+                    {% if course.student_count == 0 %}
+                    <div class="display-1 text-warning mb-2">
+                        <i class="bi bi-exclamation-triangle"></i>
+                    </div>
+                    <h4 class="text-warning">Zero Enrollment</h4>
+                    <p class="text-muted">Course is marked for TCE but has no students enrolled.</p>
+                    {% else %}
+                    <div class="display-1 text-success mb-2">
+                        <i class="bi bi-check-circle-fill"></i>
+                    </div>
+                    <h4 class="text-success">Ready for TCE</h4>
+                    <p class="text-muted">Course is marked for TCE evaluation.</p>
+                    {% endif %}
+                {% else %}
+                <div class="display-1 text-secondary mb-2">
+                    <i class="bi bi-dash-circle"></i>
+                </div>
+                <h4 class="text-secondary">Not Marked</h4>
+                <p class="text-muted">This course is not marked for TCE in SAP.</p>
+                {% endif %}
+            </div>
+        </div>
+        
+        <!-- Enrollment -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <i class="bi bi-people me-2"></i>Enrollment
+            </div>
+            <div class="card-body text-center">
+                <div class="display-4 {% if course.student_count == 0 %}text-danger{% else %}text-primary{% endif %}">
+                    {{ course.student_count }}
+                </div>
+                <p class="text-muted mb-0">Students Enrolled</p>
+            </div>
+        </div>
+        
+        <!-- Actions -->
+        <div class="card">
+            <div class="card-body">
+                <a href="{{ url_for('verification.list_courses') }}" class="btn btn-outline-secondary w-100">
+                    <i class="bi bi-arrow-left me-1"></i>Back to List
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

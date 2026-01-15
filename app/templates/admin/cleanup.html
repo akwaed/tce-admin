@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+
+{% block title %}Cleanup Admin List{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('admin.list_admins') }}">Admin List</a></li>
+            <li class="breadcrumb-item active">Cleanup</li>
+        </ol>
+    </nav>
+    <h1><i class="bi bi-trash me-2"></i>Cleanup Admin List</h1>
+    <p class="text-muted mb-0">Remove all admins for a fresh re-import</p>
+</div>
+
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <div class="card border-danger">
+            <div class="card-header bg-danger text-white">
+                <i class="bi bi-exclamation-triangle me-2"></i>Warning: Destructive Action
+            </div>
+            <div class="card-body">
+                <div class="alert alert-warning">
+                    <i class="bi bi-info-circle me-2"></i>
+                    This action will <strong>permanently delete</strong> all admin accounts except the system accounts.
+                    Use this to clean up before re-importing from contacts.csv.
+                </div>
+
+                <h5 class="mb-3">Summary</h5>
+                <table class="table table-sm">
+                    <tr>
+                        <td>Total admins in database:</td>
+                        <td><strong>{{ total_admins }}</strong></td>
+                    </tr>
+                    <tr>
+                        <td>Protected accounts (will be kept):</td>
+                        <td><strong>{{ protected_admins|length }}</strong></td>
+                    </tr>
+                    <tr class="table-danger">
+                        <td>Admins to be deleted:</td>
+                        <td><strong>{{ to_delete }}</strong></td>
+                    </tr>
+                </table>
+
+                <h5 class="mb-3">Protected Accounts (will NOT be deleted)</h5>
+                <ul class="list-group mb-4">
+                    {% for admin in protected_admins %}
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        <div>
+                            <strong>{{ admin.full_name }}</strong>
+                            <span class="text-muted">({{ admin.linkblue }})</span>
+                        </div>
+                        <span class="badge bg-primary">{{ admin.role }}</span>
+                    </li>
+                    {% else %}
+                    <li class="list-group-item text-muted">No protected accounts found</li>
+                    {% endfor %}
+                </ul>
+
+                {% if to_delete > 0 %}
+                <form method="POST" action="{{ url_for('admin.cleanup_admins') }}"
+                      onsubmit="return confirm('Are you absolutely sure you want to delete {{ to_delete }} admin accounts? This cannot be undone!');">
+                    <div class="d-flex justify-content-between">
+                        <a href="{{ url_for('admin.list_admins') }}" class="btn btn-outline-secondary">
+                            <i class="bi bi-x-lg me-1"></i>Cancel
+                        </a>
+                        <button type="submit" class="btn btn-danger">
+                            <i class="bi bi-trash me-1"></i>Delete {{ to_delete }} Admins
+                        </button>
+                    </div>
+                </form>
+                {% else %}
+                <div class="alert alert-info">
+                    <i class="bi bi-check-circle me-2"></i>
+                    No admins to delete. The database only contains protected accounts.
+                </div>
+                <a href="{{ url_for('admin.list_admins') }}" class="btn btn-outline-secondary">
+                    <i class="bi bi-arrow-left me-1"></i>Back to Admin List
+                </a>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card mt-4">
+            <div class="card-header">
+                <i class="bi bi-lightbulb me-2"></i>After Cleanup
+            </div>
+            <div class="card-body">
+                <p>After cleanup, you should:</p>
+                <ol>
+                    <li><strong>Run Course Sync</strong> first to ensure the Department table is populated with correct IDs from Courses.csv</li>
+                    <li><strong>Import contacts.csv</strong> - the import will now map department names to the correct CLASS_DEPARTMENT_ID</li>
+                </ol>
+                <p class="mb-0 text-muted small">
+                    Note: Department names in contacts.csv will be automatically mapped to CLASS_DEPARTMENT_ID from the Department table.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

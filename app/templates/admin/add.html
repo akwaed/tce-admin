@@ -1,0 +1,258 @@
+{% extends "base.html" %}
+
+{% block title %}Add Administrator{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('admin.list_admins') }}">Admin List</a></li>
+            <li class="breadcrumb-item active">Add Administrator</li>
+        </ol>
+    </nav>
+    <h1><i class="bi bi-person-plus me-2"></i>Add Administrator</h1>
+</div>
+
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('admin.add_admin') }}">
+                    <!-- Basic Info -->
+                    <h5 class="mb-3"><i class="bi bi-person me-2"></i>Basic Information</h5>
+                    
+                    <div class="mb-3">
+                        <label for="linkblue" class="form-label">LinkBlue <span class="text-danger">*</span></label>
+                        <div class="input-group">
+                            <span class="input-group-text">@</span>
+                            <input type="text" class="form-control" id="linkblue" name="linkblue" 
+                                   required placeholder="e.g., jsmith2" pattern="[a-z0-9]+">
+                        </div>
+                        <div class="form-text">University ID (lowercase, no spaces)</div>
+                    </div>
+                    
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="first_name" class="form-label">First Name <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="first_name" name="first_name" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="last_name" class="form-label">Last Name <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="last_name" name="last_name" required>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="email" class="form-label">Email</label>
+                        <input type="email" class="form-control" id="email" name="email" 
+                               placeholder="Will default to linkblue@uky.edu">
+                    </div>
+                    
+                    <hr class="my-4">
+                    
+                    <!-- Role & Scope -->
+                    <h5 class="mb-3"><i class="bi bi-diagram-3 me-2"></i>Role & Scope</h5>
+                    
+                    <div class="mb-3">
+                        <label for="contact_type" class="form-label">Contact Type <span class="text-danger">*</span></label>
+                        <select class="form-select" id="contact_type" name="contact_type" required>
+                            <option value="College">College</option>
+                            <option value="Department" selected>Department</option>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="college" class="form-label">College <span class="text-danger">*</span></label>
+                        <select class="form-select" id="college" name="college" required>
+                            <option value="">Select College</option>
+                            {% for college in colleges %}
+                            <option value="{{ college.code or college.name }}">{{ college.name or college.code }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3" id="department_group">
+                        <label for="department" class="form-label">Department <span class="text-danger" id="dept_required_star" style="display: none;">*</span></label>
+                        <select class="form-select" id="department" name="department">
+                            <option value="">Select Department</option>
+                        </select>
+                        <div class="form-text" id="dept_help_text"></div>
+                    </div>
+                    
+                    <div class="mb-3" id="primary_group">
+                        <label class="form-label">Primary Contact</label>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="primary_contact" id="primary_no" value="no" checked>
+                            <label class="form-check-label" for="primary_no">No</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="primary_contact" id="primary_yes" value="yes">
+                            <label class="form-check-label" for="primary_yes">Yes (Main contact for this college)</label>
+                        </div>
+                    </div>
+                    
+                    <!-- Course Coordinator Fields -->
+                    <div id="course_fields" style="display: none;">
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="is_course_coordinator" name="is_course_coordinator">
+                                <label class="form-check-label" for="is_course_coordinator">
+                                    This is a Course Coordinator
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <div class="row mb-3" id="course_details" style="display: none;">
+                            <div class="col-md-6">
+                                <label for="prefix" class="form-label">Course Prefix</label>
+                                <input type="text" class="form-control" id="prefix" name="prefix" 
+                                       placeholder="e.g., UK, BAE" maxlength="10">
+                            </div>
+                            <div class="col-md-6">
+                                <label for="course" class="form-label">Course Number</label>
+                                <input type="text" class="form-control" id="course" name="course" 
+                                       placeholder="e.g., 101" maxlength="10">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <hr class="my-4">
+                    
+                    <!-- Access Settings -->
+                    <h5 class="mb-3"><i class="bi bi-shield-check me-2"></i>Access Settings</h5>
+                    
+                    <div class="mb-3">
+                        <label for="level_type" class="form-label">Level Type</label>
+                        <select class="form-select" id="level_type" name="level_type">
+                            <option value="Subject Viewer">Subject Viewer</option>
+                            <option value="Report Viewer">Report Viewer</option>
+                        </select>
+                    </div>
+                    
+                    <div class="row mb-3">
+                        <div class="col-md-4">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="has_dashboard_access" 
+                                       name="has_dashboard_access" value="yes" checked>
+                                <label class="form-check-label" for="has_dashboard_access">
+                                    Dashboard Access
+                                </label>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="has_static_report_access" 
+                                       name="has_static_report_access" value="yes" checked>
+                                <label class="form-check-label" for="has_static_report_access">
+                                    Static Report Access
+                                </label>
+                            </div>
+                        </div>
+                        {% if current_user.is_super_admin() or (current_user.is_college_admin() and current_user.is_primary_contact) %}
+                        <div class="col-md-4">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="has_qb_access" 
+                                       name="has_qb_access" value="yes">
+                                <label class="form-check-label" for="has_qb_access">
+                                    Question Bank Access
+                                </label>
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                    
+                    <hr class="my-4">
+                    
+                    <div class="d-flex justify-content-between">
+                        <a href="{{ url_for('admin.list_admins') }}" class="btn btn-outline-secondary">
+                            <i class="bi bi-x-lg me-1"></i>Cancel
+                        </a>
+                        <button type="submit" class="btn btn-uk-primary">
+                            <i class="bi bi-check-lg me-1"></i>Create Administrator
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const collegeDepts = {{ college_depts|tojson }};
+    const contactType = document.getElementById('contact_type');
+    const collegeSelect = document.getElementById('college');
+    const deptSelect = document.getElementById('department');
+    const deptGroup = document.getElementById('department_group');
+    const primaryGroup = document.getElementById('primary_group');
+    const courseFields = document.getElementById('course_fields');
+    const courseDetailsDiv = document.getElementById('course_details');
+    const isCourseCoordinator = document.getElementById('is_course_coordinator');
+    const deptRequiredStar = document.getElementById('dept_required_star');
+    const deptHelpText = document.getElementById('dept_help_text');
+
+    function updateFormState() {
+        const isCollege = contactType.value === 'College';
+        const isDepartment = contactType.value === 'Department';
+
+        // Show/hide department - always show for Department type, hide for College type
+        deptGroup.style.display = isCollege ? 'none' : 'block';
+
+        // Department is required for Department contacts (they must have a specific department)
+        deptSelect.required = isDepartment;
+        deptRequiredStar.style.display = isDepartment ? 'inline' : 'none';
+        deptHelpText.textContent = isDepartment ? 'Department contacts must be assigned to a specific department' : '';
+
+        // Primary contact only for College type
+        primaryGroup.style.display = isCollege ? 'block' : 'none';
+
+        // Course coordinator only for Department type
+        courseFields.style.display = isCollege ? 'none' : 'block';
+
+        if (isCollege) {
+            deptSelect.value = '';
+        }
+
+        // Update departments dropdown when contact type changes
+        updateDepartments();
+    }
+
+    function updateDepartments() {
+        const college = collegeSelect.value;
+        const isDepartment = contactType.value === 'Department';
+
+        // For Department contacts, no "All" option - they must select a specific department
+        if (isDepartment) {
+            deptSelect.innerHTML = '<option value="">Select Department</option>';
+        } else {
+            deptSelect.innerHTML = '<option value="">All (College-level)</option>';
+        }
+
+        if (college && collegeDepts[college]) {
+            collegeDepts[college].forEach(dept => {
+                const option = document.createElement('option');
+                option.value = dept.id;
+                option.textContent = dept.name;
+                deptSelect.appendChild(option);
+            });
+        }
+    }
+    
+    function updateCourseCoordinator() {
+        courseDetailsDiv.style.display = isCourseCoordinator.checked ? 'block' : 'none';
+    }
+    
+    // Event listeners
+    contactType.addEventListener('change', updateFormState);
+    collegeSelect.addEventListener('change', updateDepartments);
+    if (isCourseCoordinator) {
+        isCourseCoordinator.addEventListener('change', updateCourseCoordinator);
+    }
+    
+    // Initialize
+    updateFormState();
+});
+</script>
+{% endblock %}

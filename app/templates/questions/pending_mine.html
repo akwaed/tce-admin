@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+
+{% block title %}My Pending Requests{% endblock %}
+
+{% block extra_css %}
+<style>
+    .pending-card {
+        background: white;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        padding: 1.25rem;
+        margin-bottom: 1rem;
+    }
+
+    .pending-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: 0.75rem;
+    }
+
+    .change-type {
+        font-size: 0.75rem;
+        padding: 0.25rem 0.75rem;
+        border-radius: 20px;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
+
+    .change-type.add { background: #e8f5e9; color: #2e7d32; }
+    .change-type.remove { background: #ffebee; color: #c62828; }
+    .change-type.edit { background: #e3f2fd; color: #1565c0; }
+
+    .pending-meta {
+        font-size: 0.85rem;
+        color: #666;
+    }
+
+    .pending-details {
+        background: #f8f9fa;
+        border-radius: 4px;
+        padding: 0.75rem 1rem;
+        margin: 0.75rem 0;
+        font-size: 0.9rem;
+    }
+
+    .pending-details .label {
+        font-weight: 600;
+        color: #666;
+        display: inline-block;
+        min-width: 110px;
+    }
+
+    .diff-old {
+        background: #ffebee;
+        padding: 0.5rem;
+        border-radius: 4px;
+        margin-bottom: 0.5rem;
+        text-decoration: line-through;
+        color: #c62828;
+    }
+
+    .diff-new {
+        background: #e8f5e9;
+        padding: 0.5rem;
+        border-radius: 4px;
+        color: #2e7d32;
+    }
+
+    .empty-state {
+        text-align: center;
+        padding: 3rem;
+        color: #999;
+    }
+
+    .empty-state i {
+        font-size: 4rem;
+        margin-bottom: 1rem;
+        opacity: 0.5;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="d-flex justify-content-between align-items-center">
+        <div>
+            <h1><i class="bi bi-hourglass-split me-2"></i>My Pending Requests</h1>
+            <p class="text-muted mb-0">Requests awaiting college or super admin approval</p>
+        </div>
+        <a href="{{ url_for('questions.browser') }}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left me-1"></i>Back to Browser
+        </a>
+    </div>
+</div>
+
+{% if pending_changes %}
+<div class="mb-3">
+    <span class="badge bg-warning text-dark fs-6">{{ pending_changes|length }} pending request(s)</span>
+</div>
+
+{% for change in pending_changes %}
+<div class="pending-card">
+    <div class="pending-header">
+        <div>
+            <span class="change-type {{ change.type }}">
+                {% if change.type == 'add' %}
+                <i class="bi bi-plus-circle me-1"></i>Add
+                {% elif change.type == 'remove' %}
+                <i class="bi bi-dash-circle me-1"></i>Remove
+                {% else %}
+                <i class="bi bi-pencil me-1"></i>Edit
+                {% endif %}
+            </span>
+        </div>
+        <div class="pending-meta text-end">
+            <div class="small">{{ change.submitted_at[:16].replace('T', ' ') }}</div>
+        </div>
+    </div>
+
+    <div class="pending-details">
+        {% if change.type == 'edit' %}
+        <div class="mb-2">
+            <span class="label">Question ID:</span> <code>{{ change.question_id }}</code>
+        </div>
+        {% if change.old_type or change.new_type %}
+        <div class="mb-2">
+            <span class="label">Type:</span>
+            {{ change.old_type or 'Unknown' }} → {{ change.new_type or change.old_type or 'Unknown' }}
+        </div>
+        {% endif %}
+        {% if change.old_value %}
+        <div class="diff-old">
+            <strong>Old:</strong> {{ change.old_value[:200] }}{% if change.old_value|length > 200 %}...{% endif %}
+        </div>
+        {% endif %}
+        {% if change.new_text %}
+        <div class="diff-new">
+            <strong>New:</strong> {{ change.new_text[:200] }}{% if change.new_text|length > 200 %}...{% endif %}
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="mb-1">
+            <span class="label">Unit Type:</span> {{ change.unit_type }}
+        </div>
+        <div class="mb-1">
+            <span class="label">Unit ID:</span> <code>{{ change.unit_id }}</code>
+        </div>
+        <div class="mb-1">
+            <span class="label">Placeholder:</span> <code>{{ change.placeholder }}</code>
+        </div>
+        <div>
+            <span class="label">Question ID:</span> <code>{{ change.question_id }}</code>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endfor %}
+
+{% else %}
+<div class="card">
+    <div class="empty-state">
+        <i class="bi bi-check-circle"></i>
+        <h4>No Pending Requests</h4>
+        <p class="text-muted">You do not have any open question requests.</p>
+        <a href="{{ url_for('questions.browser') }}" class="btn btn-uk-primary mt-3">
+            <i class="bi bi-arrow-left me-1"></i>Back to Question Bank
+        </a>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
