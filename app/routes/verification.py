@@ -236,14 +236,20 @@ def sync_data():
     if not current_user.is_super_admin():
         flash('Only super administrators can sync data.', 'danger')
         return redirect(url_for('verification.list_courses'))
-    
+
     if request.method == 'POST':
-        from app.services.course_sync import CourseSyncService, resolve_datasources_path
+        from app.services.course_sync import CourseSyncService, resolve_datasources_path, get_sync_progress
         import os
-        
+
+        # Check if sync is already running
+        progress = get_sync_progress()
+        if progress['running']:
+            flash('A sync is already in progress. Please wait.', 'warning')
+            return redirect(url_for('verification.sync_data'))
+
         # Check for uploaded files or use default path
         datasources_path = './datasources'
-        
+
         # Handle file uploads
         files_uploaded = False
         if 'courses_file' in request.files and request.files['courses_file'].filename:
@@ -262,31 +268,39 @@ def sync_data():
             os.makedirs(datasources_path, exist_ok=True)
             request.files['users_file'].save(os.path.join(datasources_path, 'Users.csv'))
             files_uploaded = True
-        
+
         try:
             resolved_path = resolve_datasources_path(datasources_path)
             if resolved_path != datasources_path:
                 flash(f'Using datasources from {resolved_path}.', 'info')
             sync = CourseSyncService(resolved_path)
             result = sync.sync_all()
-            
+
             if result['success']:
                 flash(f"Sync completed! Added {result['stats']['courses_added']} courses, "
                       f"{result['stats']['instructors_added']} instructors. "
                       f"{result['stats']['students_counted']} students counted.", 'success')
             else:
                 flash('Sync completed with errors. Check the logs.', 'warning')
-                
+
         except Exception as e:
             flash(f'Sync failed: {str(e)}', 'danger')
-        
+
         return redirect(url_for('verification.list_courses'))
-    
+
     # GET - show sync form
     last_sync = SyncLog.query.filter_by(status='completed').order_by(SyncLog.completed_at.desc()).first()
     sync_logs = SyncLog.query.order_by(SyncLog.started_at.desc()).limit(10).all()
-    
+
     return render_template('verification/sync.html', last_sync=last_sync, sync_logs=sync_logs)
+
+
+@verification_bp.route('/api/sync/progress')
+@login_required
+def get_sync_progress_api():
+    """API endpoint to get current sync progress"""
+    from app.services.course_sync import get_sync_progress
+    return jsonify(get_sync_progress())
 
 
 @verification_bp.route('/reset-departments', methods=['POST'])
