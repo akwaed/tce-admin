@@ -130,10 +130,14 @@ def azure_callback():
 
 
 @auth_bp.route('/logout')
-@login_required
 def logout():
     """Logout user"""
-    logout_user()
+    if current_user.is_authenticated:
+        logout_user()
     session.clear()
     flash('You have been logged out.', 'info')
-    return redirect(url_for('auth.login'))
+    response = redirect(url_for('auth.login'))
+    # Clear the remember_me cookie explicitly
+    response.delete_cookie('remember_token')
+    response.delete_cookie('session')
+    return response
