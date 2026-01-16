@@ -17,13 +17,24 @@
                     <p class="text-muted">Teacher Course Evaluation Administration</p>
                 </div>
                 
+                <!-- Azure AD Login - MOVED TO TOP -->
+                <div class="text-center mb-4">
+                    <a href="{{ url_for('auth.azure_login') }}" class="btn btn-uk-primary w-100 py-3">
+                        <i class="bi bi-microsoft me-2"></i>Sign in with UK Account
+                    </a>
+                    <p class="text-muted small mt-2 mb-0">University Single Sign-On</p>
+                </div>
+                
+                <hr>
+                <p class="text-center text-muted small mb-3">Super Admin Fallback</p>
+                
                 <form method="POST" action="{{ url_for('auth.login') }}">
                     <div class="mb-3">
                         <label for="username" class="form-label">Username</label>
                         <div class="input-group">
                             <span class="input-group-text"><i class="bi bi-person"></i></span>
                             <input type="text" class="form-control" id="username" name="username" 
-                                   placeholder="Enter your LinkBlue or admin username" required autofocus>
+                                   placeholder="Admin username" required autofocus>
                         </div>
                     </div>
                     
@@ -32,23 +43,14 @@
                         <div class="input-group">
                             <span class="input-group-text"><i class="bi bi-lock"></i></span>
                             <input type="password" class="form-control" id="password" name="password" 
-                                   placeholder="Enter your password" required>
+                                   placeholder="Password" required>
                         </div>
                     </div>
                     
-                    <button type="submit" class="btn btn-uk-primary w-100 py-2">
-                        <i class="bi bi-box-arrow-in-right me-2"></i>Sign In
+                    <button type="submit" class="btn btn-outline-secondary w-100">
+                        <i class="bi bi-box-arrow-in-right me-2"></i>Admin Login
                     </button>
                 </form>
-                
-                <!-- Azure AD Login -->
-                <div class="text-center mt-4">
-                    <hr>
-                    <p class="text-muted small mb-2">University Single Sign-On</p>
-                    <a href="/.auth/login/aad" class="btn btn-outline-primary w-100">
-                        <i class="bi bi-microsoft me-2"></i>Sign in with UK Account
-                    </a>
-                </div>
             </div>
         </div>
         

@@ -7,7 +7,17 @@ from datetime import timedelta
 
 class Config:
     """Base configuration"""
-    SECRET_KEY = os.environ.get('SECRET_KEY') or 'tce-admin-dev-key-change-in-production'
+    SECRET_KEY = os.environ.get('SECRET_KEY')
+    
+    # Azure AD Configuration
+    AZURE_AD_TENANT_ID = os.environ.get('AZURE_AD_TENANT_ID')
+    AZURE_AD_CLIENT_ID = os.environ.get('AZURE_AD_CLIENT_ID')
+    AZURE_AD_CLIENT_SECRET = os.environ.get('AZURE_AD_CLIENT_SECRET')
+    AZURE_AD_REDIRECT_URI = os.environ.get('AZURE_AD_REDIRECT_URI')
+
+    # Session configuration for MSAL
+    SESSION_TYPE = os.environ.get('SESSION_TYPE', 'filesystem')
+    SESSION_PERMANENT = False
     
     # Database
     basedir = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
