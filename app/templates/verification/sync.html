@@ -30,6 +30,7 @@
                             <li><strong>Courses.csv</strong> - Course/section information (required)</li>
                             <li><strong>Instructor_Course.csv</strong> - Instructor assignments (determines TCE marking)</li>
                             <li><strong>Student_Course.csv</strong> - Student enrollments (for counting)</li>
+                            <li><strong>Users.csv</strong> - Instructor directory data (name/email lookup)</li>
                         </ul>
                     </div>
                     
@@ -49,6 +50,12 @@
                         <label for="students_file" class="form-label">Student_Course.csv</label>
                         <input type="file" class="form-control" id="students_file" name="students_file" accept=".csv">
                         <div class="form-text">Used to count students per course</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="users_file" class="form-label">Users.csv</label>
+                        <input type="file" class="form-control" id="users_file" name="users_file" accept=".csv">
+                        <div class="form-text">Used to populate instructor names and emails</div>
                     </div>
                     
                     <div class="d-flex justify-content-between">
