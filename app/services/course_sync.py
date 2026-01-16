@@ -15,11 +15,31 @@ from app.models import db
 from app.models.course import Course, Instructor, College, Department, SyncLog
 
 
+def resolve_datasources_path(primary_path='./datasources'):
+    """Resolve the datasources directory, handling common misspellings."""
+    expected_files = {'Courses.csv', 'Instructor_Course.csv', 'Student_Course.csv', 'Users.csv'}
+    candidates = [primary_path]
+
+    if primary_path.endswith('datasources'):
+        candidates.append(primary_path.replace('datasources', 'datasourses'))
+    elif primary_path.endswith('datasourses'):
+        candidates.append(primary_path.replace('datasourses', 'datasources'))
+
+    for candidate in candidates:
+        if not os.path.isdir(candidate):
+            continue
+        existing = set(os.listdir(candidate))
+        if expected_files.intersection(existing):
+            return candidate
+
+    return primary_path
+
+
 class CourseSyncService:
     """Service for syncing course data from CSV files to database"""
-    
+
     def __init__(self, datasources_path='./datasources'):
-        self.datasources_path = datasources_path
+        self.datasources_path = resolve_datasources_path(datasources_path)
         self.errors = []
         self.stats = {
             'courses_added': 0,

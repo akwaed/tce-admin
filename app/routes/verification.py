@@ -238,7 +238,7 @@ def sync_data():
         return redirect(url_for('verification.list_courses'))
     
     if request.method == 'POST':
-        from app.services.course_sync import CourseSyncService
+        from app.services.course_sync import CourseSyncService, resolve_datasources_path
         import os
         
         # Check for uploaded files or use default path
@@ -258,9 +258,16 @@ def sync_data():
             os.makedirs(datasources_path, exist_ok=True)
             request.files['students_file'].save(os.path.join(datasources_path, 'Student_Course.csv'))
             files_uploaded = True
+        if 'users_file' in request.files and request.files['users_file'].filename:
+            os.makedirs(datasources_path, exist_ok=True)
+            request.files['users_file'].save(os.path.join(datasources_path, 'Users.csv'))
+            files_uploaded = True
         
         try:
-            sync = CourseSyncService(datasources_path)
+            resolved_path = resolve_datasources_path(datasources_path)
+            if resolved_path != datasources_path:
+                flash(f'Using datasources from {resolved_path}.', 'info')
+            sync = CourseSyncService(resolved_path)
             result = sync.sync_all()
             
             if result['success']:
@@ -294,7 +301,7 @@ def reset_departments():
         flash('Only super administrators can reset departments.', 'danger')
         return redirect(url_for('verification.sync_data'))
 
-    from app.services.course_sync import CourseSyncService
+    from app.services.course_sync import CourseSyncService, resolve_datasources_path
     from app.models.course import Department
 
     try:
@@ -307,7 +314,10 @@ def reset_departments():
 
         # Resync to recreate departments from Courses.csv
         datasources_path = './datasources'
-        sync = CourseSyncService(datasources_path)
+        resolved_path = resolve_datasources_path(datasources_path)
+        if resolved_path != datasources_path:
+            flash(f'Using datasources from {resolved_path}.', 'info')
+        sync = CourseSyncService(resolved_path)
         result = sync.sync_all()
 
         if result['success']:
