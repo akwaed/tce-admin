@@ -9,10 +9,40 @@ CSV Files Expected:
 """
 import csv
 import os
+import threading
+import time
 from datetime import datetime
 from collections import defaultdict
 from app.models import db
 from app.models.course import Course, Instructor, College, Department, SyncLog
+
+# Global sync progress tracking
+_sync_progress = {
+    'running': False,
+    'current_step': '',
+    'step_number': 0,
+    'total_steps': 4,
+    'records_processed': 0,
+    'started_at': None,
+    'error': None
+}
+_sync_lock = threading.Lock()
+
+
+def get_sync_progress():
+    """Get current sync progress."""
+    with _sync_lock:
+        return _sync_progress.copy()
+
+
+def _update_progress(step, step_number, records=0, error=None):
+    """Update sync progress."""
+    with _sync_lock:
+        _sync_progress['current_step'] = step
+        _sync_progress['step_number'] = step_number
+        _sync_progress['records_processed'] += records
+        if error:
+            _sync_progress['error'] = error
 
 
 def resolve_datasources_path(primary_path='./datasources'):
@@ -52,44 +82,78 @@ class CourseSyncService:
     
     def sync_all(self):
         """Run full sync of all data"""
+        global _sync_progress
+
+        # Initialize progress
+        with _sync_lock:
+            _sync_progress = {
+                'running': True,
+                'current_step': 'Initializing...',
+                'step_number': 0,
+                'total_steps': 4,
+                'records_processed': 0,
+                'started_at': datetime.utcnow().isoformat(),
+                'error': None
+            }
+
         log = SyncLog(sync_type='full', status='running')
         db.session.add(log)
         db.session.commit()
-        
+
         try:
             # 1. Load courses first (creates colleges/departments)
+            _update_progress('Loading courses...', 1)
             self.sync_courses()
-            
+            _update_progress('Loading courses...', 1, self.stats['courses_added'] + self.stats['courses_updated'])
+
             # 2. Load instructor assignments (determines TCE marking)
+            _update_progress('Loading instructors...', 2)
             self.sync_instructors()
-            
+            _update_progress('Loading instructors...', 2, self.stats['instructors_added'])
+
             # 3. Count students per course
+            _update_progress('Counting students...', 3)
             self.sync_student_counts()
-            
+            _update_progress('Counting students...', 3, self.stats['students_counted'])
+
+            # 4. Finalize
+            _update_progress('Finalizing...', 4)
+
             # Update sync log
             log.status = 'completed'
             log.completed_at = datetime.utcnow()
             log.records_processed = (
-                self.stats['courses_added'] + 
-                self.stats['courses_updated'] + 
+                self.stats['courses_added'] +
+                self.stats['courses_updated'] +
                 self.stats['instructors_added']
             )
             if self.errors:
                 import json
                 log.errors = json.dumps(self.errors[:50])  # Keep first 50 errors
-            
+
             db.session.commit()
-            
+
+            # Mark as complete
+            with _sync_lock:
+                _sync_progress['running'] = False
+                _sync_progress['current_step'] = 'Complete'
+                _sync_progress['step_number'] = 4
+
             return {
                 'success': True,
                 'stats': self.stats,
                 'errors': self.errors[:10]
             }
-            
+
         except Exception as e:
             log.status = 'failed'
             log.errors = str(e)
             db.session.commit()
+
+            with _sync_lock:
+                _sync_progress['running'] = False
+                _sync_progress['error'] = str(e)
+
             raise
     
     def sync_courses(self):

@@ -14,6 +14,42 @@
     <p class="text-muted mb-0">Import course data from UKDIG CSV files</p>
 </div>
 
+<!-- Sync Progress Modal -->
+<div class="modal fade" id="syncProgressModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-arrow-repeat me-2 spin"></i>Syncing Data...</h5>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span id="syncStepText">Initializing...</span>
+                        <span id="syncStepCount">0/4</span>
+                    </div>
+                    <div class="progress" style="height: 20px;">
+                        <div id="syncProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-primary"
+                             role="progressbar" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div class="text-muted small">
+                    <i class="bi bi-database me-1"></i>Records processed: <span id="syncRecordsCount">0</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.spin {
+    animation: spin 1s linear infinite;
+}
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+</style>
+
 <div class="row">
     <div class="col-md-8">
         <!-- Upload Form -->
@@ -161,4 +197,70 @@
         </div>
     </div>
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const progressModal = new bootstrap.Modal(document.getElementById('syncProgressModal'));
+    const progressBar = document.getElementById('syncProgressBar');
+    const stepText = document.getElementById('syncStepText');
+    const stepCount = document.getElementById('syncStepCount');
+    const recordsCount = document.getElementById('syncRecordsCount');
+
+    let pollInterval = null;
+
+    function updateProgress(data) {
+        const percent = (data.step_number / data.total_steps) * 100;
+        progressBar.style.width = percent + '%';
+        stepText.textContent = data.current_step;
+        stepCount.textContent = data.step_number + '/' + data.total_steps;
+        recordsCount.textContent = data.records_processed.toLocaleString();
+
+        if (data.error) {
+            progressBar.classList.remove('bg-primary');
+            progressBar.classList.add('bg-danger');
+            stepText.textContent = 'Error: ' + data.error;
+        }
+    }
+
+    function pollProgress() {
+        fetch('{{ url_for("verification.get_sync_progress_api") }}')
+            .then(response => response.json())
+            .then(data => {
+                updateProgress(data);
+                if (!data.running) {
+                    clearInterval(pollInterval);
+                    // Wait a moment then reload page
+                    setTimeout(() => {
+                        window.location.href = '{{ url_for("verification.list_courses") }}';
+                    }, 1000);
+                }
+            })
+            .catch(err => console.error('Progress poll error:', err));
+    }
+
+    // Handle form submissions
+    document.querySelectorAll('form[method="POST"]').forEach(form => {
+        // Skip the reset departments form
+        if (form.action.includes('reset-departments')) return;
+
+        form.addEventListener('submit', function(e) {
+            // Show progress modal
+            progressModal.show();
+            // Start polling
+            pollInterval = setInterval(pollProgress, 500);
+        });
+    });
+
+    // Check if sync is already running on page load
+    fetch('{{ url_for("verification.get_sync_progress_api") }}')
+        .then(response => response.json())
+        .then(data => {
+            if (data.running) {
+                progressModal.show();
+                updateProgress(data);
+                pollInterval = setInterval(pollProgress, 500);
+            }
+        });
+});
+</script>
 {% endblock %}

@@ -120,6 +120,11 @@ def add_admin():
         first_name = request.form.get('first_name', '').strip()
         last_name = request.form.get('last_name', '').strip()
         email = request.form.get('email', '').strip()
+
+        # Check if creating a super admin (only super admins can do this)
+        admin_role = request.form.get('admin_role', 'regular')
+        is_creating_super_admin = admin_role == 'super_admin' and current_user.is_super_admin()
+
         contact_type = request.form.get('contact_type', 'Department')
         college_code = request.form.get('college', '').strip()
         department_id = request.form.get('department', '').strip()
@@ -127,7 +132,7 @@ def add_admin():
         level_type = request.form.get('level_type', 'Subject Viewer')
         course_prefix = request.form.get('prefix', '').strip()
         course_number = request.form.get('course', '').strip()
-        
+
         # Access flags
         has_dashboard = request.form.get('has_dashboard_access') == 'yes'
         has_static_report = request.form.get('has_static_report_access') == 'yes'
@@ -135,42 +140,62 @@ def add_admin():
             current_user.is_super_admin() or
             (current_user.is_college_admin() and current_user.is_primary_contact)
         ) else False
-        
+
         # Validation
         if not linkblue or not first_name or not last_name:
             flash('LinkBlue, First Name, and Last Name are required.', 'danger')
             return redirect(url_for('admin.add_admin'))
-        
+
         # Check for duplicate
         existing = Admin.query.filter_by(linkblue=linkblue).first()
         if existing:
             flash(f'An admin with LinkBlue "{linkblue}" already exists.', 'danger')
             return redirect(url_for('admin.add_admin'))
-        
-        # Permission check - can only add admins within your scope
-        if not current_user.is_super_admin():
-            if college_code != current_user.college_code:
-                flash('You can only add admins within your college.', 'danger')
+
+        # Handle super admin creation
+        if is_creating_super_admin:
+            password = request.form.get('password', '')
+            password_confirm = request.form.get('password_confirm', '')
+
+            if not password or len(password) < 8:
+                flash('Super admin requires a password of at least 8 characters.', 'danger')
                 return redirect(url_for('admin.add_admin'))
-        
-        # Determine role
-        if contact_type == 'College' or department_id == 'All' or not department_id:
-            role = 'college_admin'
+
+            if password != password_confirm:
+                flash('Passwords do not match.', 'danger')
+                return redirect(url_for('admin.add_admin'))
+
+            role = 'super_admin'
+            college_code = None
             department_id = None
+            contact_type = None
+            is_primary = False
+            has_qb = True
         else:
-            role = 'dept_admin'
-        
-        # Primary contact validation
-        if is_primary and contact_type == 'College':
-            existing_primary = Admin.query.filter_by(
-                college_code=college_code,
-                contact_type='College',
-                is_primary_contact=True,
-                is_active=True
-            ).first()
-            if existing_primary:
-                flash(f'College {college_code} already has a primary contact: {existing_primary.full_name}', 'warning')
-        
+            # Permission check - can only add admins within your scope
+            if not current_user.is_super_admin():
+                if college_code != current_user.college_code:
+                    flash('You can only add admins within your college.', 'danger')
+                    return redirect(url_for('admin.add_admin'))
+
+            # Determine role
+            if contact_type == 'College' or department_id == 'All' or not department_id:
+                role = 'college_admin'
+                department_id = None
+            else:
+                role = 'dept_admin'
+
+            # Primary contact validation
+            if is_primary and contact_type == 'College':
+                existing_primary = Admin.query.filter_by(
+                    college_code=college_code,
+                    contact_type='College',
+                    is_primary_contact=True,
+                    is_active=True
+                ).first()
+                if existing_primary:
+                    flash(f'College {college_code} already has a primary contact: {existing_primary.full_name}', 'warning')
+
         # Create admin
         admin = Admin(
             linkblue=linkblue,
@@ -190,10 +215,14 @@ def add_admin():
             has_qb_access=has_qb,
             created_by_id=current_user.id
         )
-        
+
+        # Set password for super admin
+        if is_creating_super_admin:
+            admin.set_password(password)
+
         db.session.add(admin)
         db.session.commit()
-        
+
         flash(f'Admin "{admin.full_name}" created successfully.', 'success')
         return redirect(url_for('admin.list_admins'))
     
@@ -225,52 +254,115 @@ def edit_admin(admin_id):
         admin.first_name = request.form.get('first_name', admin.first_name).strip()
         admin.last_name = request.form.get('last_name', admin.last_name).strip()
         admin.email = request.form.get('email', admin.email).strip()
-        admin.contact_type = request.form.get('contact_type', admin.contact_type)
-        admin.level_type = request.form.get('level_type', admin.level_type)
-        admin.course_prefix = request.form.get('prefix', '').strip() or None
-        admin.course_number = request.form.get('course', '').strip() or None
-        
-        # College and department - only super admin can change these freely
-        new_college = request.form.get('college', '').strip()
-        new_department = request.form.get('department', '').strip()
-        
-        if current_user.is_super_admin():
-            admin.college_code = new_college
-            admin.department_id = new_department if new_department and new_department != 'All' else None
-        elif current_user.is_college_admin() and current_user.is_primary_contact:
-            # Primary college admin can reassign within their college
-            if new_college == current_user.college_code:
+
+        # Handle role change (only super admins can change roles, and not their own)
+        if current_user.is_super_admin() and admin.id != current_user.id:
+            new_admin_role = request.form.get('admin_role', 'regular')
+            was_super_admin = admin.role == 'super_admin'
+            is_becoming_super_admin = new_admin_role == 'super_admin'
+
+            if is_becoming_super_admin and not was_super_admin:
+                # Elevating to super admin
+                password = request.form.get('password', '')
+                password_confirm = request.form.get('password_confirm', '')
+
+                # Password required when elevating (unless they already have one)
+                if password:
+                    if len(password) < 8:
+                        flash('Password must be at least 8 characters.', 'danger')
+                        return redirect(url_for('admin.edit_admin', admin_id=admin_id))
+                    if password != password_confirm:
+                        flash('Passwords do not match.', 'danger')
+                        return redirect(url_for('admin.edit_admin', admin_id=admin_id))
+                    admin.set_password(password)
+
+                admin.role = 'super_admin'
+                admin.college_code = None
+                admin.department_id = None
+                admin.contact_type = None
+                admin.is_primary_contact = False
+                admin.has_qb_access = True
+
+                db.session.commit()
+                flash(f'Admin "{admin.full_name}" elevated to Super Administrator.', 'success')
+                return redirect(url_for('admin.list_admins'))
+
+            elif not is_becoming_super_admin and was_super_admin:
+                # Demoting from super admin - need college assignment
+                new_college = request.form.get('college', '').strip()
+                if not new_college:
+                    flash('Must assign a college when demoting from super admin.', 'danger')
+                    return redirect(url_for('admin.edit_admin', admin_id=admin_id))
+
+                admin.role = 'college_admin'
+                admin.college_code = new_college
+                admin.contact_type = 'College'
+
+            elif is_becoming_super_admin and was_super_admin:
+                # Already super admin - just update password if provided
+                password = request.form.get('password', '')
+                if password:
+                    password_confirm = request.form.get('password_confirm', '')
+                    if len(password) < 8:
+                        flash('Password must be at least 8 characters.', 'danger')
+                        return redirect(url_for('admin.edit_admin', admin_id=admin_id))
+                    if password != password_confirm:
+                        flash('Passwords do not match.', 'danger')
+                        return redirect(url_for('admin.edit_admin', admin_id=admin_id))
+                    admin.set_password(password)
+
+                db.session.commit()
+                flash(f'Admin "{admin.full_name}" updated successfully.', 'success')
+                return redirect(url_for('admin.list_admins'))
+
+        # Regular admin fields (skip if super admin)
+        if admin.role != 'super_admin':
+            admin.contact_type = request.form.get('contact_type', admin.contact_type)
+            admin.level_type = request.form.get('level_type', admin.level_type)
+            admin.course_prefix = request.form.get('prefix', '').strip() or None
+            admin.course_number = request.form.get('course', '').strip() or None
+
+            # College and department - only super admin can change these freely
+            new_college = request.form.get('college', '').strip()
+            new_department = request.form.get('department', '').strip()
+
+            if current_user.is_super_admin():
+                admin.college_code = new_college
                 admin.department_id = new_department if new_department and new_department != 'All' else None
-        
-        # Determine role based on contact type and department
-        if admin.contact_type == 'College' or not admin.department_id:
-            admin.role = 'college_admin'
-            admin.department_id = None
-        else:
-            admin.role = 'dept_admin'
-        
-        # Primary contact - with validation
-        is_primary = request.form.get('primary_contact') == 'yes'
-        if is_primary and admin.contact_type == 'College' and not admin.is_primary_contact:
-            existing_primary = Admin.query.filter(
-                Admin.id != admin.id,
-                Admin.college_code == admin.college_code,
-                Admin.contact_type == 'College',
-                Admin.is_primary_contact == True,
-                Admin.is_active == True
-            ).first()
-            if existing_primary:
-                flash(f'Note: {existing_primary.full_name} is already the primary contact for this college.', 'warning')
-        admin.is_primary_contact = is_primary
-        
+            elif current_user.is_college_admin() and current_user.is_primary_contact:
+                # Primary college admin can reassign within their college
+                if new_college == current_user.college_code:
+                    admin.department_id = new_department if new_department and new_department != 'All' else None
+
+            # Determine role based on contact type and department
+            if admin.contact_type == 'College' or not admin.department_id:
+                admin.role = 'college_admin'
+                admin.department_id = None
+            else:
+                admin.role = 'dept_admin'
+
+            # Primary contact - with validation
+            is_primary = request.form.get('primary_contact') == 'yes'
+            if is_primary and admin.contact_type == 'College' and not admin.is_primary_contact:
+                existing_primary = Admin.query.filter(
+                    Admin.id != admin.id,
+                    Admin.college_code == admin.college_code,
+                    Admin.contact_type == 'College',
+                    Admin.is_primary_contact == True,
+                    Admin.is_active == True
+                ).first()
+                if existing_primary:
+                    flash(f'Note: {existing_primary.full_name} is already the primary contact for this college.', 'warning')
+            admin.is_primary_contact = is_primary
+
         # Access flags
         admin.has_dashboard_access = request.form.get('has_dashboard_access') == 'yes'
         admin.has_static_report_access = request.form.get('has_static_report_access') == 'yes'
-        
+
         # QB access - super admin or primary college admin only
         if current_user.is_super_admin() or (current_user.is_college_admin() and current_user.is_primary_contact):
             admin.has_qb_access = request.form.get('has_qb_access') == 'yes'
-        
+
         db.session.commit()
         flash(f'Admin "{admin.full_name}" updated successfully.', 'success')
         return redirect(url_for('admin.list_admins'))

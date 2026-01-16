@@ -10,7 +10,8 @@ env/
 
 # Environment files
 .env
-.env.*
+.env.local
+!.env.example
 
 # Runtime data (keep folder)
 instance/*
