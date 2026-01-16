@@ -7,6 +7,7 @@ from flask_login import LoginManager
 from app.config import config
 from app.models import db
 from flask_session import Session
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 # After db.init_app(app) and login_manager.init_app(app), add:
 #Session(app)
@@ -21,6 +22,7 @@ def create_app(config_name='default'):
     app = Flask(__name__)
     app.config.from_object(config[config_name])
     config[config_name].init_app(app)
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1, x_prefix=1)
     
     # Initialize extensions
     db.init_app(app)
