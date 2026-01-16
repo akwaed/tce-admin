@@ -49,10 +49,22 @@
                     </div>
                     
                     <hr class="my-4">
-                    
+
                     <!-- Role & Scope -->
                     <h5 class="mb-3"><i class="bi bi-diagram-3 me-2"></i>Role & Scope</h5>
-                    
+
+                    {% if current_user.is_super_admin() %}
+                    <div class="mb-3">
+                        <label for="admin_role" class="form-label">Administrator Role <span class="text-danger">*</span></label>
+                        <select class="form-select" id="admin_role" name="admin_role" required>
+                            <option value="regular" selected>Regular Admin (College/Department)</option>
+                            <option value="super_admin">Super Administrator (Full System Access)</option>
+                        </select>
+                        <div class="form-text" id="role_help_text">Regular admins are scoped to a college or department</div>
+                    </div>
+                    {% endif %}
+
+                    <div id="regular_admin_fields">
                     <div class="mb-3">
                         <label for="contact_type" class="form-label">Contact Type <span class="text-danger">*</span></label>
                         <select class="form-select" id="contact_type" name="contact_type" required>
@@ -101,23 +113,45 @@
                                 </label>
                             </div>
                         </div>
-                        
+
                         <div class="row mb-3" id="course_details" style="display: none;">
                             <div class="col-md-6">
                                 <label for="prefix" class="form-label">Course Prefix</label>
-                                <input type="text" class="form-control" id="prefix" name="prefix" 
+                                <input type="text" class="form-control" id="prefix" name="prefix"
                                        placeholder="e.g., UK, BAE" maxlength="10">
                             </div>
                             <div class="col-md-6">
                                 <label for="course" class="form-label">Course Number</label>
-                                <input type="text" class="form-control" id="course" name="course" 
+                                <input type="text" class="form-control" id="course" name="course"
                                        placeholder="e.g., 101" maxlength="10">
                             </div>
                         </div>
                     </div>
-                    
+                    </div><!-- end regular_admin_fields -->
+
+                    <!-- Super Admin Password (only shown when creating super admin) -->
+                    {% if current_user.is_super_admin() %}
+                    <div id="super_admin_fields" style="display: none;">
+                        <div class="alert alert-warning">
+                            <i class="bi bi-exclamation-triangle me-2"></i>
+                            <strong>Super Administrator</strong> - This user will have full system access to all colleges, departments, and administrative functions.
+                        </div>
+                        <div class="mb-3">
+                            <label for="password" class="form-label">Password <span class="text-danger">*</span></label>
+                            <input type="password" class="form-control" id="password" name="password"
+                                   minlength="8" placeholder="Minimum 8 characters">
+                            <div class="form-text">Super admins can log in with username/password</div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="password_confirm" class="form-label">Confirm Password <span class="text-danger">*</span></label>
+                            <input type="password" class="form-control" id="password_confirm" name="password_confirm"
+                                   minlength="8">
+                        </div>
+                    </div>
+                    {% endif %}
+
                     <hr class="my-4">
-                    
+
                     <!-- Access Settings -->
                     <h5 class="mb-3"><i class="bi bi-shield-check me-2"></i>Access Settings</h5>
                     
@@ -182,6 +216,9 @@
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     const collegeDepts = {{ college_depts|tojson }};
+    const adminRole = document.getElementById('admin_role');
+    const regularAdminFields = document.getElementById('regular_admin_fields');
+    const superAdminFields = document.getElementById('super_admin_fields');
     const contactType = document.getElementById('contact_type');
     const collegeSelect = document.getElementById('college');
     const deptSelect = document.getElementById('department');
@@ -192,6 +229,41 @@ document.addEventListener('DOMContentLoaded', function() {
     const isCourseCoordinator = document.getElementById('is_course_coordinator');
     const deptRequiredStar = document.getElementById('dept_required_star');
     const deptHelpText = document.getElementById('dept_help_text');
+    const roleHelpText = document.getElementById('role_help_text');
+    const passwordField = document.getElementById('password');
+    const passwordConfirmField = document.getElementById('password_confirm');
+
+    function updateRoleFields() {
+        if (!adminRole) return; // Not a super admin user
+
+        const isSuperAdmin = adminRole.value === 'super_admin';
+
+        // Show/hide appropriate fields
+        regularAdminFields.style.display = isSuperAdmin ? 'none' : 'block';
+        if (superAdminFields) {
+            superAdminFields.style.display = isSuperAdmin ? 'block' : 'none';
+        }
+
+        // Update help text
+        if (roleHelpText) {
+            roleHelpText.textContent = isSuperAdmin
+                ? 'Super admins have full access to all system functions'
+                : 'Regular admins are scoped to a college or department';
+        }
+
+        // Toggle required fields
+        if (isSuperAdmin) {
+            collegeSelect.required = false;
+            contactType.required = false;
+            if (passwordField) passwordField.required = true;
+            if (passwordConfirmField) passwordConfirmField.required = true;
+        } else {
+            collegeSelect.required = true;
+            contactType.required = true;
+            if (passwordField) passwordField.required = false;
+            if (passwordConfirmField) passwordConfirmField.required = false;
+        }
+    }
 
     function updateFormState() {
         const isCollege = contactType.value === 'College';
@@ -239,19 +311,40 @@ document.addEventListener('DOMContentLoaded', function() {
             });
         }
     }
-    
+
     function updateCourseCoordinator() {
         courseDetailsDiv.style.display = isCourseCoordinator.checked ? 'block' : 'none';
     }
-    
+
+    // Password validation
+    function validatePasswords() {
+        if (passwordField && passwordConfirmField) {
+            if (passwordField.value !== passwordConfirmField.value) {
+                passwordConfirmField.setCustomValidity('Passwords do not match');
+            } else {
+                passwordConfirmField.setCustomValidity('');
+            }
+        }
+    }
+
     // Event listeners
+    if (adminRole) {
+        adminRole.addEventListener('change', updateRoleFields);
+    }
     contactType.addEventListener('change', updateFormState);
     collegeSelect.addEventListener('change', updateDepartments);
     if (isCourseCoordinator) {
         isCourseCoordinator.addEventListener('change', updateCourseCoordinator);
     }
-    
+    if (passwordField) {
+        passwordField.addEventListener('input', validatePasswords);
+    }
+    if (passwordConfirmField) {
+        passwordConfirmField.addEventListener('input', validatePasswords);
+    }
+
     // Initialize
+    updateRoleFields();
     updateFormState();
 });
 </script>
