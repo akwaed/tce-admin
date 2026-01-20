@@ -53,7 +53,7 @@ def list_courses():
             status_conditions.append(Course.marked_for_tce == False)
         if 'zero_enrollment' in tce_filters:
             status_conditions.append(db.and_(Course.marked_for_tce == True, Course.student_count == 0))
-        if 'marked_with_students' in tce_filters:
+        if 'non_zero_enrollment' in tce_filters:
             status_conditions.append(db.and_(Course.marked_for_tce == True, Course.student_count > 0))
         if status_conditions:
             query = query.filter(db.or_(*status_conditions))
@@ -178,7 +178,7 @@ def export_courses():
             status_conditions.append(Course.marked_for_tce == False)
         if 'zero_enrollment' in tce_filters:
             status_conditions.append(db.and_(Course.marked_for_tce == True, Course.student_count == 0))
-        if 'marked_with_students' in tce_filters:
+        if 'non_zero_enrollment' in tce_filters:
             status_conditions.append(db.and_(Course.marked_for_tce == True, Course.student_count > 0))
         if status_conditions:
             query = query.filter(db.or_(*status_conditions))
@@ -389,7 +389,7 @@ def get_verification_stats(user, college_filter='', dept_filter=''):
         Course.marked_for_tce == True,
         Course.student_count == 0
     ).count()
-    marked_with_students = query.filter(
+    non_zero_enrollment = query.filter(
         Course.marked_for_tce == True,
         Course.student_count > 0
     ).count()
@@ -418,7 +418,7 @@ def get_verification_stats(user, college_filter='', dept_filter=''):
         'marked': marked,
         'not_marked': not_marked,
         'zero_enrollment': zero_enrollment,
-        'marked_with_students': marked_with_students,
+        'non_zero_enrollment': non_zero_enrollment,
         'total_students': total_students,
         'marked_percentage': round((marked / total * 100) if total > 0 else 0, 1)
     }
