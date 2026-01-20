@@ -34,6 +34,41 @@ def qb_access_required(f):
     return decorated_function
 
 
+def api_login_required(f):
+    """Decorator for API endpoints that returns JSON errors instead of redirects for auth failures"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not current_user.is_authenticated:
+            return jsonify({
+                'success': False,
+                'error': 'Session expired. Please refresh the page and log in again.'
+            }), 401
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def api_qb_access_required(f):
+    """Decorator for API endpoints to check Question Bank access (returns JSON errors instead of redirects)"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not current_user.is_authenticated:
+            return jsonify({
+                'error': 'Session expired. Please refresh the page and log in again.',
+                'course_questions': [],
+                'instructor_questions': [],
+                'available_placeholders': []
+            }), 401
+        if not current_user.can_manage_qb():
+            return jsonify({
+                'error': 'You do not have access to the Question Bank.',
+                'course_questions': [],
+                'instructor_questions': [],
+                'available_placeholders': []
+            }), 403
+        return f(*args, **kwargs)
+    return decorated_function
+
+
 def log_audit(action, user, details):
     """Log audit entry for question bank changes"""
     audit_path = os.path.join(DATASOURCES_PATH, AUDIT_LOG_FILE)
@@ -795,7 +830,7 @@ def browser():
 
 
 @questions_bp.route('/api/questions/<unit_type>/<unit_id>')
-@qb_access_required
+@api_qb_access_required
 def api_get_questions(unit_type, unit_id):
     """API: Get questions for a unit"""
     try:
@@ -852,7 +887,7 @@ def api_get_questions(unit_type, unit_id):
 
 
 @questions_bp.route('/api/questions/search')
-@qb_access_required
+@api_qb_access_required
 def api_search_questions():
     """API: Search available questions"""
     search = request.args.get('q', '')
@@ -865,7 +900,7 @@ def api_search_questions():
 
 
 @questions_bp.route('/api/question/update', methods=['POST'])
-@qb_access_required
+@api_qb_access_required
 def api_update_question():
     """API: Update question text"""
     data = request.get_json()
@@ -915,7 +950,7 @@ def api_update_question():
 
 
 @questions_bp.route('/api/question/add', methods=['POST'])
-@qb_access_required
+@api_qb_access_required
 def api_add_question():
     """API: Add question to unit (existing or create new)"""
     data = request.get_json()
@@ -991,7 +1026,7 @@ def api_add_question():
 
 
 @questions_bp.route('/api/question/remove', methods=['POST'])
-@qb_access_required
+@api_qb_access_required
 def api_remove_question():
     """API: Remove question from unit"""
     data = request.get_json()
@@ -1067,7 +1102,7 @@ def my_pending_changes():
 
 
 @questions_bp.route('/api/pending/approve', methods=['POST'])
-@login_required
+@api_login_required
 def api_approve_change():
     """API: Approve pending change"""
     if not (current_user.is_super_admin() or current_user.role == 'college_admin'):
@@ -1100,7 +1135,7 @@ def api_approve_change():
 
 
 @questions_bp.route('/api/pending/reject', methods=['POST'])
-@login_required
+@api_login_required
 def api_reject_change():
     """API: Reject pending change"""
     if not (current_user.is_super_admin() or current_user.role == 'college_admin'):
