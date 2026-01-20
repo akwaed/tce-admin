@@ -22,7 +22,7 @@ def list_courses():
     # Get filter parameters
     college_filter = request.args.get('college', '')
     dept_filter = request.args.get('department', '')
-    tce_filter = request.args.get('tce_status', '')  # marked, not_marked, zero_enrollment
+    tce_filters = request.args.getlist('tce_status')  # marked, not_marked, zero_enrollment
     search = request.args.get('search', '').strip()
     page = request.args.get('page', 1, type=int)
     per_page = 50
@@ -45,12 +45,16 @@ def list_courses():
         query = query.filter(Course.college_code == college_filter)
     if dept_filter:
         query = query.filter(Course.department_id == dept_filter)
-    if tce_filter == 'marked':
-        query = query.filter(Course.marked_for_tce == True)
-    elif tce_filter == 'not_marked':
-        query = query.filter(Course.marked_for_tce == False)
-    elif tce_filter == 'zero_enrollment':
-        query = query.filter(Course.marked_for_tce == True, Course.student_count == 0)
+    if tce_filters:
+        status_conditions = []
+        if 'marked' in tce_filters:
+            status_conditions.append(Course.marked_for_tce == True)
+        if 'not_marked' in tce_filters:
+            status_conditions.append(Course.marked_for_tce == False)
+        if 'zero_enrollment' in tce_filters:
+            status_conditions.append(db.and_(Course.marked_for_tce == True, Course.student_count == 0))
+        if status_conditions:
+            query = query.filter(db.or_(*status_conditions))
     
     if search:
         query = query.filter(
@@ -105,7 +109,7 @@ def list_courses():
                          current_filters={
                              'college': college_filter,
                              'department': dept_filter,
-                             'tce_status': tce_filter,
+                             'tce_status': tce_filters,
                              'search': search
                          })
 
@@ -146,7 +150,7 @@ def export_courses():
     # Get same filters as list view
     college_filter = request.args.get('college', '')
     dept_filter = request.args.get('department', '')
-    tce_filter = request.args.get('tce_status', '')
+    tce_filters = request.args.getlist('tce_status')
     
     # Build query with same logic as list view
     query = Course.query
@@ -164,12 +168,16 @@ def export_courses():
         query = query.filter(Course.college_code == college_filter)
     if dept_filter:
         query = query.filter(Course.department_id == dept_filter)
-    if tce_filter == 'marked':
-        query = query.filter(Course.marked_for_tce == True)
-    elif tce_filter == 'not_marked':
-        query = query.filter(Course.marked_for_tce == False)
-    elif tce_filter == 'zero_enrollment':
-        query = query.filter(Course.marked_for_tce == True, Course.student_count == 0)
+    if tce_filters:
+        status_conditions = []
+        if 'marked' in tce_filters:
+            status_conditions.append(Course.marked_for_tce == True)
+        if 'not_marked' in tce_filters:
+            status_conditions.append(Course.marked_for_tce == False)
+        if 'zero_enrollment' in tce_filters:
+            status_conditions.append(db.and_(Course.marked_for_tce == True, Course.student_count == 0))
+        if status_conditions:
+            query = query.filter(db.or_(*status_conditions))
     
     courses = query.order_by(Course.college_code, Course.class_code).all()
     

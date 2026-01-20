@@ -104,20 +104,25 @@
                         {% endfor %}
                     </select>
                 </div>
-                <div class="col-md-2">
+                <div class="col-md-3">
                     <label class="form-label small text-muted">TCE Status</label>
-                    <select name="tce_status" class="form-select">
-                        <option value="">All Statuses</option>
-                        <option value="marked" {% if current_filters.tce_status == 'marked' %}selected{% endif %}>
-                            ✓ Marked for TCE
-                        </option>
-                        <option value="not_marked" {% if current_filters.tce_status == 'not_marked' %}selected{% endif %}>
-                            ○ Not Marked
-                        </option>
-                        <option value="zero_enrollment" {% if current_filters.tce_status == 'zero_enrollment' %}selected{% endif %}>
-                            ⚠ Zero Enrollment
-                        </option>
-                    </select>
+                    <div class="d-flex flex-wrap gap-2">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" name="tce_status" id="tce_marked" value="marked"
+                                   {% if 'marked' in current_filters.tce_status %}checked{% endif %}>
+                            <label class="form-check-label" for="tce_marked">Marked</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" name="tce_status" id="tce_not_marked" value="not_marked"
+                                   {% if 'not_marked' in current_filters.tce_status %}checked{% endif %}>
+                            <label class="form-check-label" for="tce_not_marked">Not Marked</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" name="tce_status" id="tce_zero" value="zero_enrollment"
+                                   {% if 'zero_enrollment' in current_filters.tce_status %}checked{% endif %}>
+                            <label class="form-check-label" for="tce_zero">Zero Enrollment</label>
+                        </div>
+                    </div>
                 </div>
                 <div class="col-md-3">
                     <button type="submit" class="btn btn-uk-primary">
@@ -136,19 +141,19 @@
 <div class="mb-3">
     <div class="btn-group" role="group">
         <a href="{{ url_for('verification.list_courses') }}" 
-           class="btn btn-sm {% if not current_filters.tce_status %}btn-primary{% else %}btn-outline-primary{% endif %}">
+           class="btn btn-sm {% if current_filters.tce_status|length == 0 %}btn-primary{% else %}btn-outline-primary{% endif %}">
             All ({{ stats.total }})
         </a>
         <a href="{{ url_for('verification.list_courses', tce_status='marked', college=current_filters.college, department=current_filters.department) }}" 
-           class="btn btn-sm {% if current_filters.tce_status == 'marked' %}btn-success{% else %}btn-outline-success{% endif %}">
+           class="btn btn-sm {% if current_filters.tce_status|length == 1 and 'marked' in current_filters.tce_status %}btn-success{% else %}btn-outline-success{% endif %}">
             Marked ({{ stats.marked }})
         </a>
         <a href="{{ url_for('verification.list_courses', tce_status='not_marked', college=current_filters.college, department=current_filters.department) }}" 
-           class="btn btn-sm {% if current_filters.tce_status == 'not_marked' %}btn-secondary{% else %}btn-outline-secondary{% endif %}">
+           class="btn btn-sm {% if current_filters.tce_status|length == 1 and 'not_marked' in current_filters.tce_status %}btn-secondary{% else %}btn-outline-secondary{% endif %}">
             Not Marked ({{ stats.not_marked }})
         </a>
         <a href="{{ url_for('verification.list_courses', tce_status='zero_enrollment', college=current_filters.college, department=current_filters.department) }}" 
-           class="btn btn-sm {% if current_filters.tce_status == 'zero_enrollment' %}btn-warning{% else %}btn-outline-warning{% endif %}">
+           class="btn btn-sm {% if current_filters.tce_status|length == 1 and 'zero_enrollment' in current_filters.tce_status %}btn-warning{% else %}btn-outline-warning{% endif %}">
             Zero Enrollment ({{ stats.zero_enrollment }})
         </a>
     </div>
@@ -163,12 +168,15 @@
                     <tr>
                         <th style="width: 120px;">Course</th>
                         <th style="width: 80px;">Section</th>
+                        <th>Instructor(s)</th>
                         <th>Title</th>
                         <th style="width: 80px;">College</th>
                         <th>Department</th>
+                        <th style="width: 110px;">Course Start</th>
+                        <th style="width: 110px;">Course End</th>
+                        <th style="width: 110px;">TCE Start</th>
                         <th style="width: 100px;">Status</th>
                         <th style="width: 80px;" class="text-center">Students</th>
-                        <th>Instructor(s)</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -181,6 +189,18 @@
                             {% endif %}
                         </td>
                         <td>{{ course.crs_section or course.section_id }}</td>
+                        <td class="small">
+                            {% set instructor_list = course.instructors | list %}
+                            {% for instructor in instructor_list[:2] %}
+                            {{ instructor.last_name }}{% if not loop.last %}, {% endif %}
+                            {% endfor %}
+                            {% if instructor_list|length > 2 %}
+                            <span class="text-muted">+{{ instructor_list|length - 2 }}</span>
+                            {% endif %}
+                            {% if instructor_list|length == 0 %}
+                            <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
                         <td>
                             <a href="{{ url_for('verification.course_detail', section_key=course.section_key) }}" 
                                class="text-decoration-none">
@@ -189,6 +209,9 @@
                         </td>
                         <td><span class="badge bg-light text-dark">{{ course.college_code }}</span></td>
                         <td class="small">{{ course.department.name if course.department else course.department_id }}</td>
+                        <td class="small">{{ course.course_start.strftime('%Y-%m-%d') if course.course_start else '-' }}</td>
+                        <td class="small">{{ course.course_end.strftime('%Y-%m-%d') if course.course_end else '-' }}</td>
+                        <td class="small">{{ course.tce_start.strftime('%Y-%m-%d') if course.tce_start else '-' }}</td>
                         <td>
                             {% if course.marked_for_tce %}
                                 {% if course.student_count == 0 %}
@@ -213,22 +236,10 @@
                             {{ course.student_count }}
                             {% endif %}
                         </td>
-                        <td class="small">
-                            {% set instructor_list = course.instructors | list %}
-                            {% for instructor in instructor_list[:2] %}
-                            {{ instructor.last_name }}{% if not loop.last %}, {% endif %}
-                            {% endfor %}
-                            {% if instructor_list|length > 2 %}
-                            <span class="text-muted">+{{ instructor_list|length - 2 }}</span>
-                            {% endif %}
-                            {% if instructor_list|length == 0 %}
-                            <span class="text-muted">-</span>
-                            {% endif %}
-                        </td>
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="8" class="text-center text-muted py-5">
+                        <td colspan="11" class="text-center text-muted py-5">
                             <i class="bi bi-inbox fs-1 d-block mb-2"></i>
                             No courses found.
                             {% if stats.total == 0 %}
