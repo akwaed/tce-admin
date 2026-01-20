@@ -46,18 +46,40 @@ def list_courses():
     if dept_filter:
         query = query.filter(Course.department_id == dept_filter)
     if tce_filters:
-        status_conditions = []
-        if 'marked' in tce_filters:
-            status_conditions.append(Course.marked_for_tce == True)
-        if 'not_marked' in tce_filters:
-            status_conditions.append(Course.marked_for_tce == False)
-        if 'zero_enrollment' in tce_filters:
-            status_conditions.append(db.and_(Course.marked_for_tce == True, Course.student_count == 0))
-        if 'non_zero_enrollment' in tce_filters:
-            status_conditions.append(db.and_(Course.marked_for_tce == True, Course.student_count > 0))
-        if status_conditions:
-            query = query.filter(db.or_(*status_conditions))
-    
+        # Check for compound filter combinations
+        has_marked = 'marked' in tce_filters
+        has_not_marked = 'not_marked' in tce_filters
+        has_zero = 'zero_enrollment' in tce_filters
+        has_non_zero = 'non_zero_enrollment' in tce_filters
+
+        # Handle compound filters (both marked/not_marked AND enrollment status)
+        if (has_marked or has_not_marked) and (has_zero or has_non_zero):
+            # Compound filter mode - use AND logic
+            compound_conditions = []
+            if has_marked and has_zero:
+                compound_conditions.append(db.and_(Course.marked_for_tce == True, Course.student_count == 0))
+            if has_marked and has_non_zero:
+                compound_conditions.append(db.and_(Course.marked_for_tce == True, Course.student_count > 0))
+            if has_not_marked and has_zero:
+                compound_conditions.append(db.and_(Course.marked_for_tce == False, Course.student_count == 0))
+            if has_not_marked and has_non_zero:
+                compound_conditions.append(db.and_(Course.marked_for_tce == False, Course.student_count > 0))
+            if compound_conditions:
+                query = query.filter(db.or_(*compound_conditions))
+        else:
+            # Simple filter mode - use OR logic
+            status_conditions = []
+            if has_marked:
+                status_conditions.append(Course.marked_for_tce == True)
+            if has_not_marked:
+                status_conditions.append(Course.marked_for_tce == False)
+            if has_zero:
+                status_conditions.append(db.and_(Course.marked_for_tce == True, Course.student_count == 0))
+            if has_non_zero:
+                status_conditions.append(db.and_(Course.marked_for_tce == True, Course.student_count > 0))
+            if status_conditions:
+                query = query.filter(db.or_(*status_conditions))
+
     if search:
         query = query.filter(
             db.or_(
@@ -171,18 +193,38 @@ def export_courses():
     if dept_filter:
         query = query.filter(Course.department_id == dept_filter)
     if tce_filters:
-        status_conditions = []
-        if 'marked' in tce_filters:
-            status_conditions.append(Course.marked_for_tce == True)
-        if 'not_marked' in tce_filters:
-            status_conditions.append(Course.marked_for_tce == False)
-        if 'zero_enrollment' in tce_filters:
-            status_conditions.append(db.and_(Course.marked_for_tce == True, Course.student_count == 0))
-        if 'non_zero_enrollment' in tce_filters:
-            status_conditions.append(db.and_(Course.marked_for_tce == True, Course.student_count > 0))
-        if status_conditions:
-            query = query.filter(db.or_(*status_conditions))
-    
+        # Check for compound filter combinations
+        has_marked = 'marked' in tce_filters
+        has_not_marked = 'not_marked' in tce_filters
+        has_zero = 'zero_enrollment' in tce_filters
+        has_non_zero = 'non_zero_enrollment' in tce_filters
+
+        # Handle compound filters (both marked/not_marked AND enrollment status)
+        if (has_marked or has_not_marked) and (has_zero or has_non_zero):
+            compound_conditions = []
+            if has_marked and has_zero:
+                compound_conditions.append(db.and_(Course.marked_for_tce == True, Course.student_count == 0))
+            if has_marked and has_non_zero:
+                compound_conditions.append(db.and_(Course.marked_for_tce == True, Course.student_count > 0))
+            if has_not_marked and has_zero:
+                compound_conditions.append(db.and_(Course.marked_for_tce == False, Course.student_count == 0))
+            if has_not_marked and has_non_zero:
+                compound_conditions.append(db.and_(Course.marked_for_tce == False, Course.student_count > 0))
+            if compound_conditions:
+                query = query.filter(db.or_(*compound_conditions))
+        else:
+            status_conditions = []
+            if has_marked:
+                status_conditions.append(Course.marked_for_tce == True)
+            if has_not_marked:
+                status_conditions.append(Course.marked_for_tce == False)
+            if has_zero:
+                status_conditions.append(db.and_(Course.marked_for_tce == True, Course.student_count == 0))
+            if has_non_zero:
+                status_conditions.append(db.and_(Course.marked_for_tce == True, Course.student_count > 0))
+            if status_conditions:
+                query = query.filter(db.or_(*status_conditions))
+
     courses = query.order_by(Course.college_code, Course.class_code).all()
     
     # Create CSV
