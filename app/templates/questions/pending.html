@@ -197,6 +197,28 @@
         from { transform: translateX(100%); opacity: 0; }
         to { transform: translateX(0); opacity: 1; }
     }
+
+    /* Hierarchy grouping styles */
+    .college-group {
+        background: #f8f9fa;
+        border-radius: 8px;
+        padding: 1rem;
+    }
+
+    .department-group {
+        border-left: 3px solid #0033a0;
+        padding-left: 1rem;
+    }
+
+    .course-group {
+        border-left: 2px solid #666;
+        padding-left: 0.75rem;
+    }
+
+    .section-group {
+        border-left: 2px dashed #999;
+        padding-left: 0.5rem;
+    }
 </style>
 {% endblock %}
 
@@ -221,72 +243,125 @@
 </div>
 
 <div id="pendingList">
-{% for change in pending_changes %}
-<div class="pending-card" data-id="{{ change.id }}">
-    <div class="pending-header">
-        <div>
-            <span class="change-type {{ change.type }}">
-                {% if change.type == 'add' %}
-                <i class="bi bi-plus-circle me-1"></i>Add
-                {% elif change.type == 'remove' %}
-                <i class="bi bi-dash-circle me-1"></i>Remove
-                {% else %}
-                <i class="bi bi-pencil me-1"></i>Edit
+{% for college_name, departments in grouped_changes.items() %}
+    {% if college_name != '__skip__' and is_super_admin %}
+    <div class="college-group mb-4">
+        <h4 class="border-bottom pb-2 mb-3" style="color: #0033a0;">
+            <i class="bi bi-building me-2"></i>{{ college_name }}
+        </h4>
+    {% endif %}
+
+    {% for dept_name, courses in departments.items() %}
+        <div class="department-group mb-3 {% if is_super_admin %}ms-3{% endif %}">
+            <h5 class="mb-2" style="color: #444;">
+                <i class="bi bi-diagram-3 me-2"></i>{{ dept_name }}
+            </h5>
+
+            {% for course_code, sections in courses.items() %}
+                {% if course_code != 'N/A' %}
+                <div class="course-group mb-2 ms-3">
+                    <h6 class="mb-2 text-muted">
+                        <i class="bi bi-book me-1"></i>Course: {{ course_code }}
+                    </h6>
                 {% endif %}
-            </span>
+
+                {% for section_id, changes in sections.items() %}
+                    {% if section_id != 'N/A' %}
+                    <div class="section-group mb-2 {% if course_code != 'N/A' %}ms-3{% else %}ms-3{% endif %}">
+                        <small class="text-muted d-block mb-1">
+                            <i class="bi bi-list-nested me-1"></i>Section: {{ section_id }}
+                        </small>
+                    {% endif %}
+
+                    {% for change in changes %}
+                    <div class="pending-card {% if section_id != 'N/A' %}ms-2{% elif course_code != 'N/A' %}ms-3{% else %}ms-3{% endif %}" data-id="{{ change.id }}">
+                        <div class="pending-header">
+                            <div>
+                                <span class="change-type {{ change.type }}">
+                                    {% if change.type == 'add' %}
+                                    <i class="bi bi-plus-circle me-1"></i>Add
+                                    {% elif change.type == 'remove' %}
+                                    <i class="bi bi-dash-circle me-1"></i>Remove
+                                    {% else %}
+                                    <i class="bi bi-pencil me-1"></i>Edit
+                                    {% endif %}
+                                </span>
+                            </div>
+                            <div class="pending-meta text-end">
+                                <div>Submitted by <strong>{{ change.submitter_name }}</strong> ({{ change.submitted_by }})</div>
+                                <div class="small">{{ change.submitted_at[:16].replace('T', ' ') }}</div>
+                            </div>
+                        </div>
+
+                        <div class="pending-details">
+                            {% if change.type == 'edit' %}
+                            <div class="mb-2">
+                                <span class="label">Question ID:</span> <code>{{ change.question_id }}</code>
+                            </div>
+                            {% if change.old_type or change.new_type %}
+                            <div class="mb-2">
+                                <span class="label">Type:</span>
+                                {{ change.old_type or 'Unknown' }} → {{ change.new_type or change.old_type or 'Unknown' }}
+                            </div>
+                            {% endif %}
+                            {% if change.old_value %}
+                            <div class="diff-old">
+                                <strong>Old:</strong> {{ change.old_value[:200] }}{% if change.old_value|length > 200 %}...{% endif %}
+                            </div>
+                            {% endif %}
+                            {% if change.new_text %}
+                            <div class="diff-new">
+                                <strong>New:</strong> {{ change.new_text[:200] }}{% if change.new_text|length > 200 %}...{% endif %}
+                            </div>
+                            {% endif %}
+                            {% else %}
+                            <div class="mb-1">
+                                <span class="label">Unit Type:</span> {{ change.unit_type }}
+                            </div>
+                            <div class="mb-1">
+                                <span class="label">Unit ID:</span> <code>{{ change.unit_id }}</code>
+                            </div>
+                            <div class="mb-1">
+                                <span class="label">Placeholder:</span> <code>{{ change.placeholder }}</code>
+                            </div>
+                            <div class="mb-1">
+                                <span class="label">Question ID:</span> <code>{{ change.question_id }}</code>
+                            </div>
+                            {% if change.question_text %}
+                            <div class="mt-2 p-2" style="background: #fff; border-left: 3px solid #0033a0; border-radius: 4px;">
+                                <span class="label">Question:</span>
+                                <div class="mt-1" style="font-style: italic;">{{ change.question_text[:300] }}{% if change.question_text|length > 300 %}...{% endif %}</div>
+                            </div>
+                            {% endif %}
+                            {% endif %}
+                        </div>
+
+                        <div class="pending-actions">
+                            <button class="btn-reject" onclick="openRejectModal({{ change.id }})">
+                                <i class="bi bi-x-circle me-1"></i>Reject
+                            </button>
+                            <button class="btn-approve" onclick="approveChange({{ change.id }})">
+                                <i class="bi bi-check-circle me-1"></i>Approve
+                            </button>
+                        </div>
+                    </div>
+                    {% endfor %}
+
+                    {% if section_id != 'N/A' %}
+                    </div>
+                    {% endif %}
+                {% endfor %}
+
+                {% if course_code != 'N/A' %}
+                </div>
+                {% endif %}
+            {% endfor %}
         </div>
-        <div class="pending-meta text-end">
-            <div>Submitted by <strong>{{ change.submitted_by }}</strong></div>
-            <div class="small">{{ change.submitted_at[:16].replace('T', ' ') }}</div>
-        </div>
+    {% endfor %}
+
+    {% if college_name != '__skip__' and is_super_admin %}
     </div>
-    
-    <div class="pending-details">
-        {% if change.type == 'edit' %}
-        <div class="mb-2">
-            <span class="label">Question ID:</span> <code>{{ change.question_id }}</code>
-        </div>
-        {% if change.old_type or change.new_type %}
-        <div class="mb-2">
-            <span class="label">Type:</span>
-            {{ change.old_type or 'Unknown' }} → {{ change.new_type or change.old_type or 'Unknown' }}
-        </div>
-        {% endif %}
-        {% if change.old_value %}
-        <div class="diff-old">
-            <strong>Old:</strong> {{ change.old_value[:200] }}{% if change.old_value|length > 200 %}...{% endif %}
-        </div>
-        {% endif %}
-        {% if change.new_text %}
-        <div class="diff-new">
-            <strong>New:</strong> {{ change.new_text[:200] }}{% if change.new_text|length > 200 %}...{% endif %}
-        </div>
-        {% endif %}
-        {% else %}
-        <div class="mb-1">
-            <span class="label">Unit Type:</span> {{ change.unit_type }}
-        </div>
-        <div class="mb-1">
-            <span class="label">Unit ID:</span> <code>{{ change.unit_id }}</code>
-        </div>
-        <div class="mb-1">
-            <span class="label">Placeholder:</span> <code>{{ change.placeholder }}</code>
-        </div>
-        <div>
-            <span class="label">Question ID:</span> <code>{{ change.question_id }}</code>
-        </div>
-        {% endif %}
-    </div>
-    
-    <div class="pending-actions">
-        <button class="btn-reject" onclick="openRejectModal({{ change.id }})">
-            <i class="bi bi-x-circle me-1"></i>Reject
-        </button>
-        <button class="btn-approve" onclick="approveChange({{ change.id }})">
-            <i class="bi bi-check-circle me-1"></i>Approve
-        </button>
-    </div>
-</div>
+    {% endif %}
 {% endfor %}
 </div>
 

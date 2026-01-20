@@ -108,19 +108,9 @@
                     <label class="form-label small text-muted">TCE Status</label>
                     <div class="d-flex flex-wrap gap-2">
                         <div class="form-check">
-                            <input class="form-check-input" type="checkbox" name="tce_status" id="tce_marked" value="marked"
-                                   {% if 'marked' in current_filters.tce_status %}checked{% endif %}>
-                            <label class="form-check-label" for="tce_marked">Marked</label>
-                        </div>
-                        <div class="form-check">
                             <input class="form-check-input" type="checkbox" name="tce_status" id="tce_non_zero" value="non_zero_enrollment"
                                    {% if 'non_zero_enrollment' in current_filters.tce_status %}checked{% endif %}>
-                            <label class="form-check-label" for="tce_non_zero">Non Zero-Enrollments</label>
-                        </div>
-                        <div class="form-check">
-                            <input class="form-check-input" type="checkbox" name="tce_status" id="tce_not_marked" value="not_marked"
-                                   {% if 'not_marked' in current_filters.tce_status %}checked{% endif %}>
-                            <label class="form-check-label" for="tce_not_marked">Not Marked</label>
+                            <label class="form-check-label" for="tce_non_zero">Active Enrollment</label>
                         </div>
                         <div class="form-check">
                             <input class="form-check-input" type="checkbox" name="tce_status" id="tce_zero" value="zero_enrollment"
@@ -144,27 +134,41 @@
 
 <!-- Quick Filter Buttons -->
 <div class="mb-3">
-    <div class="btn-group" role="group">
-        <a href="{{ url_for('verification.list_courses') }}" 
-           class="btn btn-sm {% if current_filters.tce_status|length == 0 %}btn-primary{% else %}btn-outline-primary{% endif %}">
-            All ({{ stats.total }})
-        </a>
-        <a href="{{ url_for('verification.list_courses', tce_status='marked', college=current_filters.college, department=current_filters.department) }}" 
-           class="btn btn-sm {% if current_filters.tce_status|length == 1 and 'marked' in current_filters.tce_status %}btn-success{% else %}btn-outline-success{% endif %}">
-            Marked ({{ stats.marked }})
-        </a>
-        <a href="{{ url_for('verification.list_courses', tce_status='non_zero_enrollment', college=current_filters.college, department=current_filters.department) }}" 
-           class="btn btn-sm {% if current_filters.tce_status|length == 1 and 'non_zero_enrollment' in current_filters.tce_status %}btn-info{% else %}btn-outline-info{% endif %}">
-            Non Zero-Enrollments ({{ stats.non_zero_enrollment }})
-        </a>
-        <a href="{{ url_for('verification.list_courses', tce_status='not_marked', college=current_filters.college, department=current_filters.department) }}" 
-           class="btn btn-sm {% if current_filters.tce_status|length == 1 and 'not_marked' in current_filters.tce_status %}btn-secondary{% else %}btn-outline-secondary{% endif %}">
-            Not Marked ({{ stats.not_marked }})
-        </a>
-        <a href="{{ url_for('verification.list_courses', tce_status='zero_enrollment', college=current_filters.college, department=current_filters.department) }}" 
-           class="btn btn-sm {% if current_filters.tce_status|length == 1 and 'zero_enrollment' in current_filters.tce_status %}btn-warning{% else %}btn-outline-warning{% endif %}">
-            Zero Enrollment ({{ stats.zero_enrollment }})
-        </a>
+    <div class="d-flex flex-wrap gap-2">
+        <div class="btn-group" role="group">
+            <a href="{{ url_for('verification.list_courses') }}"
+               class="btn btn-sm {% if current_filters.tce_status|length == 0 %}btn-primary{% else %}btn-outline-primary{% endif %}">
+                All ({{ stats.total }})
+            </a>
+            <a href="{{ url_for('verification.list_courses', tce_status='marked', college=current_filters.college, department=current_filters.department) }}"
+               class="btn btn-sm {% if current_filters.tce_status|length == 1 and 'marked' in current_filters.tce_status %}btn-success{% else %}btn-outline-success{% endif %}">
+                Marked ({{ stats.marked }})
+            </a>
+            <a href="{{ url_for('verification.list_courses', tce_status='not_marked', college=current_filters.college, department=current_filters.department) }}"
+               class="btn btn-sm {% if current_filters.tce_status|length == 1 and 'not_marked' in current_filters.tce_status %}btn-secondary{% else %}btn-outline-secondary{% endif %}">
+                Not Marked ({{ stats.not_marked }})
+            </a>
+            <a href="{{ url_for('verification.list_courses', tce_status='non_zero_enrollment', college=current_filters.college, department=current_filters.department) }}"
+               class="btn btn-sm {% if current_filters.tce_status|length == 1 and 'non_zero_enrollment' in current_filters.tce_status %}btn-info{% else %}btn-outline-info{% endif %}">
+                Active Enrollment ({{ stats.non_zero_enrollment }})
+            </a>
+            <a href="{{ url_for('verification.list_courses', tce_status='zero_enrollment', college=current_filters.college, department=current_filters.department) }}"
+               class="btn btn-sm {% if current_filters.tce_status|length == 1 and 'zero_enrollment' in current_filters.tce_status %}btn-warning{% else %}btn-outline-warning{% endif %}">
+                Zero Enrollment ({{ stats.zero_enrollment }})
+            </a>
+        </div>
+        <div class="btn-group" role="group">
+            <a href="{{ url_for('verification.list_courses', tce_status=['marked', 'zero_enrollment'], college=current_filters.college, department=current_filters.department) }}"
+               class="btn btn-sm {% if current_filters.tce_status|length == 2 and 'marked' in current_filters.tce_status and 'zero_enrollment' in current_filters.tce_status %}btn-danger{% else %}btn-outline-danger{% endif %}"
+               title="Courses that are marked for TCE but have zero students enrolled">
+                <i class="bi bi-exclamation-triangle me-1"></i>Marked & Zero Enrollment
+            </a>
+            <a href="{{ url_for('verification.list_courses', tce_status=['not_marked', 'non_zero_enrollment'], college=current_filters.college, department=current_filters.department) }}"
+               class="btn btn-sm {% if current_filters.tce_status|length == 2 and 'not_marked' in current_filters.tce_status and 'non_zero_enrollment' in current_filters.tce_status %}btn-warning{% else %}btn-outline-warning{% endif %}"
+               title="Courses that are NOT marked for TCE but have students enrolled">
+                <i class="bi bi-exclamation-circle me-1"></i>Not Marked & Active Enrollment
+            </a>
+        </div>
     </div>
 </div>
 

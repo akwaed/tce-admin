@@ -1078,18 +1078,122 @@ def api_remove_question():
 @login_required
 def pending_changes():
     """View pending changes for approval"""
+    from app.models.admin import Admin
+    from app.models.course import Course, Department, College
+
     if not (current_user.is_super_admin() or current_user.role == 'college_admin'):
         flash('You do not have permission to view pending changes.', 'danger')
         return redirect(url_for('questions.browser'))
-    
+
     pending_manager = get_pending_manager()
-    
+    qb_service = get_qb_service()
+
+    # Ensure question bank is loaded
+    if not qb_service.questions:
+        qb_service.load_question_bank()
+
     if current_user.is_super_admin():
         pending = pending_manager.get_pending()
     else:
         pending = pending_manager.get_pending(current_user.college_code)
-    
-    return render_template('questions/pending.html', pending_changes=pending)
+
+    # Enrich pending changes with additional data
+    enriched_pending = []
+    for change in pending:
+        enriched_change = dict(change)
+
+        # Look up submitter's full name
+        submitter = Admin.query.filter_by(linkblue=change.get('submitted_by')).first()
+        if submitter:
+            enriched_change['submitter_name'] = f"{submitter.first_name} {submitter.last_name}"
+        else:
+            enriched_change['submitter_name'] = change.get('submitted_by', 'Unknown')
+
+        # Look up question text
+        question_id = change.get('question_id')
+        if question_id and question_id in qb_service.questions:
+            enriched_change['question_text'] = qb_service.questions[question_id].get('text', '')
+        else:
+            enriched_change['question_text'] = ''
+
+        # Determine hierarchy info for grouping
+        unit_type = change.get('unit_type', '').upper()
+        unit_id = change.get('unit_id', '')
+        college_code = change.get('college_code', '')
+
+        # Build hierarchy path
+        enriched_change['college_code'] = college_code
+        enriched_change['college_name'] = ''
+        enriched_change['department_name'] = ''
+        enriched_change['course_code'] = ''
+        enriched_change['section_id'] = ''
+
+        if college_code:
+            college = College.query.filter_by(code=college_code).first()
+            if college:
+                enriched_change['college_name'] = college.name
+
+        if unit_type == 'DEPARTMENT':
+            dept = Department.query.filter_by(id=unit_id).first()
+            if dept:
+                enriched_change['department_name'] = dept.name
+                if not college_code:
+                    enriched_change['college_code'] = dept.college_code
+                    college = College.query.filter_by(code=dept.college_code).first()
+                    if college:
+                        enriched_change['college_name'] = college.name
+        elif unit_type == 'COURSE':
+            enriched_change['course_code'] = unit_id
+            # Try to find the course to get its department and college
+            course = Course.query.filter_by(class_code=unit_id).first()
+            if course:
+                enriched_change['department_name'] = course.department.name if course.department else course.department_id
+                if not college_code:
+                    enriched_change['college_code'] = course.college_code
+                    if course.college:
+                        enriched_change['college_name'] = course.college.name
+        elif unit_type == 'SECTION':
+            enriched_change['section_id'] = unit_id
+            course = Course.query.filter_by(section_key=unit_id).first()
+            if course:
+                enriched_change['course_code'] = course.class_code
+                enriched_change['department_name'] = course.department.name if course.department else course.department_id
+                if not college_code:
+                    enriched_change['college_code'] = course.college_code
+                    if course.college:
+                        enriched_change['college_name'] = course.college.name
+
+        enriched_pending.append(enriched_change)
+
+    # Group the pending changes by hierarchy
+    grouped_changes = {}
+    for change in enriched_pending:
+        if current_user.is_super_admin():
+            # Group by College -> Department -> Course -> Section
+            college_key = change.get('college_name') or change.get('college_code') or 'Unknown College'
+        else:
+            # For college admins, skip college grouping and start with department
+            college_key = '__skip__'
+
+        dept_key = change.get('department_name') or 'Unknown Department'
+        course_key = change.get('course_code') or 'N/A'
+        section_key = change.get('section_id') or 'N/A'
+
+        if college_key not in grouped_changes:
+            grouped_changes[college_key] = {}
+        if dept_key not in grouped_changes[college_key]:
+            grouped_changes[college_key][dept_key] = {}
+        if course_key not in grouped_changes[college_key][dept_key]:
+            grouped_changes[college_key][dept_key][course_key] = {}
+        if section_key not in grouped_changes[college_key][dept_key][course_key]:
+            grouped_changes[college_key][dept_key][course_key][section_key] = []
+
+        grouped_changes[college_key][dept_key][course_key][section_key].append(change)
+
+    return render_template('questions/pending.html',
+                           pending_changes=enriched_pending,
+                           grouped_changes=grouped_changes,
+                           is_super_admin=current_user.is_super_admin())
 
 
 @questions_bp.route('/pending/mine')
