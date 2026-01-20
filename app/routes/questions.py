@@ -187,8 +187,8 @@ class PendingChangesManager:
 
 
 class QuestionBankService:
-    """Service class for Question Bank operations"""
-    
+    """Service class for Question Bank operations with caching"""
+
     def __init__(self, datafiles_path=DATASOURCES_PATH):
         self.datafiles_path = datafiles_path
         self.questions = {}
@@ -199,14 +199,51 @@ class QuestionBankService:
         self._placeholder_names = []
         self._uuid_row = []
         self._unit_to_college = {}
+        # Cache tracking
+        self._cache_timestamps = {}
+        self._hierarchy_html_cache = {}
+        self._last_admin_scope = None
+        self._last_filter_terms = None
+
+    def _get_file_mtime(self, filename):
+        """Get modification time of a file, or 0 if not exists"""
+        filepath = os.path.join(self.datafiles_path, filename)
+        if os.path.exists(filepath):
+            return os.path.getmtime(filepath)
+        return 0
+
+    def _is_cache_valid(self, cache_key, filename):
+        """Check if cache is still valid based on file modification time"""
+        current_mtime = self._get_file_mtime(filename)
+        cached_mtime = self._cache_timestamps.get(cache_key, 0)
+        return current_mtime > 0 and current_mtime == cached_mtime
+
+    def _update_cache_timestamp(self, cache_key, filename):
+        """Update cache timestamp after loading"""
+        self._cache_timestamps[cache_key] = self._get_file_mtime(filename)
     
     def load_courses(self, filter_terms=None, admin_scope=None):
-        """Load course hierarchy from Courses.csv"""
+        """Load course hierarchy from Courses.csv with caching"""
         courses_file = os.path.join(self.datafiles_path, 'Courses.csv')
         if not os.path.exists(courses_file):
             return {}
-        
+
+        # Check if we can use cached data (same scope and terms, file unchanged)
+        scope_key = str(admin_scope) if admin_scope else 'all'
+        terms_key = str(sorted(filter_terms)) if filter_terms else 'all'
+        cache_valid = (
+            self._is_cache_valid('courses', 'Courses.csv') and
+            self._last_admin_scope == scope_key and
+            self._last_filter_terms == terms_key and
+            self.hierarchy
+        )
+
+        if cache_valid:
+            return self.hierarchy
+
         df = pd.read_csv(courses_file, low_memory=False)
+        self._last_admin_scope = scope_key
+        self._last_filter_terms = terms_key
         
         # Get available terms
         if 'ACADEMIC_TERM' in df.columns:
@@ -280,20 +317,25 @@ class QuestionBankService:
                         }
         
         self.hierarchy = hierarchy
+        self._update_cache_timestamp('courses', 'Courses.csv')
         return hierarchy
-    
+
     def get_college_for_unit(self, unit_id):
         """Get college code for a unit ID"""
         return self._unit_to_college.get(str(unit_id), None)
     
     def load_question_bank(self, qb_file=None):
-        """Load questions from QB.xlsx"""
+        """Load questions from QB.xlsx with caching"""
         if qb_file is None:
             qb_file = os.path.join(self.datafiles_path, QB_FILENAME)
-        
+
         if not os.path.exists(qb_file):
             return {}
-        
+
+        # Check cache validity
+        if self._is_cache_valid('qb', QB_FILENAME) and self.questions:
+            return self.questions
+
         try:
             xlsx = pd.ExcelFile(qb_file)
             
@@ -327,7 +369,8 @@ class QuestionBankService:
                         }
         except Exception as e:
             print(f"Error loading question bank: {e}")
-        
+
+        self._update_cache_timestamp('qb', QB_FILENAME)
         return self.questions
 
     def _get_or_create_type_definition(self, question_type):
@@ -356,13 +399,17 @@ class QuestionBankService:
         return type_id
     
     def load_question_mapping(self, qm_file=None):
-        """Load question mappings from QM.xlsx"""
+        """Load question mappings from QM.xlsx with caching"""
         if qm_file is None:
             qm_file = os.path.join(self.datafiles_path, QM_FILENAME)
-        
+
         if not os.path.exists(qm_file):
             return {}
-        
+
+        # Check cache validity
+        if self._is_cache_valid('qm', QM_FILENAME) and self.question_mapping:
+            return dict(self.question_mapping)
+
         try:
             xlsx = pd.ExcelFile(qm_file)
             df = pd.read_excel(xlsx, sheet_name=xlsx.sheet_names[0], header=None)
@@ -390,9 +437,10 @@ class QuestionBankService:
         
         except Exception as e:
             print(f"Error loading question mapping: {e}")
-        
+
+        self._update_cache_timestamp('qm', QM_FILENAME)
         return dict(self.question_mapping)
-    
+
     def get_available_placeholders(self, unit_type):
         """Get available placeholder columns for a unit type"""
         unit_type = unit_type.upper()
@@ -693,10 +741,15 @@ class QuestionBankService:
         output.seek(0)
         return output
     
-    def generate_hierarchy_html(self, units_with_questions=None):
-        """Generate HTML for the hierarchy tree"""
+    def generate_hierarchy_html(self, units_with_questions=None, use_cache=True):
+        """Generate HTML for the hierarchy tree with caching"""
         if units_with_questions is None:
             units_with_questions = self.get_units_with_questions()
+
+        # Create a cache key based on hierarchy and units with questions
+        cache_key = f"{self._last_admin_scope}_{self._last_filter_terms}_{hash(str(sorted(str(units_with_questions))))}"
+        if use_cache and cache_key in self._hierarchy_html_cache:
+            return self._hierarchy_html_cache[cache_key]
         
         def has_questions_recursive(node, node_type, node_id):
             type_map = {'college': 'COLLEGE', 'department': 'DEPARTMENT', 'course': 'COURSE', 'section': 'SECTION'}
@@ -760,7 +813,9 @@ class QuestionBankService:
         html = ''
         for college_name in sorted(self.hierarchy.keys()):
             html += render_node(college_name, self.hierarchy[college_name])
-        
+
+        # Cache the result
+        self._hierarchy_html_cache[cache_key] = html
         return html
 
 
@@ -786,21 +841,22 @@ def get_pending_manager():
 @questions_bp.route('/')
 @qb_access_required
 def browser():
-    """Question Bank Browser main view"""
+    """Question Bank Browser main view with caching"""
     selected_terms = request.args.getlist('term')
-    
+
     admin_scope = None
     if not current_user.is_super_admin():
         admin_scope = {
             'college': current_user.college_code,
             'department': current_user.department_id if current_user.role == 'dept_admin' else None
         }
-    
-    qb_service = get_qb_service(force_reload=True)
+
+    # Use cached service - caching is handled within each load method
+    qb_service = get_qb_service()
     qb_service.load_courses(filter_terms=selected_terms or None, admin_scope=admin_scope)
     qb_service.load_question_bank()
     qb_service.load_question_mapping()
-    
+
     units_with_questions = qb_service.get_units_with_questions()
     hierarchy_html = qb_service.generate_hierarchy_html(units_with_questions)
     
