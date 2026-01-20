@@ -829,7 +829,7 @@ def browser():
                          user_role=current_user.role)
 
 
-@questions_bp.route('/api/questions/<unit_type>/<unit_id>')
+@questions_bp.route('/api/questions/<unit_type>/<path:unit_id>')
 @api_qb_access_required
 def api_get_questions(unit_type, unit_id):
     """API: Get questions for a unit"""

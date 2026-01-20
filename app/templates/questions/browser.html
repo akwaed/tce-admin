@@ -623,7 +623,7 @@ async function loadQuestions(type, id) {
     content.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary"></div></div>';
 
     try {
-        const response = await fetch(`/questions/api/questions/${type}/${id}`);
+        const response = await fetch(`/questions/api/questions/${encodeURIComponent(type)}/${encodeURIComponent(id)}`);
         const data = await response.json();
 
         if (data.error) {
