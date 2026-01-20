@@ -148,12 +148,6 @@ def add_admin():
             flash('LinkBlue, First Name, and Last Name are required.', 'danger')
             return redirect(url_for('admin.add_admin'))
 
-        # Check for duplicate
-        existing = Admin.query.filter_by(linkblue=linkblue).first()
-        if existing:
-            flash(f'An admin with LinkBlue "{linkblue}" already exists.', 'danger')
-            return redirect(url_for('admin.add_admin'))
-
         # Handle super admin creation
         # No password required - super admins authenticate via Azure AD
         if is_creating_super_admin:
@@ -187,6 +181,38 @@ def add_admin():
                 ).first()
                 if existing_primary:
                     flash(f'College {college_code} already has a primary contact: {existing_primary.full_name}', 'warning')
+
+        # Check for duplicate (reactivate if soft-deleted)
+        existing = Admin.query.filter_by(linkblue=linkblue).first()
+        if existing:
+            if existing.is_active:
+                flash(f'An admin with LinkBlue "{linkblue}" already exists.', 'danger')
+                return redirect(url_for('admin.add_admin'))
+
+            # Reactivate and update details
+            existing.first_name = first_name
+            existing.last_name = last_name
+            existing.email = email or f'{linkblue}@uky.edu'
+            existing.role = role
+            existing.college_code = college_code
+            existing.department_id = department_id
+            existing.contact_type = contact_type
+            existing.course_prefix = course_prefix or None
+            existing.course_number = course_number or None
+            existing.level_type = level_type
+            existing.is_primary_contact = is_primary
+            existing.has_dashboard_access = has_dashboard
+            existing.has_static_report_access = has_static_report
+            existing.has_qb_access = has_qb
+            existing.is_active = True
+            if not existing.created_by_id:
+                existing.created_by_id = current_user.id
+
+            db.session.add(existing)
+            db.session.commit()
+
+            flash(f'Admin "{existing.full_name}" reactivated successfully.', 'success')
+            return redirect(url_for('admin.list_admins'))
 
         # Create admin
         admin = Admin(
