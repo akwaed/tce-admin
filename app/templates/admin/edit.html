@@ -275,6 +275,21 @@ document.addEventListener('DOMContentLoaded', function() {
     const passwordField = document.getElementById('password');
     const passwordConfirmField = document.getElementById('password_confirm');
 
+    function setRegularFieldsEnabled(enabled) {
+        if (!regularAdminFields) return;
+        const fields = regularAdminFields.querySelectorAll('input, select, textarea');
+        fields.forEach(field => {
+            field.disabled = !enabled;
+            if (!enabled) {
+                field.required = false;
+            }
+        });
+        if (enabled) {
+            if (contactType) contactType.required = true;
+            if (collegeSelect) collegeSelect.required = true;
+        }
+    }
+
     function updateRoleFields() {
         if (!adminRole) return;
 
@@ -295,17 +310,20 @@ document.addEventListener('DOMContentLoaded', function() {
                 : 'Regular admins are scoped to a college or department';
         }
 
-        // Toggle required fields
+        setRegularFieldsEnabled(!isSuperAdmin);
         if (isSuperAdmin) {
-            if (collegeSelect) collegeSelect.required = false;
-            if (contactType) contactType.required = false;
+            if (deptSelect) deptSelect.required = false;
+            if (deptRequiredStar) deptRequiredStar.style.display = 'none';
+            if (deptHelpText) deptHelpText.textContent = '';
         } else {
-            if (collegeSelect) collegeSelect.required = true;
-            if (contactType) contactType.required = true;
+            updateFormState();
         }
     }
 
     function updateFormState() {
+        if (adminRole && adminRole.value === 'super_admin') {
+            return;
+        }
         const isCollege = contactType.value === 'College';
         const isDepartment = contactType.value === 'Department';
 
