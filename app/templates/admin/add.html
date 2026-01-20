@@ -129,23 +129,16 @@
                     </div>
                     </div><!-- end regular_admin_fields -->
 
-                    <!-- Super Admin Password (only shown when creating super admin) -->
+                    <!-- Super Admin Info (only shown when creating super admin) -->
                     {% if current_user.is_super_admin() %}
                     <div id="super_admin_fields" style="display: none;">
                         <div class="alert alert-warning">
                             <i class="bi bi-exclamation-triangle me-2"></i>
                             <strong>Super Administrator</strong> - This user will have full system access to all colleges, departments, and administrative functions.
                         </div>
-                        <div class="mb-3">
-                            <label for="password" class="form-label">Password <span class="text-danger">*</span></label>
-                            <input type="password" class="form-control" id="password" name="password"
-                                   minlength="8" placeholder="Minimum 8 characters">
-                            <div class="form-text">Super admins can log in with username/password</div>
-                        </div>
-                        <div class="mb-3">
-                            <label for="password_confirm" class="form-label">Confirm Password <span class="text-danger">*</span></label>
-                            <input type="password" class="form-control" id="password_confirm" name="password_confirm"
-                                   minlength="8">
+                        <div class="alert alert-info">
+                            <i class="bi bi-shield-lock me-2"></i>
+                            Super admins authenticate via Azure AD (Microsoft 365). No password is required - they will use their existing UK credentials.
                         </div>
                     </div>
                     {% endif %}
@@ -230,8 +223,6 @@ document.addEventListener('DOMContentLoaded', function() {
     const deptRequiredStar = document.getElementById('dept_required_star');
     const deptHelpText = document.getElementById('dept_help_text');
     const roleHelpText = document.getElementById('role_help_text');
-    const passwordField = document.getElementById('password');
-    const passwordConfirmField = document.getElementById('password_confirm');
 
     function updateRoleFields() {
         if (!adminRole) return; // Not a super admin user
@@ -255,13 +246,9 @@ document.addEventListener('DOMContentLoaded', function() {
         if (isSuperAdmin) {
             collegeSelect.required = false;
             contactType.required = false;
-            if (passwordField) passwordField.required = true;
-            if (passwordConfirmField) passwordConfirmField.required = true;
         } else {
             collegeSelect.required = true;
             contactType.required = true;
-            if (passwordField) passwordField.required = false;
-            if (passwordConfirmField) passwordConfirmField.required = false;
         }
     }
 
@@ -316,17 +303,6 @@ document.addEventListener('DOMContentLoaded', function() {
         courseDetailsDiv.style.display = isCourseCoordinator.checked ? 'block' : 'none';
     }
 
-    // Password validation
-    function validatePasswords() {
-        if (passwordField && passwordConfirmField) {
-            if (passwordField.value !== passwordConfirmField.value) {
-                passwordConfirmField.setCustomValidity('Passwords do not match');
-            } else {
-                passwordConfirmField.setCustomValidity('');
-            }
-        }
-    }
-
     // Event listeners
     if (adminRole) {
         adminRole.addEventListener('change', updateRoleFields);
@@ -335,12 +311,6 @@ document.addEventListener('DOMContentLoaded', function() {
     collegeSelect.addEventListener('change', updateDepartments);
     if (isCourseCoordinator) {
         isCourseCoordinator.addEventListener('change', updateCourseCoordinator);
-    }
-    if (passwordField) {
-        passwordField.addEventListener('input', validatePasswords);
-    }
-    if (passwordConfirmField) {
-        passwordConfirmField.addEventListener('input', validatePasswords);
     }
 
     // Initialize

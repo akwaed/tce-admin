@@ -110,7 +110,9 @@ def list_admins():
 @admin_required
 def add_admin():
     """Add a new admin"""
-    if current_user.is_college_admin() and not current_user.is_primary_contact:
+    # Super admins can always add admins
+    # College admins can only add if they are primary contacts
+    if current_user.role == 'college_admin' and not current_user.is_primary_contact:
         flash('Only primary college contacts can add new administrators.', 'danger')
         return redirect(url_for('admin.list_admins'))
 
@@ -153,18 +155,8 @@ def add_admin():
             return redirect(url_for('admin.add_admin'))
 
         # Handle super admin creation
+        # No password required - super admins authenticate via Azure AD
         if is_creating_super_admin:
-            password = request.form.get('password', '')
-            password_confirm = request.form.get('password_confirm', '')
-
-            if not password or len(password) < 8:
-                flash('Super admin requires a password of at least 8 characters.', 'danger')
-                return redirect(url_for('admin.add_admin'))
-
-            if password != password_confirm:
-                flash('Passwords do not match.', 'danger')
-                return redirect(url_for('admin.add_admin'))
-
             role = 'super_admin'
             college_code = None
             department_id = None
@@ -215,10 +207,6 @@ def add_admin():
             has_qb_access=has_qb,
             created_by_id=current_user.id
         )
-
-        # Set password for super admin
-        if is_creating_super_admin:
-            admin.set_password(password)
 
         db.session.add(admin)
         db.session.commit()
@@ -539,6 +527,17 @@ def import_admins():
             content = file.read().decode('utf-8')
             reader = csv.DictReader(io.StringIO(content))
 
+            # Build college name -> code mapping from College table
+            college_name_to_code = {}
+            colleges = College.query.all()
+            for college in colleges:
+                college_name_to_code[college.name] = college.code
+                # Also add lowercase version for case-insensitive matching
+                college_name_to_code[college.name.lower()] = college.code
+                # Also map code to code (in case CSV already has codes)
+                college_name_to_code[college.code] = college.code
+                college_name_to_code[college.code.lower()] = college.code
+
             # Build department name -> ID mapping from Department table
             dept_name_to_id = {}
             departments = Department.query.all()
@@ -551,6 +550,7 @@ def import_admins():
             skipped = 0
             errors = []
             unmapped_depts = set()
+            unmapped_colleges = set()
 
             for row in reader:
                 linkblue = row.get('linkblue', '').strip().lower()
@@ -564,12 +564,19 @@ def import_admins():
                     continue
 
                 try:
-                    admin = Admin.from_csv_row(row, created_by_id=current_user.id, dept_name_to_id_map=dept_name_to_id)
+                    admin = Admin.from_csv_row(row, created_by_id=current_user.id,
+                                               dept_name_to_id_map=dept_name_to_id,
+                                               college_name_to_code_map=college_name_to_code)
 
                     # Track unmapped departments (where we used the name as-is)
                     dept_name = row.get('department', '').strip()
                     if dept_name and dept_name.lower() not in ['all', ''] and admin.department_id == dept_name:
                         unmapped_depts.add(dept_name)
+
+                    # Track unmapped colleges
+                    college_name = row.get('college', '').strip()
+                    if college_name and college_name not in college_name_to_code and college_name.lower() not in college_name_to_code:
+                        unmapped_colleges.add(college_name)
 
                     db.session.add(admin)
                     imported += 1
@@ -579,8 +586,10 @@ def import_admins():
             db.session.commit()
 
             flash(f'Import complete: {imported} added, {skipped} skipped (already exist).', 'success')
+            if unmapped_colleges:
+                flash(f'Warning: {len(unmapped_colleges)} colleges not found: {", ".join(list(unmapped_colleges)[:5])}. Run course sync first.', 'warning')
             if unmapped_depts:
-                flash(f'Warning: {len(unmapped_depts)} departments not found in Courses.csv: {", ".join(list(unmapped_depts)[:5])}...', 'warning')
+                flash(f'Warning: {len(unmapped_depts)} departments not found: {", ".join(list(unmapped_depts)[:5])}. Run course sync first.', 'warning')
             if errors:
                 flash(f'Errors: {"; ".join(errors[:5])}', 'warning')
 

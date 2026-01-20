@@ -203,20 +203,50 @@ class Admin(UserMixin, db.Model):
         }
     
     @staticmethod
-    def from_csv_row(row, created_by_id=None, dept_name_to_id_map=None):
+    def from_csv_row(row, created_by_id=None, dept_name_to_id_map=None, college_name_to_code_map=None):
         """Create Admin from CSV row (for import)
 
         Args:
             row: CSV row dict
             created_by_id: ID of admin performing import
             dept_name_to_id_map: Dict mapping department names to CLASS_DEPARTMENT_ID
+            college_name_to_code_map: Dict mapping college names to college codes
         """
-        from app.models.course import Department  # Import here to avoid circular import
+        from app.models.course import Department, College  # Import here to avoid circular import
 
         # Determine role based on contact_type and department
         contact_type = row.get('contact_type', 'Department')
         department = row.get('department', '').strip()
-        college_code = row.get('college', '').strip()
+        college_value = row.get('college', '').strip()
+
+        # Map college name to college code
+        college_code = None
+        if college_value:
+            # First try the provided mapping
+            if college_name_to_code_map and college_value in college_name_to_code_map:
+                college_code = college_name_to_code_map[college_value]
+            elif college_name_to_code_map and college_value.lower() in college_name_to_code_map:
+                college_code = college_name_to_code_map[college_value.lower()]
+            else:
+                # Try to look up by name in College table
+                college = College.query.filter_by(name=college_value).first()
+                if college:
+                    college_code = college.code
+                else:
+                    # Try case-insensitive match
+                    college = College.query.filter(
+                        db.func.lower(College.name) == college_value.lower()
+                    ).first()
+                    if college:
+                        college_code = college.code
+                    else:
+                        # Check if it's already a valid code
+                        college = College.query.filter_by(code=college_value).first()
+                        if college:
+                            college_code = college.code
+                        else:
+                            # Last resort: use as-is (will likely fail foreign key)
+                            college_code = college_value
 
         if contact_type == 'College' or department.lower() == 'all' or not department:
             role = 'college_admin'
