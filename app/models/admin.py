@@ -256,9 +256,12 @@ class Admin(UserMixin, db.Model):
             # Map department NAME to department ID
             dept_id = None
 
-            # First try the provided mapping
+            # First try the provided mapping (exact match)
             if dept_name_to_id_map and department in dept_name_to_id_map:
                 dept_id = dept_name_to_id_map[department]
+            # Try lowercase version of mapping
+            elif dept_name_to_id_map and department.lower() in dept_name_to_id_map:
+                dept_id = dept_name_to_id_map[department.lower()]
             else:
                 # Try to look up by name in Department table
                 dept = Department.query.filter_by(name=department).first()
@@ -271,9 +274,12 @@ class Admin(UserMixin, db.Model):
                     ).first()
                     if dept:
                         dept_id = dept.id
+                    # If still not found, leave as None and set role to college_admin
+                    # This prevents foreign key violations - department contacts without
+                    # a valid department become college-level contacts
                     else:
-                        # Last resort: use the name as-is (will need manual fix)
-                        dept_id = department
+                        dept_id = None
+                        role = 'college_admin'
 
         admin = Admin(
             linkblue=row['linkblue'].lower().strip(),

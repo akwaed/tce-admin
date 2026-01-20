@@ -568,9 +568,10 @@ def import_admins():
                                                dept_name_to_id_map=dept_name_to_id,
                                                college_name_to_code_map=college_name_to_code)
 
-                    # Track unmapped departments (where we used the name as-is)
+                    # Track unmapped departments (where dept contact was converted to college-level)
                     dept_name = row.get('department', '').strip()
-                    if dept_name and dept_name.lower() not in ['all', ''] and admin.department_id == dept_name:
+                    contact_type = row.get('contact_type', 'Department')
+                    if dept_name and dept_name.lower() not in ['all', ''] and contact_type == 'Department' and admin.department_id is None:
                         unmapped_depts.add(dept_name)
 
                     # Track unmapped colleges
