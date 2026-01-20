@@ -11,7 +11,8 @@
                 <div class="text-center mb-4">
                     <div style="background-color: var(--uk-blue); color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
                         <h3 class="mb-0">
-                            <i class="bi bi-building me-2"></i>UK TCE Admin
+                            <img src="{{ url_for('static', filename='images/UKsmall.jpg') }}" alt="UK" width="24" height="24" class="me-2 align-text-bottom">
+                            UK TCE Admin
                         </h3>
                     </div>
                     <p class="text-muted">Teacher Course Evaluation Administration</p>
@@ -20,37 +21,15 @@
                 <!-- Azure AD Login - MOVED TO TOP -->
                 <div class="text-center mb-4">
                     <a href="{{ url_for('auth.azure_login') }}" class="btn btn-uk-primary w-100 py-3">
-                        <i class="bi bi-microsoft me-2"></i>Sign in with UK Account
+                        <i class="bi bi-microsoft me-2"></i>Sign in with LinkBlue
                     </a>
                     <p class="text-muted small mt-2 mb-0">University Single Sign-On</p>
                 </div>
-                
-                <hr>
-                <p class="text-center text-muted small mb-3">Super Admin Fallback</p>
-                
-                <form method="POST" action="{{ url_for('auth.login') }}">
-                    <div class="mb-3">
-                        <label for="username" class="form-label">Username</label>
-                        <div class="input-group">
-                            <span class="input-group-text"><i class="bi bi-person"></i></span>
-                            <input type="text" class="form-control" id="username" name="username" 
-                                   placeholder="Admin username" required autofocus>
-                        </div>
-                    </div>
-                    
-                    <div class="mb-4">
-                        <label for="password" class="form-label">Password</label>
-                        <div class="input-group">
-                            <span class="input-group-text"><i class="bi bi-lock"></i></span>
-                            <input type="password" class="form-control" id="password" name="password" 
-                                   placeholder="Password" required>
-                        </div>
-                    </div>
-                    
-                    <button type="submit" class="btn btn-outline-secondary w-100">
-                        <i class="bi bi-box-arrow-in-right me-2"></i>Admin Login
-                    </button>
-                </form>
+                <div class="text-center">
+                    <a href="{{ url_for('auth.admin_login') }}" class="btn btn-link btn-sm text-decoration-none">
+                        Admin fallback login
+                    </a>
+                </div>
             </div>
         </div>
         

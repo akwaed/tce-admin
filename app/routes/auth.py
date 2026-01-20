@@ -20,21 +20,28 @@ def get_msal_app():
     )
 
 
-@auth_bp.route('/login', methods=['GET', 'POST'])
+@auth_bp.route('/login', methods=['GET'])
 def login():
-    """Login page - Azure AD or Super Admin fallback"""
+    """Login page - Azure AD"""
     if current_user.is_authenticated:
         return redirect(url_for('main.dashboard'))
-    
-    # Handle super admin fallback login
+    return render_template('auth/login.html')
+
+
+@auth_bp.route('/admin-login', methods=['GET', 'POST'])
+def admin_login():
+    """Fallback login page for super admin credentials"""
+    if current_user.is_authenticated:
+        return redirect(url_for('main.dashboard'))
+
     if request.method == 'POST':
         username = request.form.get('username', '').strip().lower()
         password = request.form.get('password', '')
-        
+
         # Check for super admin credentials from config
         config_username = current_app.config['SUPER_ADMIN_USERNAME']
         config_password = current_app.config['SUPER_ADMIN_PASSWORD']
-        
+
         if username == config_username and password == config_password:
             # Find or create the super admin user
             admin = Admin.query.filter_by(linkblue=username).first()
@@ -43,7 +50,7 @@ def login():
                 flash('Welcome, Super Administrator!', 'success')
                 next_page = request.args.get('next')
                 return redirect(next_page or url_for('main.dashboard'))
-        
+
         # Also check if it's a regular admin with password (for future use)
         admin = Admin.query.filter_by(linkblue=username, is_active=True).first()
         if admin and admin.check_password(password):
@@ -51,11 +58,10 @@ def login():
             flash(f'Welcome, {admin.first_name}!', 'success')
             next_page = request.args.get('next')
             return redirect(next_page or url_for('main.dashboard'))
-        
-        flash('Invalid username or password.', 'danger')
-    
-    return render_template('auth/login.html')
 
+        flash('Invalid username or password.', 'danger')
+
+    return render_template('auth/admin_login.html')
 
 @auth_bp.route('/azure-login')
 def azure_login():
@@ -136,4 +142,16 @@ def logout():
     logout_user()
     session.clear()
     flash('You have been logged out.', 'info')
-    return redirect(url_for('auth.login'))
+    post_logout = url_for('auth.login', _external=True)
+    tenant_id = current_app.config.get('AZURE_AD_TENANT_ID')
+    logout_url = None
+    if tenant_id:
+        logout_url = (
+            f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/logout"
+            f"?post_logout_redirect_uri={post_logout}"
+        )
+
+    response = redirect(logout_url or post_logout)
+    response.delete_cookie(current_app.config.get('REMEMBER_COOKIE_NAME', 'remember_token'))
+    response.delete_cookie(current_app.config.get('SESSION_COOKIE_NAME', 'session'))
+    return response
