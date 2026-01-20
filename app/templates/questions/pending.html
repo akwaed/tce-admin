@@ -339,7 +339,7 @@ async function approveChange(id) {
     if (!confirm('Approve this change? The modification will be applied immediately.')) return;
     
     try {
-        const response = await fetch('/questions/api/pending/approve', {
+        const response = await fetch("{{ url_for('questions.api_approve_change') }}", {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ change_id: id })
@@ -374,7 +374,7 @@ async function confirmReject() {
     const reason = document.getElementById('rejectReason').value.trim();
     
     try {
-        const response = await fetch('/questions/api/pending/reject', {
+        const response = await fetch("{{ url_for('questions.api_reject_change') }}", {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ change_id: rejectingId, reason })

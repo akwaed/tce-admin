@@ -578,6 +578,13 @@ let availablePlaceholders = [];
 let selectedQuestionId = null;
 let addMode = 'existing';  // 'existing' or 'new'
 let needsApproval = {{ 'true' if user_role == 'dept_admin' else 'false' }};
+const apiUrls = {
+    getQuestions: "{{ url_for('questions.api_get_questions', unit_type='__TYPE__', unit_id='__UNIT_ID__') }}",
+    searchQuestions: "{{ url_for('questions.api_search_questions') }}",
+    updateQuestion: "{{ url_for('questions.api_update_question') }}",
+    removeQuestion: "{{ url_for('questions.api_remove_question') }}",
+    addQuestion: "{{ url_for('questions.api_add_question') }}"
+};
 
 function toggleTree(el, event) {
     event.stopPropagation();
@@ -623,7 +630,10 @@ async function loadQuestions(type, id) {
     content.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary"></div></div>';
 
     try {
-        const response = await fetch(`/questions/api/questions/${encodeURIComponent(type)}/${encodeURIComponent(id)}`);
+        const url = apiUrls.getQuestions
+            .replace('__TYPE__', encodeURIComponent(type))
+            .replace('__UNIT_ID__', encodeURIComponent(id));
+        const response = await fetch(url);
         const data = await response.json();
 
         if (data.error) {
@@ -707,7 +717,7 @@ async function saveEdit(id) {
     const newType = document.getElementById(`type-${id}`).value || null;
     
     try {
-        const response = await fetch('/questions/api/question/update', {
+        const response = await fetch(apiUrls.updateQuestion, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ question_id: id, question_text: newText, question_type: newType })
@@ -725,7 +735,7 @@ async function removeQuestion(placeholder) {
     if (!confirm(needsApproval ? 'Submit request to remove this question?' : 'Remove this question?')) return;
     
     try {
-        const response = await fetch('/questions/api/question/remove', {
+        const response = await fetch(apiUrls.removeQuestion, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ unit_type: selectedUnit.type, unit_id: selectedUnit.id, placeholder })
@@ -783,7 +793,7 @@ function searchQuestions(query) {
     }
     searchTimeout = setTimeout(async () => {
         try {
-            const response = await fetch(`/questions/api/questions/search?q=${encodeURIComponent(query)}`);
+            const response = await fetch(`${apiUrls.searchQuestions}?q=${encodeURIComponent(query)}`);
             const results = await response.json();
             
             document.getElementById('searchResults').innerHTML = results.length === 0 
@@ -832,7 +842,7 @@ async function confirmAddQuestion() {
     }
 
     try {
-        const response = await fetch('/questions/api/question/add', {
+        const response = await fetch(apiUrls.addQuestion, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
