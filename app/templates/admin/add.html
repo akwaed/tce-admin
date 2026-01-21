@@ -84,11 +84,11 @@
                     </div>
                     
                     <div class="mb-3" id="department_group">
-                        <label for="department" class="form-label">Department <span class="text-danger" id="dept_required_star" style="display: none;">*</span></label>
-                        <select class="form-select" id="department" name="department">
-                            <option value="">Select Department</option>
+                        <label for="departments" class="form-label">Department(s) <span class="text-danger" id="dept_required_star" style="display: none;">*</span></label>
+                        <select class="form-select" id="departments" name="departments" multiple size="6">
+                            <!-- Options populated by JavaScript -->
                         </select>
-                        <div class="form-text" id="dept_help_text"></div>
+                        <div class="form-text" id="dept_help_text">Hold Ctrl (Cmd on Mac) to select multiple departments</div>
                     </div>
                     
                     <div class="mb-3" id="primary_group">
@@ -214,7 +214,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const superAdminFields = document.getElementById('super_admin_fields');
     const contactType = document.getElementById('contact_type');
     const collegeSelect = document.getElementById('college');
-    const deptSelect = document.getElementById('department');
+    const deptSelect = document.getElementById('departments');
     const deptGroup = document.getElementById('department_group');
     const primaryGroup = document.getElementById('primary_group');
     const courseFields = document.getElementById('course_fields');
@@ -276,10 +276,12 @@ document.addEventListener('DOMContentLoaded', function() {
         // Show/hide department - always show for Department type, hide for College type
         deptGroup.style.display = isCollege ? 'none' : 'block';
 
-        // Department is required for Department contacts (they must have a specific department)
+        // Department is required for Department contacts (they must have at least one department)
         deptSelect.required = isDepartment;
         deptRequiredStar.style.display = isDepartment ? 'inline' : 'none';
-        deptHelpText.textContent = isDepartment ? 'Department contacts must be assigned to a specific department' : '';
+        deptHelpText.textContent = isDepartment
+            ? 'Select one or more departments. Hold Ctrl (Cmd on Mac) to select multiple.'
+            : 'Hold Ctrl (Cmd on Mac) to select multiple departments';
 
         // Primary contact only for College type
         primaryGroup.style.display = isCollege ? 'block' : 'none';
@@ -288,7 +290,8 @@ document.addEventListener('DOMContentLoaded', function() {
         courseFields.style.display = isCollege ? 'none' : 'block';
 
         if (isCollege) {
-            deptSelect.value = '';
+            // Clear selections for college contacts
+            Array.from(deptSelect.options).forEach(opt => opt.selected = false);
         }
 
         // Update departments dropdown when contact type changes
@@ -297,14 +300,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function updateDepartments() {
         const college = collegeSelect.value;
-        const isDepartment = contactType.value === 'Department';
 
-        // For Department contacts, no "All" option - they must select a specific department
-        if (isDepartment) {
-            deptSelect.innerHTML = '<option value="">Select Department</option>';
-        } else {
-            deptSelect.innerHTML = '<option value="">All (College-level)</option>';
-        }
+        // Clear existing options
+        deptSelect.innerHTML = '';
 
         if (college && collegeDepts[college]) {
             collegeDepts[college].forEach(dept => {

@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+
+{% block title %}Copy Administrator{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('admin.list_admins') }}">Admin List</a></li>
+            <li class="breadcrumb-item active">Copy Administrator</li>
+        </ol>
+    </nav>
+    <h1><i class="bi bi-copy me-2"></i>Copy Administrator</h1>
+    <p class="text-muted mb-0">Create a new admin with the same settings as {{ source_admin.full_name }}</p>
+</div>
+
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <!-- Source Admin Settings (Read-Only) -->
+        <div class="card mb-4">
+            <div class="card-header bg-light">
+                <h5 class="mb-0"><i class="bi bi-person-badge me-2"></i>Copying Settings From</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <p class="mb-2"><strong>Name:</strong> {{ source_admin.full_name }}</p>
+                        <p class="mb-2"><strong>LinkBlue:</strong> <code>{{ source_admin.linkblue }}</code></p>
+                        <p class="mb-2"><strong>Contact Type:</strong>
+                            <span class="badge {% if source_admin.contact_type == 'College' %}bg-primary{% elif source_admin.contact_type == 'Course Coordinator' %}bg-info{% else %}bg-secondary{% endif %}">
+                                {{ source_admin.contact_type }}
+                            </span>
+                        </p>
+                    </div>
+                    <div class="col-md-6">
+                        <p class="mb-2"><strong>College:</strong> {{ source_admin.college_code or '-' }}</p>
+                        <p class="mb-2"><strong>Department(s):</strong>
+                            {% set dept_names = source_admin.department_names %}
+                            {% if dept_names %}
+                                {{ dept_names|join(', ') }}
+                            {% elif source_admin.contact_type == 'College' %}
+                                <span class="text-muted">All</span>
+                            {% else %}
+                                -
+                            {% endif %}
+                        </p>
+                        <p class="mb-2"><strong>Level Type:</strong> {{ source_admin.level_type }}</p>
+                    </div>
+                </div>
+                <hr>
+                <div class="row">
+                    <div class="col-12">
+                        <strong>Access:</strong>
+                        {% if source_admin.has_dashboard_access %}
+                        <span class="badge bg-info" title="Dashboard">Dashboard</span>
+                        {% endif %}
+                        {% if source_admin.has_static_report_access %}
+                        <span class="badge bg-info" title="Static Reports">Static Reports</span>
+                        {% endif %}
+                        {% if source_admin.has_qb_access %}
+                        <span class="badge bg-warning text-dark" title="Question Bank">Question Bank</span>
+                        {% endif %}
+                    </div>
+                </div>
+                {% if source_admin.course_prefix %}
+                <div class="row mt-2">
+                    <div class="col-12">
+                        <strong>Course:</strong> {{ source_admin.course_prefix }} {{ source_admin.course_number }}
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- New Admin Form -->
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-person-plus me-2"></i>New Administrator Details</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('admin.copy_admin', admin_id=source_admin.id) }}">
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle me-2"></i>
+                        Enter the new administrator's details below. All role settings and permissions will be copied from {{ source_admin.full_name }}.
+                        <br><small class="text-muted">Note: Primary contact status is never copied - new admins are created as non-primary.</small>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="linkblue" class="form-label">LinkBlue <span class="text-danger">*</span></label>
+                        <div class="input-group">
+                            <span class="input-group-text">@</span>
+                            <input type="text" class="form-control" id="linkblue" name="linkblue"
+                                   required placeholder="e.g., jsmith2" pattern="[a-z0-9]+" autofocus>
+                        </div>
+                        <div class="form-text">University ID (lowercase, no spaces)</div>
+                    </div>
+
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="first_name" class="form-label">First Name <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="first_name" name="first_name" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="last_name" class="form-label">Last Name <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="last_name" name="last_name" required>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="email" class="form-label">Email</label>
+                        <input type="email" class="form-control" id="email" name="email"
+                               placeholder="Will default to linkblue@uky.edu">
+                    </div>
+
+                    <hr class="my-4">
+
+                    <div class="d-flex justify-content-between">
+                        <a href="{{ url_for('admin.list_admins') }}" class="btn btn-outline-secondary">
+                            <i class="bi bi-x-lg me-1"></i>Cancel
+                        </a>
+                        <button type="submit" class="btn btn-uk-primary">
+                            <i class="bi bi-copy me-1"></i>Create Copy
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
