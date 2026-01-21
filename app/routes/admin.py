@@ -271,6 +271,100 @@ def add_admin():
                          college_depts=college_depts)
 
 
+@admin_bp.route('/copy/<int:admin_id>', methods=['GET', 'POST'])
+@admin_required
+def copy_admin(admin_id):
+    """Copy an existing admin's settings to create a new admin"""
+    source_admin = Admin.query.get_or_404(admin_id)
+
+    # Permission check - must be able to edit the source admin to copy them
+    if not current_user.can_edit_admin(source_admin):
+        flash('You do not have permission to copy this admin.', 'danger')
+        return redirect(url_for('admin.list_admins'))
+
+    if request.method == 'POST':
+        # Get the new admin's basic info
+        linkblue = request.form.get('linkblue', '').strip().lower()
+        first_name = request.form.get('first_name', '').strip()
+        last_name = request.form.get('last_name', '').strip()
+        email = request.form.get('email', '').strip()
+
+        # Validation
+        if not linkblue or not first_name or not last_name:
+            flash('LinkBlue, First Name, and Last Name are required.', 'danger')
+            return redirect(url_for('admin.copy_admin', admin_id=admin_id))
+
+        # Check for duplicate
+        existing = Admin.query.filter_by(linkblue=linkblue).first()
+        if existing:
+            if existing.is_active:
+                flash(f'An admin with LinkBlue "{linkblue}" already exists.', 'danger')
+                return redirect(url_for('admin.copy_admin', admin_id=admin_id))
+            else:
+                # Reactivate with copied settings
+                existing.first_name = first_name
+                existing.last_name = last_name
+                existing.email = email or f'{linkblue}@uky.edu'
+                existing.role = source_admin.role
+                existing.college_code = source_admin.college_code
+                existing.department_id = source_admin.department_id
+                existing.contact_type = source_admin.contact_type
+                existing.course_prefix = source_admin.course_prefix
+                existing.course_number = source_admin.course_number
+                existing.level_type = source_admin.level_type
+                existing.is_primary_contact = False  # Never copy primary contact status
+                existing.has_dashboard_access = source_admin.has_dashboard_access
+                existing.has_static_report_access = source_admin.has_static_report_access
+                existing.has_qb_access = source_admin.has_qb_access
+                existing.is_active = True
+                if not existing.created_by_id:
+                    existing.created_by_id = current_user.id
+
+                # Copy multiple departments
+                existing.departments = []
+                for dept in source_admin.departments.all():
+                    existing.departments.append(dept)
+
+                db.session.commit()
+                flash(f'Admin "{existing.full_name}" reactivated with copied settings from {source_admin.full_name}.', 'success')
+                return redirect(url_for('admin.list_admins'))
+
+        # Create new admin with copied settings
+        new_admin = Admin(
+            linkblue=linkblue,
+            first_name=first_name,
+            last_name=last_name,
+            email=email or f'{linkblue}@uky.edu',
+            role=source_admin.role,
+            college_code=source_admin.college_code,
+            department_id=source_admin.department_id,
+            contact_type=source_admin.contact_type,
+            course_prefix=source_admin.course_prefix,
+            course_number=source_admin.course_number,
+            level_type=source_admin.level_type,
+            is_primary_contact=False,  # Never copy primary contact status
+            has_dashboard_access=source_admin.has_dashboard_access,
+            has_static_report_access=source_admin.has_static_report_access,
+            has_qb_access=source_admin.has_qb_access,
+            created_by_id=current_user.id
+        )
+
+        db.session.add(new_admin)
+        db.session.flush()
+
+        # Copy multiple departments
+        for dept in source_admin.departments.all():
+            new_admin.departments.append(dept)
+
+        db.session.commit()
+
+        flash(f'Admin "{new_admin.full_name}" created with copied settings from {source_admin.full_name}.', 'success')
+        return redirect(url_for('admin.list_admins'))
+
+    # GET - show copy form
+    return render_template('admin/copy.html', source_admin=source_admin)
+
+
 @admin_bp.route('/edit/<int:admin_id>', methods=['GET', 'POST'])
 @admin_required
 def edit_admin(admin_id):
