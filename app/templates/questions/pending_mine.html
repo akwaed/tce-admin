@@ -65,6 +65,48 @@
         padding: 0.5rem;
         border-radius: 4px;
         color: #2e7d32;
+        font-weight: 600;
+    }
+
+    /* Enhanced card styles based on change type */
+    .pending-card.type-remove {
+        border-left: 4px solid #c62828;
+        background: linear-gradient(135deg, #fff 0%, #ffebee 100%);
+    }
+
+    .pending-card.type-add {
+        border-left: 4px solid #2e7d32;
+        background: linear-gradient(135deg, #fff 0%, #e8f5e9 100%);
+    }
+
+    .pending-card.type-edit {
+        border-left: 4px solid #1565c0;
+        background: linear-gradient(135deg, #fff 0%, #e3f2fd 100%);
+    }
+
+    .question-preview {
+        background: #f8f9fa;
+        border: 1px dashed #ccc;
+        border-radius: 4px;
+        padding: 0.75rem;
+        margin-top: 0.75rem;
+        font-style: italic;
+        color: #555;
+    }
+
+    .question-preview.strikethrough {
+        text-decoration: line-through;
+        color: #c62828;
+        background: #ffebee;
+        border-color: #ef9a9a;
+    }
+
+    .question-preview.highlighted {
+        font-weight: 600;
+        color: #2e7d32;
+        background: #e8f5e9;
+        border-color: #a5d6a7;
+        font-style: normal;
     }
 
     .empty-state {
@@ -100,21 +142,21 @@
 </div>
 
 {% for change in pending_changes %}
-<div class="pending-card">
+<div class="pending-card type-{{ change.type }}">
     <div class="pending-header">
         <div>
             <span class="change-type {{ change.type }}">
                 {% if change.type == 'add' %}
-                <i class="bi bi-plus-circle me-1"></i>Add
+                <i class="bi bi-plus-circle me-1"></i>Add Question
                 {% elif change.type == 'remove' %}
-                <i class="bi bi-dash-circle me-1"></i>Remove
+                <i class="bi bi-dash-circle me-1"></i>Remove Question
                 {% else %}
-                <i class="bi bi-pencil me-1"></i>Edit
+                <i class="bi bi-pencil me-1"></i>Edit Question
                 {% endif %}
             </span>
         </div>
         <div class="pending-meta text-end">
-            <div class="small">{{ change.submitted_at[:16].replace('T', ' ') }}</div>
+            <div class="small"><i class="bi bi-clock me-1"></i>{{ change.submitted_at[:16].replace('T', ' ') }}</div>
         </div>
     </div>
 
@@ -125,18 +167,38 @@
         </div>
         {% if change.old_type or change.new_type %}
         <div class="mb-2">
-            <span class="label">Type:</span>
-            {{ change.old_type or 'Unknown' }} → {{ change.new_type or change.old_type or 'Unknown' }}
+            <span class="label">Type Change:</span>
+            <span style="text-decoration: line-through; color: #c62828;">{{ change.old_type or 'Unknown' }}</span>
+            <i class="bi bi-arrow-right mx-2"></i>
+            <span style="font-weight: 600; color: #2e7d32;">{{ change.new_type or change.old_type or 'Unknown' }}</span>
         </div>
         {% endif %}
         {% if change.old_value %}
         <div class="diff-old">
-            <strong>Old:</strong> {{ change.old_value[:200] }}{% if change.old_value|length > 200 %}...{% endif %}
+            <strong><i class="bi bi-x-circle me-1"></i>Current:</strong> {{ change.old_value[:200] }}{% if change.old_value|length > 200 %}...{% endif %}
         </div>
         {% endif %}
         {% if change.new_text %}
         <div class="diff-new">
-            <strong>New:</strong> {{ change.new_text[:200] }}{% if change.new_text|length > 200 %}...{% endif %}
+            <strong><i class="bi bi-check-circle me-1"></i>Proposed:</strong> {{ change.new_text[:200] }}{% if change.new_text|length > 200 %}...{% endif %}
+        </div>
+        {% endif %}
+        {% elif change.type == 'remove' %}
+        <div class="mb-1">
+            <span class="label">Unit Type:</span> {{ change.unit_type }}
+        </div>
+        <div class="mb-1">
+            <span class="label">Unit ID:</span> <code>{{ change.unit_id }}</code>
+        </div>
+        <div class="mb-1">
+            <span class="label">Placeholder:</span> <code>{{ change.placeholder }}</code>
+        </div>
+        <div class="mb-1">
+            <span class="label">Question ID:</span> <code>{{ change.question_id }}</code>
+        </div>
+        {% if change.old_value %}
+        <div class="question-preview strikethrough">
+            <i class="bi bi-trash me-1"></i>{{ change.old_value[:300] }}{% if change.old_value|length > 300 %}...{% endif %}
         </div>
         {% endif %}
         {% else %}
@@ -149,9 +211,14 @@
         <div class="mb-1">
             <span class="label">Placeholder:</span> <code>{{ change.placeholder }}</code>
         </div>
-        <div>
+        <div class="mb-1">
             <span class="label">Question ID:</span> <code>{{ change.question_id }}</code>
         </div>
+        {% if change.new_text %}
+        <div class="question-preview highlighted">
+            <i class="bi bi-plus-circle me-1"></i>{{ change.new_text[:300] }}{% if change.new_text|length > 300 %}...{% endif %}
+        </div>
+        {% endif %}
         {% endif %}
     </div>
 </div>

@@ -365,7 +365,111 @@
         font-size: 0.85rem;
         color: #e65100;
     }
-    
+
+    /* Pending Change Visual Feedback Styles */
+    .question-card.pending-remove {
+        background: #ffebee;
+        border-color: #ef9a9a;
+        opacity: 0.85;
+    }
+
+    .question-card.pending-remove .question-text {
+        text-decoration: line-through;
+        color: #c62828;
+    }
+
+    .question-card.pending-remove .question-actions {
+        display: none;
+    }
+
+    .question-card.pending-add {
+        background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+        border: 2px solid #66bb6a;
+        box-shadow: 0 0 8px rgba(102, 187, 106, 0.3);
+    }
+
+    .question-card.pending-add .question-text {
+        font-weight: 600;
+        color: #2e7d32;
+    }
+
+    .question-card.pending-edit {
+        background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+        border: 2px solid #42a5f5;
+        box-shadow: 0 0 8px rgba(66, 165, 245, 0.3);
+    }
+
+    .question-card.pending-edit .question-actions {
+        display: none;
+    }
+
+    .pending-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        font-size: 0.7rem;
+        padding: 0.2rem 0.5rem;
+        border-radius: 4px;
+        font-weight: 600;
+        text-transform: uppercase;
+        margin-left: 0.5rem;
+    }
+
+    .pending-badge.pending-remove {
+        background: #ffcdd2;
+        color: #c62828;
+    }
+
+    .pending-badge.pending-add {
+        background: #c8e6c9;
+        color: #2e7d32;
+    }
+
+    .pending-badge.pending-edit {
+        background: #bbdefb;
+        color: #1565c0;
+    }
+
+    /* Diff-style display for edits */
+    .diff-display {
+        margin-top: 0.5rem;
+        padding: 0.5rem;
+        background: #fff;
+        border-radius: 4px;
+        border: 1px solid #e0e0e0;
+    }
+
+    .diff-old-text {
+        text-decoration: line-through;
+        background: #ffebee;
+        color: #c62828;
+        padding: 0.25rem 0.5rem;
+        border-radius: 3px;
+        display: inline;
+    }
+
+    .diff-new-text {
+        background: #e8f5e9;
+        color: #2e7d32;
+        font-weight: 600;
+        padding: 0.25rem 0.5rem;
+        border-radius: 3px;
+        display: inline;
+    }
+
+    .diff-arrow {
+        color: #666;
+        margin: 0 0.5rem;
+        font-weight: bold;
+    }
+
+    .pending-info {
+        font-size: 0.75rem;
+        color: #666;
+        margin-top: 0.5rem;
+        font-style: italic;
+    }
+
     @media (max-width: 992px) {
         .qb-container { flex-direction: column; height: auto; }
         .tree-panel { width: 100%; max-height: 300px; }
@@ -575,6 +679,7 @@ let currentTab = 'course';
 let courseQuestions = [];
 let instructorQuestions = [];
 let availablePlaceholders = [];
+let pendingChanges = [];  // Store pending changes for visual feedback
 let selectedQuestionId = null;
 let addMode = 'existing';  // 'existing' or 'new'
 let needsApproval = {{ 'true' if user_role == 'dept_admin' else 'false' }};
@@ -645,6 +750,7 @@ async function loadQuestions(type, id) {
         courseQuestions = data.course_questions || [];
         instructorQuestions = data.instructor_questions || [];
         availablePlaceholders = data.available_placeholders || [];
+        pendingChanges = data.pending_changes || [];
 
         document.getElementById('courseCount').textContent = courseQuestions.length;
         document.getElementById('instructorCount').textContent = instructorQuestions.length;
@@ -652,31 +758,91 @@ async function loadQuestions(type, id) {
         document.getElementById('addQuestionSection').style.display = 'block';
 
         renderQuestions();
+        renderPendingAdditions();
     } catch (error) {
         console.error('Fetch error:', error);
         content.innerHTML = '<div class="alert alert-danger text-center py-4">Error loading questions. Please try again.</div>';
     }
 }
 
+function getPendingChangeForQuestion(questionId, placeholder) {
+    // Check for pending removal by placeholder
+    const removeChange = pendingChanges.find(c =>
+        c.type === 'remove' && c.placeholder === placeholder
+    );
+    if (removeChange) return { type: 'remove', change: removeChange };
+
+    // Check for pending edit by question ID
+    const editChange = pendingChanges.find(c =>
+        c.type === 'edit' && c.question_id === questionId
+    );
+    if (editChange) return { type: 'edit', change: editChange };
+
+    return null;
+}
+
 function renderQuestions() {
     const questions = currentTab === 'course' ? courseQuestions : instructorQuestions;
     const content = document.getElementById('questionsContent');
-    
+
     if (questions.length === 0) {
-        content.innerHTML = `<div class="questions-empty"><i class="bi bi-inbox"></i><p>No ${currentTab} questions assigned.</p><p class="small text-muted">Click "Add Question" below to assign questions.</p></div>`;
-        return;
+        // Check if there are pending additions to show
+        const pendingAdds = pendingChanges.filter(c => c.type === 'add');
+        const relevantAdds = pendingAdds.filter(c => {
+            const isInstructor = c.placeholder && (c.placeholder.toLowerCase().includes('ins_') || c.placeholder.toLowerCase().includes('_ins_'));
+            return currentTab === 'instructor' ? isInstructor : !isInstructor;
+        });
+
+        if (relevantAdds.length === 0) {
+            content.innerHTML = `<div class="questions-empty"><i class="bi bi-inbox"></i><p>No ${currentTab} questions assigned.</p><p class="small text-muted">Click "Add Question" below to assign questions.</p></div>`;
+            return;
+        }
     }
-    
-    content.innerHTML = questions.map(q => `
-        <div class="question-card" data-id="${q.id}" data-placeholder="${q.placeholder}">
+
+    let html = questions.map(q => {
+        const pendingInfo = getPendingChangeForQuestion(q.id, q.placeholder);
+        let cardClass = 'question-card';
+        let pendingBadge = '';
+        let questionTextHtml = '';
+        let pendingInfoHtml = '';
+
+        if (pendingInfo) {
+            if (pendingInfo.type === 'remove') {
+                cardClass += ' pending-remove';
+                pendingBadge = '<span class="pending-badge pending-remove"><i class="bi bi-hourglass-split"></i> Pending Removal</span>';
+                questionTextHtml = `<div class="question-text">${escapeHtml(q.text)}</div>`;
+                pendingInfoHtml = `<div class="pending-info"><i class="bi bi-info-circle"></i> Awaiting approval - this question will be removed once approved</div>`;
+            } else if (pendingInfo.type === 'edit') {
+                cardClass += ' pending-edit';
+                pendingBadge = '<span class="pending-badge pending-edit"><i class="bi bi-hourglass-split"></i> Pending Edit</span>';
+                const oldText = pendingInfo.change.old_value || q.text;
+                const newText = pendingInfo.change.new_text || q.text;
+                questionTextHtml = `
+                    <div class="question-text">${escapeHtml(q.text)}</div>
+                    <div class="diff-display">
+                        <span class="diff-old-text">${escapeHtml(oldText)}</span>
+                        <span class="diff-arrow">→</span>
+                        <span class="diff-new-text">${escapeHtml(newText)}</span>
+                    </div>`;
+                pendingInfoHtml = `<div class="pending-info"><i class="bi bi-info-circle"></i> Awaiting approval - changes shown above will be applied once approved</div>`;
+            }
+        } else {
+            questionTextHtml = `<div class="question-text">${escapeHtml(q.text)}</div>`;
+        }
+
+        return `
+        <div class="${cardClass}" data-id="${q.id}" data-placeholder="${q.placeholder}">
             <div class="question-card-header">
-                <span class="question-type ${q.type.toLowerCase()}">${q.type}</span>
+                <div>
+                    <span class="question-type ${q.type.toLowerCase()}">${q.type}</span>
+                    ${pendingBadge}
+                </div>
                 <div class="question-actions">
                     <button class="btn-edit" onclick="editQuestion('${q.id}')" title="Edit"><i class="bi bi-pencil"></i></button>
                     <button class="btn-remove" onclick="removeQuestion('${q.placeholder}')" title="Remove"><i class="bi bi-trash"></i></button>
                 </div>
             </div>
-            <div class="question-text">${escapeHtml(q.text)}</div>
+            ${questionTextHtml}
             <div class="question-edit-form">
                 <div class="mb-2">
                     <label class="form-label">Question Type</label>
@@ -692,15 +858,56 @@ function renderQuestions() {
                     <button class="btn btn-sm btn-uk-primary" onclick="saveEdit('${q.id}')">${needsApproval ? 'Submit for Approval' : 'Save'}</button>
                 </div>
             </div>
+            ${pendingInfoHtml}
             <div class="question-meta"><code>${q.id}</code> • ${q.placeholder}</div>
         </div>
-    `).join('');
+    `}).join('');
+
+    content.innerHTML = html;
+}
+
+function renderPendingAdditions() {
+    // Render pending additions that haven't been applied yet
+    const content = document.getElementById('questionsContent');
+    const pendingAdds = pendingChanges.filter(c => c.type === 'add');
+
+    if (pendingAdds.length === 0) return;
+
+    // Filter to current tab (course vs instructor)
+    const relevantAdds = pendingAdds.filter(c => {
+        const isInstructor = c.placeholder && (c.placeholder.toLowerCase().includes('ins_') || c.placeholder.toLowerCase().includes('_ins_'));
+        return currentTab === 'instructor' ? isInstructor : !isInstructor;
+    });
+
+    if (relevantAdds.length === 0) return;
+
+    const additionsHtml = relevantAdds.map(c => {
+        const qType = c.placeholder && c.placeholder.toLowerCase().includes('sel') ? 'Selection' : 'Comment';
+        const questionText = c.new_text || `Question ID: ${c.question_id}`;
+
+        return `
+        <div class="question-card pending-add" data-pending-id="${c.id}">
+            <div class="question-card-header">
+                <div>
+                    <span class="question-type ${qType.toLowerCase()}">${qType}</span>
+                    <span class="pending-badge pending-add"><i class="bi bi-hourglass-split"></i> Pending Addition</span>
+                </div>
+            </div>
+            <div class="question-text">${escapeHtml(questionText)}</div>
+            <div class="pending-info"><i class="bi bi-info-circle"></i> Awaiting approval - this question will be added once approved</div>
+            <div class="question-meta"><code>${c.question_id}</code> • ${c.placeholder}</div>
+        </div>
+    `}).join('');
+
+    // Append pending additions after existing questions
+    content.innerHTML += additionsHtml;
 }
 
 function switchTab(tab) {
     currentTab = tab;
     document.querySelectorAll('.questions-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
     renderQuestions();
+    renderPendingAdditions();
 }
 
 function editQuestion(id) {
