@@ -120,12 +120,27 @@
                             {% if admin.contact_type == 'College' %}
                             <span class="text-muted">All</span>
                             {% elif admin.contact_type == 'Course Coordinator' %}
+                            {% set dept_names = admin.department_names %}
+                            {% if dept_names %}
+                            {{ dept_names|join(', ') }}
+                            {% else %}
                             {{ admin.department.name if admin.department else (admin.department_id or '-') }}
+                            {% endif %}
                             {% if admin.course_prefix %}
                             <br><small class="text-muted">{{ admin.course_prefix }} {{ admin.course_number }}</small>
                             {% endif %}
                             {% else %}
+                            {% set dept_names = admin.department_names %}
+                            {% if dept_names|length > 1 %}
+                            <span title="{{ dept_names|join(', ') }}">
+                                {{ dept_names[0] }}
+                                <span class="badge bg-secondary">+{{ dept_names|length - 1 }} more</span>
+                            </span>
+                            {% elif dept_names %}
+                            {{ dept_names[0] }}
+                            {% else %}
                             {{ admin.department.name if admin.department else (admin.department_id or '-') }}
+                            {% endif %}
                             {% endif %}
                         </td>
                         <td>

@@ -129,7 +129,10 @@ def add_admin():
 
         contact_type = request.form.get('contact_type', 'Department')
         college_code = request.form.get('college', '').strip()
-        department_id = request.form.get('department', '').strip()
+        # Support multiple department selections
+        department_ids = request.form.getlist('departments')
+        # Filter out empty values
+        department_ids = [d.strip() for d in department_ids if d.strip()]
         is_primary = request.form.get('primary_contact') == 'yes'
         level_type = request.form.get('level_type', 'Subject Viewer')
         course_prefix = request.form.get('prefix', '').strip()
@@ -164,10 +167,10 @@ def add_admin():
                     flash('You can only add admins within your college.', 'danger')
                     return redirect(url_for('admin.add_admin'))
 
-            # Determine role
-            if contact_type == 'College' or department_id == 'All' or not department_id:
+            # Determine role based on contact type and departments
+            if contact_type == 'College' or not department_ids:
                 role = 'college_admin'
-                department_id = None
+                department_ids = []
             else:
                 role = 'dept_admin'
 
@@ -195,7 +198,7 @@ def add_admin():
             existing.email = email or f'{linkblue}@uky.edu'
             existing.role = role
             existing.college_code = college_code
-            existing.department_id = department_id
+            existing.department_id = department_ids[0] if len(department_ids) == 1 else None  # Backwards compat
             existing.contact_type = contact_type
             existing.course_prefix = course_prefix or None
             existing.course_number = course_number or None
@@ -207,6 +210,14 @@ def add_admin():
             existing.is_active = True
             if not existing.created_by_id:
                 existing.created_by_id = current_user.id
+
+            # Clear and set multiple departments
+            existing.departments = []
+            if department_ids:
+                for dept_id in department_ids:
+                    dept = Department.query.get(dept_id)
+                    if dept:
+                        existing.departments.append(dept)
 
             db.session.add(existing)
             db.session.commit()
@@ -222,7 +233,7 @@ def add_admin():
             email=email or f'{linkblue}@uky.edu',
             role=role,
             college_code=college_code,
-            department_id=department_id,
+            department_id=department_ids[0] if len(department_ids) == 1 else None,  # Backwards compat
             contact_type=contact_type,
             course_prefix=course_prefix or None,
             course_number=course_number or None,
@@ -235,6 +246,15 @@ def add_admin():
         )
 
         db.session.add(admin)
+        db.session.flush()  # Get the admin ID
+
+        # Add multiple departments
+        if department_ids:
+            for dept_id in department_ids:
+                dept = Department.query.get(dept_id)
+                if dept:
+                    admin.departments.append(dept)
+
         db.session.commit()
 
         flash(f'Admin "{admin.full_name}" created successfully.', 'success')
@@ -336,22 +356,38 @@ def edit_admin(admin_id):
             admin.course_prefix = request.form.get('prefix', '').strip() or None
             admin.course_number = request.form.get('course', '').strip() or None
 
-            # College and department - only super admin can change these freely
+            # College and departments - only super admin can change these freely
             new_college = request.form.get('college', '').strip()
-            new_department = request.form.get('department', '').strip()
+            new_department_ids = request.form.getlist('departments')
+            new_department_ids = [d.strip() for d in new_department_ids if d.strip()]
 
             if current_user.is_super_admin():
                 admin.college_code = new_college
-                admin.department_id = new_department if new_department and new_department != 'All' else None
+                # Set single department_id for backwards compatibility
+                admin.department_id = new_department_ids[0] if len(new_department_ids) == 1 else None
+                # Update multiple departments
+                admin.departments = []
+                for dept_id in new_department_ids:
+                    dept = Department.query.get(dept_id)
+                    if dept:
+                        admin.departments.append(dept)
             elif current_user.is_college_admin() and current_user.is_primary_contact:
                 # Primary college admin can reassign within their college
                 if new_college == current_user.college_code:
-                    admin.department_id = new_department if new_department and new_department != 'All' else None
+                    admin.department_id = new_department_ids[0] if len(new_department_ids) == 1 else None
+                    # Update multiple departments
+                    admin.departments = []
+                    for dept_id in new_department_ids:
+                        dept = Department.query.get(dept_id)
+                        if dept:
+                            admin.departments.append(dept)
 
-            # Determine role based on contact type and department
-            if admin.contact_type == 'College' or not admin.department_id:
+            # Determine role based on contact type and departments
+            has_departments = bool(admin.departments.count()) or bool(admin.department_id)
+            if admin.contact_type == 'College' or not has_departments:
                 admin.role = 'college_admin'
                 admin.department_id = None
+                admin.departments = []
             else:
                 admin.role = 'dept_admin'
 

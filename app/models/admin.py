@@ -8,6 +8,13 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import UserMixin
 
 
+# Association table for Admin <-> Department many-to-many relationship
+admin_departments = db.Table('admin_departments',
+    db.Column('admin_id', db.Integer, db.ForeignKey('admins.id'), primary_key=True),
+    db.Column('department_id', db.String(50), db.ForeignKey('departments.id'), primary_key=True)
+)
+
+
 class Admin(UserMixin, db.Model):
     """
     Admin users for TCE system
@@ -38,6 +45,11 @@ class Admin(UserMixin, db.Model):
     # Relationships
     college = db.relationship('College', foreign_keys=[college_code], backref='admins')
     department = db.relationship('Department', foreign_keys=[department_id], backref='admins')
+
+    # Many-to-many relationship for admins managing multiple departments
+    departments = db.relationship('Department', secondary=admin_departments,
+                                  backref=db.backref('department_admins', lazy='dynamic'),
+                                  lazy='dynamic')
     
     # Contact type from legacy system: College, Department, Course Coordinator
     contact_type = db.Column(db.String(30), default='Department')
@@ -101,7 +113,36 @@ class Admin(UserMixin, db.Model):
         elif self.role == 'college_admin':
             return self.college_code or 'Unknown College'
         else:
-            return f"{self.college_code} - {self.department_id}" if self.department_id else self.college_code
+            # Check for multiple departments first
+            dept_list = self.departments.all()
+            if dept_list:
+                dept_names = [d.name for d in dept_list]
+                return f"{self.college_code} - {', '.join(dept_names)}"
+            elif self.department_id:
+                return f"{self.college_code} - {self.department_id}"
+            return self.college_code
+
+    @property
+    def department_ids(self):
+        """Get list of all department IDs this admin can access"""
+        dept_list = self.departments.all()
+        if dept_list:
+            return [d.id for d in dept_list]
+        elif self.department_id:
+            return [self.department_id]
+        return []
+
+    @property
+    def department_names(self):
+        """Get list of all department names this admin can access"""
+        dept_list = self.departments.all()
+        if dept_list:
+            return [d.name for d in dept_list]
+        elif self.department:
+            return [self.department.name]
+        elif self.department_id:
+            return [self.department_id]
+        return []
     
     # Permission check methods
     def is_super_admin(self):
@@ -123,7 +164,13 @@ class Admin(UserMixin, db.Model):
         if self.role == 'college_admin' and self.college_code == college_code:
             return True
         if self.role == 'dept_admin':
-            return self.college_code == college_code and self.department_id == department_id
+            if self.college_code != college_code:
+                return False
+            # Check against multiple departments
+            admin_dept_ids = self.department_ids
+            if admin_dept_ids:
+                return department_id in admin_dept_ids
+            return self.department_id == department_id
         return False
     
     def can_edit_admin(self, other_admin):
@@ -161,6 +208,18 @@ class Admin(UserMixin, db.Model):
         elif self.role == 'college_admin':
             return Admin.query.filter_by(college_code=self.college_code)
         else:
+            # Dept admin can see admins in any of their departments
+            admin_dept_ids = self.department_ids
+            if admin_dept_ids:
+                from app.models.course import Department
+                # Include admins whose department_id matches OR who have overlapping departments
+                return Admin.query.filter(
+                    Admin.college_code == self.college_code,
+                    db.or_(
+                        Admin.department_id.in_(admin_dept_ids),
+                        Admin.departments.any(Department.id.in_(admin_dept_ids))
+                    )
+                )
             return Admin.query.filter_by(
                 college_code=self.college_code,
                 department_id=self.department_id
@@ -177,6 +236,8 @@ class Admin(UserMixin, db.Model):
             'role': self.role,
             'college_code': self.college_code,
             'department_id': self.department_id,
+            'department_ids': self.department_ids,
+            'department_names': self.department_names,
             'contact_type': self.contact_type,
             'is_primary_contact': self.is_primary_contact,
             'has_dashboard_access': self.has_dashboard_access,
@@ -188,6 +249,15 @@ class Admin(UserMixin, db.Model):
     
     def to_csv_row(self):
         """Convert to CSV row format (for export)"""
+        # For multiple departments, join with semicolon
+        dept_ids = self.department_ids
+        if dept_ids:
+            dept_value = ';'.join(dept_ids)
+        elif self.department_id:
+            dept_value = self.department_id
+        else:
+            dept_value = 'All'
+
         return {
             'id': self.id,
             'linkblue': self.linkblue,
@@ -196,7 +266,7 @@ class Admin(UserMixin, db.Model):
             'primary_contact': 'true' if self.is_primary_contact else 'false',
             'contact_type': self.contact_type,
             'college': self.college_code,
-            'department': self.department_id or 'All',
+            'department': dept_value,
             'course': self.course_number or '',
             'prefix': self.course_prefix or '',
             'level_type': self.level_type

@@ -102,12 +102,11 @@
                     </div>
                     
                     <div class="mb-3" id="department_group">
-                        <label for="department" class="form-label">Department <span class="text-danger" id="dept_required_star" style="display: none;">*</span></label>
-                        <select class="form-select" id="department" name="department">
-                            <option value="">Select Department</option>
+                        <label for="departments" class="form-label">Department(s) <span class="text-danger" id="dept_required_star" style="display: none;">*</span></label>
+                        <select class="form-select" id="departments" name="departments" multiple size="6">
                             <!-- Will be populated by JavaScript -->
                         </select>
-                        <div class="form-text" id="dept_help_text"></div>
+                        <div class="form-text" id="dept_help_text">Hold Ctrl (Cmd on Mac) to select multiple departments</div>
                     </div>
                     
                     <div class="mb-3" id="primary_group">
@@ -259,13 +258,14 @@
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     const collegeDepts = {{ college_depts|tojson }};
-    const currentDepartment = "{{ admin.department_id or '' }}";
+    // Get current departments - from the relationship first, then fallback to single department_id
+    const currentDepartments = {{ admin.department_ids|tojson }};
     const adminRole = document.getElementById('admin_role');
     const regularAdminFields = document.getElementById('regular_admin_fields');
     const superAdminFields = document.getElementById('super_admin_fields');
     const contactType = document.getElementById('contact_type');
     const collegeSelect = document.getElementById('college');
-    const deptSelect = document.getElementById('department');
+    const deptSelect = document.getElementById('departments');
     const deptGroup = document.getElementById('department_group');
     const primaryGroup = document.getElementById('primary_group');
     const courseFields = document.getElementById('course_fields');
@@ -330,48 +330,55 @@ document.addEventListener('DOMContentLoaded', function() {
         // Show/hide department - always show for Department type, hide for College type
         deptGroup.style.display = isCollege ? 'none' : 'block';
 
-        // Department is required for Department contacts (they must have a specific department)
+        // Department is required for Department contacts (they must have at least one department)
         deptSelect.required = isDepartment;
         deptRequiredStar.style.display = isDepartment ? 'inline' : 'none';
-        deptHelpText.textContent = isDepartment ? 'Department contacts must be assigned to a specific department' : '';
+        deptHelpText.textContent = isDepartment
+            ? 'Select one or more departments. Hold Ctrl (Cmd on Mac) to select multiple.'
+            : 'Hold Ctrl (Cmd on Mac) to select multiple departments';
 
         // Primary contact visibility
         primaryGroup.style.display = isCollege ? 'block' : 'none';
 
         // Course fields
         courseFields.style.display = isCollege ? 'none' : 'block';
+
+        if (isCollege) {
+            // Clear selections for college contacts
+            Array.from(deptSelect.options).forEach(opt => opt.selected = false);
+        }
     }
 
     function updateDepartments(selectCurrent = false) {
         const college = collegeSelect.value;
-        const isDepartment = contactType.value === 'Department';
 
-        // For Department contacts, no "All" option - they must select a specific department
-        if (isDepartment) {
-            deptSelect.innerHTML = '<option value="">Select Department</option>';
-        } else {
-            deptSelect.innerHTML = '<option value="">All (College-level)</option>';
-        }
+        // Clear existing options
+        deptSelect.innerHTML = '';
 
         if (college && collegeDepts[college]) {
             collegeDepts[college].forEach(dept => {
                 const option = document.createElement('option');
                 option.value = dept.id;
                 option.textContent = dept.name;
-                if (selectCurrent && dept.id === currentDepartment) {
+                // Check if this department is in the current departments list
+                if (selectCurrent && currentDepartments.includes(dept.id)) {
                     option.selected = true;
                 }
                 deptSelect.appendChild(option);
             });
         }
 
-        // If department not found in list, add it
-        if (selectCurrent && currentDepartment && !deptSelect.querySelector(`option[value="${currentDepartment}"]`)) {
-            const option = document.createElement('option');
-            option.value = currentDepartment;
-            option.textContent = currentDepartment;
-            option.selected = true;
-            deptSelect.appendChild(option);
+        // If any current departments not found in list, add them
+        if (selectCurrent && currentDepartments.length > 0) {
+            currentDepartments.forEach(deptId => {
+                if (!deptSelect.querySelector(`option[value="${deptId}"]`)) {
+                    const option = document.createElement('option');
+                    option.value = deptId;
+                    option.textContent = deptId;
+                    option.selected = true;
+                    deptSelect.appendChild(option);
+                }
+            });
         }
     }
 
