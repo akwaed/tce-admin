@@ -922,11 +922,30 @@ def api_get_questions(unit_type, unit_id):
         used_placeholders = list(qb_service.question_mapping.get(unit_type.upper(), {}).get(str(unit_id), {}).keys())
         unused_placeholders = [p for p in all_placeholders if p not in used_placeholders]
 
+        # Get pending changes for current user (for visual feedback)
+        pending_changes = []
+        if current_user.role == 'dept_admin':
+            pending_manager = get_pending_manager()
+            user_pending = pending_manager.get_pending_for_submitter(current_user.linkblue)
+            # Filter to this unit's pending changes
+            for change in user_pending:
+                if change.get('unit_type', '').upper() == unit_type.upper() and str(change.get('unit_id', '')) == str(unit_id):
+                    pending_changes.append(change)
+                # Also include edit changes for questions in this unit
+                elif change.get('type') == 'edit' and change.get('unit_type') == 'QUESTION':
+                    # Check if this question is in the current unit
+                    q_id = change.get('question_id')
+                    for q in questions.get('course_questions', []) + questions.get('instructor_questions', []):
+                        if q.get('id') == q_id:
+                            pending_changes.append(change)
+                            break
+
         return jsonify({
             **questions,
             'available_placeholders': unused_placeholders[:30],
             'can_edit': current_user.can_manage_qb(),
-            'needs_approval': current_user.role == 'dept_admin'
+            'needs_approval': current_user.role == 'dept_admin',
+            'pending_changes': pending_changes
         })
     except Exception as e:
         print(f"Error in api_get_questions: {e}")
@@ -938,7 +957,8 @@ def api_get_questions(unit_type, unit_id):
             'instructor_questions': [],
             'available_placeholders': [],
             'can_edit': current_user.can_manage_qb(),
-            'needs_approval': current_user.role == 'dept_admin'
+            'needs_approval': current_user.role == 'dept_admin',
+            'pending_changes': []
         }), 500
 
 
@@ -1053,6 +1073,8 @@ def api_add_question():
     # Department admins need approval
     if current_user.role == 'dept_admin':
         pending_manager = get_pending_manager()
+        # Get the question text for visual feedback (either new text or from existing question)
+        display_text = question_text if question_text else qb_service.questions.get(question_id, {}).get('text', '')
         change_id = pending_manager.add_change(
             change_type='add',
             unit_type=unit_type,
@@ -1061,7 +1083,7 @@ def api_add_question():
             question_id=question_id,
             submitted_by=current_user.linkblue,
             college_code=college_code,
-            new_text=question_text if question_text else None
+            new_text=display_text
         )
 
         log_audit('question_add_pending', current_user, {
@@ -1094,11 +1116,18 @@ def api_remove_question():
         return jsonify({'success': False, 'error': 'Missing required fields'})
     
     qb_service = get_qb_service()
-    
+
+    # Ensure question bank is loaded to get question text
+    if not qb_service.questions:
+        qb_service.load_question_bank()
+
     current_mapping = qb_service.question_mapping.get(unit_type.upper(), {}).get(str(unit_id), {})
     question_id = current_mapping.get(placeholder, '')
     college_code = qb_service.get_college_for_unit(unit_id) or current_user.college_code
-    
+
+    # Get the question text for visual feedback
+    question_text = qb_service.questions.get(question_id, {}).get('text', '')
+
     # Department admins need approval
     if current_user.role == 'dept_admin':
         pending_manager = get_pending_manager()
@@ -1110,7 +1139,7 @@ def api_remove_question():
             question_id=question_id,
             submitted_by=current_user.linkblue,
             college_code=college_code,
-            old_value=question_id
+            old_value=question_text  # Store question text for visual feedback
         )
         
         log_audit('question_remove_pending', current_user, {
