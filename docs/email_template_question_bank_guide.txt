@@ -1,0 +1,139 @@
+===============================================
+TCE QUESTION BANK - Guide for Departmental Contacts
+===============================================
+
+Dear Departmental Contact,
+
+We are pleased to introduce the TCE Question Bank, a tool that allows you
+to manage additional questions for your department's course evaluations.
+This guide will walk you through how to use the system and explain the
+new visual feedback features.
+
+
+GETTING STARTED
+---------------
+
+1. ACCESS THE QUESTION BANK
+   Navigate to the Question Bank from your TCE Admin dashboard. You'll see
+   a hierarchical tree view of your department's courses on the left side.
+
+2. SELECT A UNIT
+   Click on a Department, Course, or Section in the tree to view and manage
+   its questions. Units with existing questions are shown in bold text.
+
+3. VIEW QUESTIONS
+   Once you select a unit, you'll see two tabs:
+   - Course Questions: Questions about the course itself
+   - Instructor Questions: Questions about the instructor
+
+
+MANAGING QUESTIONS
+------------------
+
+ADDING A QUESTION
+Click the "Add Question" button at the bottom of the questions panel.
+You can either:
+- Select an existing question from the Question Bank by searching
+- Create a new question by entering the question text and selecting
+  the type (Multiple Choice or Open-Ended)
+
+EDITING A QUESTION
+Click the pencil icon on any question card to edit its text or change
+its type.
+
+REMOVING A QUESTION
+Click the trash icon on any question card to remove it from the unit.
+
+*** IMPORTANT ***
+As a departmental contact, all your changes require approval from a
+College Administrator before they take effect. You will see visual
+feedback on the page showing the status of your pending requests.
+
+
+UNDERSTANDING VISUAL FEEDBACK
+-----------------------------
+
+After you submit a change request, you'll see visual indicators in the
+Question Bank showing your pending changes. This helps you avoid
+submitting duplicate requests!
+
+PENDING ADDITION (Green highlighted background)
++-------------------------------------------------------+
+| [PENDING ADDITION]                                    |
+|                                                       |
+| How effective was the online discussion component     |
+| of this course?                                       |
+|                                                       |
+| Awaiting approval - this question will be added       |
+| once approved                                         |
++-------------------------------------------------------+
+
+PENDING REMOVAL (Strikethrough text, red-tinted background)
++-------------------------------------------------------+
+| [PENDING REMOVAL]                                     |
+|                                                       |
+| ~~How would you rate the course materials?~~          |
+|                                                       |
+| Awaiting approval - this question will be removed     |
+| once approved                                         |
++-------------------------------------------------------+
+
+PENDING EDIT (Shows old text struck through, new text highlighted)
++-------------------------------------------------------+
+| [PENDING EDIT]                                        |
+|                                                       |
+| How effective was the instructor's teaching?          |
+|                                                       |
+| ~~How effective was the instructor's teaching?~~      |
+|              |                                        |
+|              v                                        |
+| **How effective was the instructor's use of active    |
+|   learning techniques?**                              |
+|                                                       |
+| Awaiting approval - changes shown above will be       |
+| applied once approved                                 |
++-------------------------------------------------------+
+
+
+VIEWING YOUR PENDING REQUESTS
+-----------------------------
+
+To see all your pending requests in one place, click the "My Pending
+Requests" button in the top right corner of the Question Bank page.
+This page shows:
+
+- All your submitted change requests
+- The type of each change (Add, Edit, Remove)
+- When you submitted each request
+- The question text affected
+
+
+TIPS FOR SUCCESS
+----------------
+
+* Check before submitting: Look for visual indicators to see if you've
+  already requested a change
+
+* Be patient: Changes require College Administrator approval - you'll
+  see them applied once approved
+
+* Use descriptive questions: Clear, specific questions yield better
+  evaluation feedback
+
+* Review regularly: Check your "My Pending Requests" page to track
+  your submissions
+
+
+NEED HELP?
+----------
+
+If you have questions or encounter any issues, please contact:
+- Your College Administrator
+- TCE Support at tce-support@example.edu
+
+
+===============================================
+Thank you for helping improve our course evaluation process!
+
+TCE Administration Team
+===============================================
