@@ -17,6 +17,19 @@ admin_bp = Blueprint('admin', __name__)
 def validate_course_assignment(course_prefix, course_number, department_ids, require_course=False):
     if not course_prefix and not course_number:
         if require_course:
+            return 'Course prefix is required for course coordinators.'
+        return None
+    if course_number and not course_prefix:
+        return 'Course prefix is required when a course number is provided.'
+
+    if course_number:
+        class_pattern = f"{course_prefix} {course_number}"
+        class_filter = Course.class_code.like(f"{class_pattern}%")
+    else:
+        class_pattern = f"{course_prefix} (all)"
+        class_filter = Course.class_code.like(f"{course_prefix} %")
+
+    course_query = Course.query.filter(class_filter)
             return 'Course prefix and number are required for course coordinators.'
         return None
     if not course_prefix or not course_number:
@@ -231,7 +244,15 @@ def add_admin():
                     flash(f'College {college_code} already has a primary contact: {existing_primary.full_name}', 'warning')
 
         # Check for duplicate (reactivate if soft-deleted)
-        existing = Admin.query.filter_by(linkblue=linkblue).first()
+        if contact_type == 'Course Coordinator':
+            existing = Admin.query.filter_by(
+                linkblue=linkblue,
+                course_prefix=course_prefix or None,
+                course_number=course_number or None
+            ).first()
+        else:
+            existing = Admin.query.filter_by(linkblue=linkblue).first()
+
         if existing:
             if existing.is_active:
                 flash(f'An admin with LinkBlue "{linkblue}" already exists.', 'danger')
@@ -922,8 +943,20 @@ def import_admins():
                 if not linkblue:
                     continue
 
+                contact_type = row.get('contact_type', 'Department')
+                course_prefix = row.get('prefix', '').strip() or None
+                course_number = row.get('course', '').strip() or None
+
                 # Check if already exists
-                existing = Admin.query.filter_by(linkblue=linkblue).first()
+                if contact_type == 'Course Coordinator' and (course_prefix or course_number):
+                    existing = Admin.query.filter_by(
+                        linkblue=linkblue,
+                        course_prefix=course_prefix,
+                        course_number=course_number
+                    ).first()
+                else:
+                    existing = Admin.query.filter_by(linkblue=linkblue).first()
+
                 if existing:
                     skipped += 1
                     continue
@@ -935,7 +968,6 @@ def import_admins():
 
                     # Track unmapped departments (where dept contact was converted to college-level)
                     dept_name = row.get('department', '').strip()
-                    contact_type = row.get('contact_type', 'Department')
                     if dept_name and dept_name.lower() not in ['all', ''] and contact_type == 'Department' and admin.department_id is None:
                         unmapped_depts.add(dept_name)
 

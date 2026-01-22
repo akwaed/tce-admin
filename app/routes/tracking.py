@@ -379,6 +379,12 @@ def export_dra():
     for admin in admins:
         try:
             is_course_coordinator = (
+                admin.contact_type != 'College' and
+                (admin.contact_type == 'Course Coordinator' or admin.course_prefix)
+            )
+
+            if is_course_coordinator:
+                if not admin.course_prefix:
                 admin.contact_type == 'Course Coordinator' or
                 (admin.course_prefix and admin.course_number)
             )
@@ -391,6 +397,14 @@ def export_dra():
                 # Course coordinator
                 target_type = 'CRS1'
 
+                # Find all courses matching this prefix and number (or all courses for prefix)
+                if admin.course_number:
+                    class_pattern = f"{admin.course_prefix} {admin.course_number}"
+                    class_filter = Course.class_code.like(f"{class_pattern}%")
+                else:
+                    class_pattern = f"{admin.course_prefix} (all)"
+                    class_filter = Course.class_code.like(f"{admin.course_prefix} %")
+                courses = Course.query.filter(class_filter).all()
                 # Find all courses matching this prefix and number
                 class_pattern = f"{admin.course_prefix} {admin.course_number}"
                 courses = Course.query.filter(
@@ -489,6 +503,12 @@ def dra_preview():
     for admin in admins:
         try:
             is_course_coordinator = (
+                admin.contact_type != 'College' and
+                (admin.contact_type == 'Course Coordinator' or admin.course_prefix)
+            )
+
+            if is_course_coordinator:
+                if not admin.course_prefix:
                 admin.contact_type == 'Course Coordinator' or
                 (admin.course_prefix and admin.course_number)
             )
@@ -499,6 +519,13 @@ def dra_preview():
                     continue
 
                 target_type = 'CRS1'
+                if admin.course_number:
+                    class_pattern = f"{admin.course_prefix} {admin.course_number}"
+                    class_filter = Course.class_code.like(f"{class_pattern}%")
+                else:
+                    class_pattern = f"{admin.course_prefix} (all)"
+                    class_filter = Course.class_code.like(f"{admin.course_prefix} %")
+                courses = Course.query.filter(class_filter).all()
                 class_pattern = f"{admin.course_prefix} {admin.course_number}"
                 courses = Course.query.filter(
                     Course.class_code.like(f"{class_pattern}%")
