@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+
+{% block title %}DRA Export Preview{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('tracking.index') }}">Tracking</a></li>
+            <li class="breadcrumb-item active">DRA Export Preview</li>
+        </ol>
+    </nav>
+    <div class="d-flex justify-content-between align-items-center">
+        <div>
+            <h1><i class="bi bi-file-earmark-spreadsheet me-2"></i>DRA Export Preview</h1>
+            <p class="text-muted mb-0">Preview and download Data Relationship Assignment file for Explorance Blue</p>
+        </div>
+        <a href="{{ url_for('tracking.export_dra') }}" class="btn btn-success btn-lg">
+            <i class="bi bi-download me-2"></i>Download DRA CSV
+        </a>
+    </div>
+</div>
+
+<!-- Stats Cards -->
+<div class="row mb-4">
+    <div class="col-md-2">
+        <div class="card stat-card">
+            <div class="stat-number">{{ stats.total_rows }}</div>
+            <div class="stat-label">Total Rows</div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stat-card">
+            <div class="stat-number text-primary">{{ stats.college_rows }}</div>
+            <div class="stat-label">College (C4)</div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stat-card">
+            <div class="stat-number text-info">{{ stats.department_rows }}</div>
+            <div class="stat-label">Department (D3)</div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stat-card">
+            <div class="stat-number text-success">{{ stats.course_rows }}</div>
+            <div class="stat-label">Course (CRS1)</div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stat-card">
+            <div class="stat-number {% if stats.errors > 0 %}text-danger{% else %}text-success{% endif %}">{{ stats.errors }}</div>
+            <div class="stat-label">Warnings</div>
+        </div>
+    </div>
+</div>
+
+{% if errors %}
+<!-- Warnings -->
+<div class="card mb-4 border-warning">
+    <div class="card-header bg-warning text-dark">
+        <i class="bi bi-exclamation-triangle me-2"></i>Warnings ({{ errors|length }})
+    </div>
+    <div class="card-body">
+        <ul class="mb-0 small">
+            {% for error in errors[:20] %}
+            <li>{{ error }}</li>
+            {% endfor %}
+            {% if errors|length > 20 %}
+            <li class="text-muted">... and {{ errors|length - 20 }} more</li>
+            {% endif %}
+        </ul>
+    </div>
+</div>
+{% endif %}
+
+<!-- College Code Mapping Reference -->
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-info-circle me-2"></i>College Code Mapping Reference
+        <button class="btn btn-sm btn-link float-end" type="button" data-bs-toggle="collapse" data-bs-target="#collegeMappingCollapse">
+            Toggle
+        </button>
+    </div>
+    <div class="collapse" id="collegeMappingCollapse">
+        <div class="card-body">
+            <div class="row">
+                {% for code, dra_code in dra_codes.items() %}
+                <div class="col-md-3 col-sm-4 mb-2">
+                    <code>{{ code }}</code> = <strong>{{ dra_code }}</strong>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Preview Table -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-table me-2"></i>Export Preview</span>
+        <span class="badge bg-secondary">{{ preview_data|length }} rows</span>
+    </div>
+    <div class="card-body p-0">
+        {% if preview_data %}
+        <div class="table-responsive" style="max-height: 600px; overflow-y: auto;">
+            <table class="table table-sm table-hover table-uk mb-0">
+                <thead style="position: sticky; top: 0;">
+                    <tr>
+                        <th style="width: 120px;">source</th>
+                        <th style="width: 120px;">target</th>
+                        <th style="width: 80px;">targetType</th>
+                        <th>Admin Name</th>
+                        <th>Contact Type</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in preview_data %}
+                    <tr>
+                        <td class="font-monospace small">{{ row.source }}</td>
+                        <td class="font-monospace">{{ row.target }}</td>
+                        <td>
+                            <span class="badge
+                                {% if row.targetType == 'C4' %}bg-primary
+                                {% elif row.targetType == 'D3' %}bg-info
+                                {% else %}bg-success{% endif %}">
+                                {{ row.targetType }}
+                            </span>
+                        </td>
+                        <td class="small">{{ row.admin_name }}</td>
+                        <td class="small text-muted">{{ row.contact_type }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-center text-muted py-5">
+            <i class="bi bi-inbox fs-1"></i>
+            <p class="mt-2">No data to export</p>
+            <p class="small">Make sure you have active admin contacts configured.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Download Actions -->
+<div class="mt-4 text-center">
+    <a href="{{ url_for('tracking.export_dra') }}" class="btn btn-success btn-lg">
+        <i class="bi bi-download me-2"></i>Download DRA CSV File
+    </a>
+    <a href="{{ url_for('tracking.index') }}" class="btn btn-outline-secondary btn-lg ms-2">
+        <i class="bi bi-arrow-left me-2"></i>Back to Tracking
+    </a>
+</div>
+{% endblock %}
