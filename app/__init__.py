@@ -41,12 +41,14 @@ def create_app(config_name='default'):
     from app.routes.verification import verification_bp
     from app.routes.questions import questions_bp
     from app.routes.main import main_bp
-    
+    from app.routes.tracking import tracking_bp
+
     app.register_blueprint(main_bp)
     app.register_blueprint(auth_bp, url_prefix='/auth')
     app.register_blueprint(admin_bp, url_prefix='/admin')
     app.register_blueprint(verification_bp, url_prefix='/verification')
     app.register_blueprint(questions_bp, url_prefix='/questions')
+    app.register_blueprint(tracking_bp, url_prefix='/tracking')
     
     # Create database tables
     with app.app_context():

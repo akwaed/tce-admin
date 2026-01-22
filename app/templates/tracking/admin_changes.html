@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Change History{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('tracking.index') }}">Tracking</a></li>
+            <li class="breadcrumb-item active">Admin Changes</li>
+        </ol>
+    </nav>
+    <h1><i class="bi bi-people me-2"></i>Admin Change History</h1>
+    <p class="text-muted mb-0">View all changes to the admin list</p>
+</div>
+
+<!-- Filters -->
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-funnel me-2"></i>Filters
+    </div>
+    <div class="card-body">
+        <form method="GET" class="row g-3">
+            <div class="col-md-2">
+                <label class="form-label">Action</label>
+                <select name="action" class="form-select">
+                    <option value="">All Actions</option>
+                    {% for action in action_options %}
+                    <option value="{{ action }}" {% if current_filters.action == action %}selected{% endif %}>
+                        {{ action.replace('_', ' ').title() }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Actor (Who)</label>
+                <input type="text" name="actor" class="form-control" placeholder="LinkBlue..."
+                       value="{{ current_filters.actor }}">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Target (Whom)</label>
+                <input type="text" name="target" class="form-control" placeholder="LinkBlue..."
+                       value="{{ current_filters.target }}">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">From Date</label>
+                <input type="date" name="date_from" class="form-control"
+                       value="{{ current_filters.date_from }}">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">To Date</label>
+                <input type="date" name="date_to" class="form-control"
+                       value="{{ current_filters.date_to }}">
+            </div>
+            <div class="col-md-2 d-flex align-items-end">
+                <button type="submit" class="btn btn-uk-primary me-2">
+                    <i class="bi bi-search"></i> Filter
+                </button>
+                <a href="{{ url_for('tracking.admin_changes') }}" class="btn btn-uk-secondary">
+                    <i class="bi bi-x"></i> Clear
+                </a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Results -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-list me-2"></i>Change Log</span>
+        <span class="badge bg-secondary">{{ pagination.total }} total records</span>
+    </div>
+    <div class="card-body p-0">
+        {% if logs %}
+        <div class="table-responsive">
+            <table class="table table-hover table-uk mb-0">
+                <thead>
+                    <tr>
+                        <th style="width: 150px;">Date/Time</th>
+                        <th style="width: 120px;">Action</th>
+                        <th>Target Admin</th>
+                        <th>Changed By</th>
+                        <th>Details</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for log in logs %}
+                    <tr>
+                        <td class="small">
+                            {{ log.timestamp.strftime('%Y-%m-%d %H:%M:%S') if log.timestamp else 'N/A' }}
+                        </td>
+                        <td>
+                            <span class="badge
+                                {% if log.action == 'created' or log.action == 'activated' %}bg-success
+                                {% elif log.action == 'deleted' or log.action == 'deactivated' %}bg-danger
+                                {% elif log.action == 'updated' %}bg-primary
+                                {% elif log.action == 'role_changed' or log.action == 'elevated' or log.action == 'demoted' %}bg-warning text-dark
+                                {% elif log.action == 'imported' %}bg-info
+                                {% elif log.action == 'copied' %}bg-secondary
+                                {% else %}bg-secondary{% endif %}">
+                                {{ log.action_display }}
+                            </span>
+                        </td>
+                        <td>
+                            <strong>{{ log.target_linkblue }}</strong>
+                            {% if log.target_admin %}
+                            <br><small class="text-muted">{{ log.target_admin.full_name }}</small>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {{ log.actor_linkblue }}
+                            {% if log.actor_admin %}
+                            <br><small class="text-muted">{{ log.actor_admin.full_name }}</small>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if log.changes %}
+                            <button type="button" class="btn btn-sm btn-outline-secondary"
+                                    data-bs-toggle="modal" data-bs-target="#detailsModal{{ log.id }}">
+                                <i class="bi bi-eye"></i> View Details
+                            </button>
+
+                            <!-- Modal -->
+                            <div class="modal fade" id="detailsModal{{ log.id }}" tabindex="-1">
+                                <div class="modal-dialog modal-lg">
+                                    <div class="modal-content">
+                                        <div class="modal-header">
+                                            <h5 class="modal-title">
+                                                Change Details - {{ log.target_linkblue }}
+                                            </h5>
+                                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                                        </div>
+                                        <div class="modal-body">
+                                            <table class="table table-sm">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Field</th>
+                                                        <th>Old Value</th>
+                                                        <th>New Value</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {% for key, value in log.changes.items() %}
+                                                    <tr>
+                                                        <td><strong>{{ key.replace('_', ' ').title() }}</strong></td>
+                                                        {% if value is mapping %}
+                                                        <td>{{ value.get('old', '-') }}</td>
+                                                        <td>{{ value.get('new', '-') }}</td>
+                                                        {% else %}
+                                                        <td>-</td>
+                                                        <td>{{ value }}</td>
+                                                        {% endif %}
+                                                    </tr>
+                                                    {% endfor %}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                        <div class="modal-footer">
+                                            <small class="text-muted me-auto">
+                                                {{ log.timestamp.strftime('%Y-%m-%d %H:%M:%S') if log.timestamp else '' }}
+                                            </small>
+                                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% else %}
+                            <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        {% if pagination.pages > 1 %}
+        <nav class="p-3">
+            <ul class="pagination justify-content-center mb-0">
+                {% if pagination.has_prev %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('tracking.admin_changes', page=pagination.prev_num, **current_filters) }}">
+                        Previous
+                    </a>
+                </li>
+                {% endif %}
+
+                {% for page in pagination.iter_pages(left_edge=1, right_edge=1, left_current=2, right_current=2) %}
+                    {% if page %}
+                    <li class="page-item {% if page == pagination.page %}active{% endif %}">
+                        <a class="page-link" href="{{ url_for('tracking.admin_changes', page=page, **current_filters) }}">
+                            {{ page }}
+                        </a>
+                    </li>
+                    {% else %}
+                    <li class="page-item disabled"><span class="page-link">...</span></li>
+                    {% endif %}
+                {% endfor %}
+
+                {% if pagination.has_next %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('tracking.admin_changes', page=pagination.next_num, **current_filters) }}">
+                        Next
+                    </a>
+                </li>
+                {% endif %}
+            </ul>
+        </nav>
+        {% endif %}
+
+        {% else %}
+        <div class="text-center text-muted py-5">
+            <i class="bi bi-inbox fs-1"></i>
+            <p class="mt-2">No admin changes found matching your criteria</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

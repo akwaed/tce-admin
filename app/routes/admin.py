@@ -5,7 +5,7 @@ CRUD operations for TCE administrators with role-based access control
 from flask import Blueprint, render_template, redirect, url_for, flash, request, Response, jsonify
 from flask_login import login_required, current_user
 from app.models import db
-from app.models.admin import Admin
+from app.models.admin import Admin, AdminAuditLog
 from app.models.course import College, Department
 from functools import wraps
 import csv
@@ -222,6 +222,19 @@ def add_admin():
             db.session.add(existing)
             db.session.commit()
 
+            # Log the reactivation
+            AdminAuditLog.log_change(
+                existing, current_user, 'activated',
+                changes={
+                    'first_name': first_name,
+                    'last_name': last_name,
+                    'role': role,
+                    'college_code': college_code,
+                    'department_ids': department_ids
+                }
+            )
+            db.session.commit()
+
             flash(f'Admin "{existing.full_name}" reactivated successfully.', 'success')
             return redirect(url_for('admin.list_admins'))
 
@@ -255,6 +268,25 @@ def add_admin():
                 if dept:
                     admin.departments.append(dept)
 
+        db.session.commit()
+
+        # Log the creation
+        AdminAuditLog.log_change(
+            admin, current_user, 'created',
+            changes={
+                'linkblue': admin.linkblue,
+                'first_name': admin.first_name,
+                'last_name': admin.last_name,
+                'role': admin.role,
+                'college_code': admin.college_code,
+                'department_ids': department_ids,
+                'contact_type': admin.contact_type,
+                'is_primary_contact': admin.is_primary_contact,
+                'has_dashboard_access': admin.has_dashboard_access,
+                'has_static_report_access': admin.has_static_report_access,
+                'has_qb_access': admin.has_qb_access
+            }
+        )
         db.session.commit()
 
         flash(f'Admin "{admin.full_name}" created successfully.', 'success')
@@ -326,6 +358,19 @@ def copy_admin(admin_id):
                     existing.departments.append(dept)
 
                 db.session.commit()
+
+                # Log the copy/reactivation
+                AdminAuditLog.log_change(
+                    existing, current_user, 'copied',
+                    changes={
+                        'copied_from': source_admin.linkblue,
+                        'role': existing.role,
+                        'college_code': existing.college_code,
+                        'reactivated': True
+                    }
+                )
+                db.session.commit()
+
                 flash(f'Admin "{existing.full_name}" reactivated with copied settings from {source_admin.full_name}.', 'success')
                 return redirect(url_for('admin.list_admins'))
 
@@ -358,6 +403,20 @@ def copy_admin(admin_id):
 
         db.session.commit()
 
+        # Log the copy
+        AdminAuditLog.log_change(
+            new_admin, current_user, 'copied',
+            changes={
+                'copied_from': source_admin.linkblue,
+                'linkblue': new_admin.linkblue,
+                'first_name': new_admin.first_name,
+                'last_name': new_admin.last_name,
+                'role': new_admin.role,
+                'college_code': new_admin.college_code
+            }
+        )
+        db.session.commit()
+
         flash(f'Admin "{new_admin.full_name}" created with copied settings from {source_admin.full_name}.', 'success')
         return redirect(url_for('admin.list_admins'))
 
@@ -370,13 +429,29 @@ def copy_admin(admin_id):
 def edit_admin(admin_id):
     """Edit an existing admin"""
     admin = Admin.query.get_or_404(admin_id)
-    
+
     # Permission check
     if not current_user.can_edit_admin(admin):
         flash('You do not have permission to edit this admin.', 'danger')
         return redirect(url_for('admin.list_admins'))
-    
+
     if request.method == 'POST':
+        # Store original values for audit logging
+        original_values = {
+            'linkblue': admin.linkblue,
+            'first_name': admin.first_name,
+            'last_name': admin.last_name,
+            'email': admin.email,
+            'role': admin.role,
+            'college_code': admin.college_code,
+            'department_id': admin.department_id,
+            'contact_type': admin.contact_type,
+            'is_primary_contact': admin.is_primary_contact,
+            'has_dashboard_access': admin.has_dashboard_access,
+            'has_static_report_access': admin.has_static_report_access,
+            'has_qb_access': admin.has_qb_access
+        }
+
         # Get form data
         admin.linkblue = request.form.get('linkblue', admin.linkblue).strip().lower()
         admin.first_name = request.form.get('first_name', admin.first_name).strip()
@@ -412,6 +487,18 @@ def edit_admin(admin_id):
                 admin.has_qb_access = True
 
                 db.session.commit()
+
+                # Log elevation to super admin
+                AdminAuditLog.log_change(
+                    admin, current_user, 'elevated',
+                    changes={
+                        'old_role': original_values['role'],
+                        'new_role': 'super_admin',
+                        'old_college': original_values['college_code']
+                    }
+                )
+                db.session.commit()
+
                 flash(f'Admin "{admin.full_name}" elevated to Super Administrator.', 'success')
                 return redirect(url_for('admin.list_admins'))
 
@@ -425,6 +512,22 @@ def edit_admin(admin_id):
                 admin.role = 'college_admin'
                 admin.college_code = new_college
                 admin.contact_type = 'College'
+
+                db.session.commit()
+
+                # Log demotion from super admin
+                AdminAuditLog.log_change(
+                    admin, current_user, 'demoted',
+                    changes={
+                        'old_role': 'super_admin',
+                        'new_role': 'college_admin',
+                        'new_college': new_college
+                    }
+                )
+                db.session.commit()
+
+                flash(f'Admin "{admin.full_name}" demoted to College Administrator.', 'success')
+                return redirect(url_for('admin.list_admins'))
 
             elif is_becoming_super_admin and was_super_admin:
                 # Already super admin - just update password if provided
@@ -440,6 +543,14 @@ def edit_admin(admin_id):
                     admin.set_password(password)
 
                 db.session.commit()
+
+                # Log password update
+                AdminAuditLog.log_change(
+                    admin, current_user, 'updated',
+                    changes={'password_changed': True}
+                )
+                db.session.commit()
+
                 flash(f'Admin "{admin.full_name}" updated successfully.', 'success')
                 return redirect(url_for('admin.list_admins'))
 
@@ -508,6 +619,32 @@ def edit_admin(admin_id):
             admin.has_qb_access = request.form.get('has_qb_access') == 'yes'
 
         db.session.commit()
+
+        # Build changes dict for audit log
+        changes = {}
+        new_values = {
+            'linkblue': admin.linkblue,
+            'first_name': admin.first_name,
+            'last_name': admin.last_name,
+            'email': admin.email,
+            'role': admin.role,
+            'college_code': admin.college_code,
+            'department_id': admin.department_id,
+            'contact_type': admin.contact_type,
+            'is_primary_contact': admin.is_primary_contact,
+            'has_dashboard_access': admin.has_dashboard_access,
+            'has_static_report_access': admin.has_static_report_access,
+            'has_qb_access': admin.has_qb_access
+        }
+        for key, old_val in original_values.items():
+            new_val = new_values.get(key)
+            if old_val != new_val:
+                changes[key] = {'old': old_val, 'new': new_val}
+
+        if changes:
+            AdminAuditLog.log_change(admin, current_user, 'updated', changes=changes)
+            db.session.commit()
+
         flash(f'Admin "{admin.full_name}" updated successfully.', 'success')
         return redirect(url_for('admin.list_admins'))
     
@@ -542,7 +679,19 @@ def delete_admin(admin_id):
     # Soft delete
     admin.is_active = False
     db.session.commit()
-    
+
+    # Log the deactivation
+    AdminAuditLog.log_change(
+        admin, current_user, 'deactivated',
+        changes={
+            'linkblue': admin.linkblue,
+            'full_name': admin.full_name,
+            'role': admin.role,
+            'college_code': admin.college_code
+        }
+    )
+    db.session.commit()
+
     flash(f'Admin "{admin.full_name}" has been deactivated.', 'success')
     return redirect(url_for('admin.list_admins'))
 
@@ -741,6 +890,23 @@ def import_admins():
                     errors.append(f"Row {linkblue}: {str(e)}")
 
             db.session.commit()
+
+            # Log the import operation
+            if imported > 0:
+                AdminAuditLog.log_change(
+                    None, current_user, 'imported',
+                    changes={
+                        'filename': file.filename,
+                        'imported_count': imported,
+                        'skipped_count': skipped,
+                        'error_count': len(errors)
+                    }
+                )
+                # Set target_linkblue to indicate bulk import
+                log = AdminAuditLog.query.order_by(AdminAuditLog.id.desc()).first()
+                if log:
+                    log.target_linkblue = f'bulk_import_{imported}_admins'
+                db.session.commit()
 
             flash(f'Import complete: {imported} added, {skipped} skipped (already exist).', 'success')
             if unmapped_colleges:
