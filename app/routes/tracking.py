@@ -7,7 +7,7 @@ Export DRA data for Explorance Blue integration
 from flask import Blueprint, render_template, redirect, url_for, flash, request, Response, jsonify
 from flask_login import login_required, current_user
 from app.models import db
-from app.models.admin import Admin, AdminAuditLog
+from app.models.admin import Admin, AdminAuditLog, CourseCoordinatorAssignment
 from app.models.question import QBAuditLog, QBBackup
 from app.models.course import College, Department, Course
 from app.services.backup_service import get_backup_service
@@ -348,6 +348,72 @@ def api_backups():
     return jsonify([b.to_dict() for b in backups])
 
 
+def get_course_class_ids_for_coordinator(admin):
+    """
+    Get all class IDs for a course coordinator.
+
+    Uses the new CourseCoordinatorAssignment table first, then falls back to legacy fields.
+    Handles both wildcard (prefix-only) and specific (prefix+number) assignments.
+
+    Returns:
+        tuple: (set of class_ids, list of error messages)
+    """
+    class_ids = set()
+    errors = []
+
+    # Get assignments from new table
+    assignments = admin.course_assignments.all()
+
+    if assignments:
+        # Use new assignment table
+        for assignment in assignments:
+            if assignment.is_wildcard:
+                # Wildcard - all courses with this prefix
+                courses = Course.query.filter(
+                    Course.class_code.like(f"{assignment.course_prefix} %")
+                ).all()
+            else:
+                # Specific course pattern
+                class_pattern = f"{assignment.course_prefix} {assignment.course_number}"
+                courses = Course.query.filter(
+                    Course.class_code.like(f"{class_pattern}%")
+                ).all()
+
+            if courses:
+                for course in courses:
+                    if course.class_id:
+                        class_ids.add(course.class_id)
+            else:
+                pattern = assignment.display_name
+                errors.append(f"No courses found for {admin.linkblue} ({pattern})")
+
+    elif admin.course_prefix:
+        # Fallback to legacy fields
+        if admin.course_number:
+            # Specific course pattern
+            class_pattern = f"{admin.course_prefix} {admin.course_number}"
+            courses = Course.query.filter(
+                Course.class_code.like(f"{class_pattern}%")
+            ).all()
+        else:
+            # Wildcard - prefix only
+            courses = Course.query.filter(
+                Course.class_code.like(f"{admin.course_prefix} %")
+            ).all()
+
+        if courses:
+            for course in courses:
+                if course.class_id:
+                    class_ids.add(course.class_id)
+        else:
+            pattern = f"{admin.course_prefix} {admin.course_number if admin.course_number else '(all)'}"
+            errors.append(f"No courses found for {admin.linkblue} ({pattern})")
+    else:
+        errors.append(f"Missing course info for coordinator {admin.linkblue}")
+
+    return class_ids, errors
+
+
 @tracking_bp.route('/export-dra')
 @super_admin_required
 def export_dra():
@@ -360,6 +426,11 @@ def export_dra():
     - targetType: C4 (college), D3 (department), or CRS1 (course)
 
     Only exports admins with the S flag (has_static_report_access = True)
+
+    Course Coordinator handling:
+    - Uses the CourseCoordinatorAssignment table for multiple assignments
+    - Falls back to legacy course_prefix/course_number fields
+    - Supports wildcard (prefix-only) assignments that match all courses with that prefix
     """
     # Get all active admins with S flag (excluding super admins who don't have DRA assignments)
     admins = Admin.query.filter(
@@ -378,37 +449,19 @@ def export_dra():
 
     for admin in admins:
         try:
-            is_course_coordinator = (
-                admin.contact_type == 'Course Coordinator' or
-                (admin.course_prefix and admin.course_number)
-            )
+            # Check if this is a course coordinator using new property
+            is_course_coordinator = admin.is_course_coordinator
 
             if is_course_coordinator:
-                if not (admin.course_prefix and admin.course_number):
-                    errors.append(f"Missing course info for coordinator {admin.linkblue}")
-                    continue
-
-                # Course coordinator
+                # Course coordinator - get all class IDs
                 target_type = 'CRS1'
 
-                # Find all courses matching this prefix and number
-                class_pattern = f"{admin.course_prefix} {admin.course_number}"
-                courses = Course.query.filter(
-                    Course.class_code.like(f"{class_pattern}%")
-                ).all()
+                class_ids, coord_errors = get_course_class_ids_for_coordinator(admin)
+                errors.extend(coord_errors)
 
-                if courses:
-                    # Get unique class_ids
-                    class_ids = set()
-                    for course in courses:
-                        if course.class_id:
-                            class_ids.add(course.class_id)
-
-                    for class_id in class_ids:
-                        writer.writerow([class_id, admin.linkblue, target_type])
-                        rows_written += 1
-                else:
-                    errors.append(f"No courses found for coordinator {admin.linkblue} ({class_pattern})")
+                for class_id in class_ids:
+                    writer.writerow([class_id, admin.linkblue, target_type])
+                    rows_written += 1
 
             # Determine the target type and source based on contact level
             elif admin.contact_type == 'College' or admin.role == 'college_admin':
@@ -475,6 +528,7 @@ def dra_preview():
     """Preview DRA export data before downloading.
 
     Only includes admins with the S flag (has_static_report_access = True)
+    Handles multiple course assignments and wildcard prefixes.
     """
     # Get all active admins with S flag (excluding super admins)
     admins = Admin.query.filter(
@@ -488,38 +542,37 @@ def dra_preview():
 
     for admin in admins:
         try:
-            is_course_coordinator = (
-                admin.contact_type == 'Course Coordinator' or
-                (admin.course_prefix and admin.course_number)
-            )
+            # Check if this is a course coordinator using new property
+            is_course_coordinator = admin.is_course_coordinator
 
             if is_course_coordinator:
-                if not (admin.course_prefix and admin.course_number):
-                    errors.append(f"Missing course info for coordinator {admin.linkblue}")
-                    continue
-
                 target_type = 'CRS1'
-                class_pattern = f"{admin.course_prefix} {admin.course_number}"
-                courses = Course.query.filter(
-                    Course.class_code.like(f"{class_pattern}%")
-                ).all()
 
-                if courses:
-                    class_ids = set()
-                    for course in courses:
-                        if course.class_id:
-                            class_ids.add(course.class_id)
+                # Get all course patterns for display
+                course_patterns = admin.all_course_patterns
 
-                    for class_id in class_ids:
-                        preview_data.append({
-                            'source': class_id,
-                            'target': admin.linkblue,
-                            'targetType': target_type,
-                            'admin_name': admin.full_name,
-                            'contact_type': f'Course: {class_pattern}'
-                        })
+                # Get all class IDs
+                class_ids, coord_errors = get_course_class_ids_for_coordinator(admin)
+                errors.extend(coord_errors)
+
+                # Build display string for course assignments
+                if course_patterns:
+                    pattern_strs = [
+                        f"{p['prefix']} {p['number'] if p['number'] else '(all)'}"
+                        for p in course_patterns
+                    ]
+                    course_display = ', '.join(pattern_strs)
                 else:
-                    errors.append(f"No courses for coordinator {admin.linkblue} ({class_pattern})")
+                    course_display = 'Unknown'
+
+                for class_id in class_ids:
+                    preview_data.append({
+                        'source': class_id,
+                        'target': admin.linkblue,
+                        'targetType': target_type,
+                        'admin_name': admin.full_name,
+                        'contact_type': f'Course: {course_display}'
+                    })
 
             elif admin.contact_type == 'College' or admin.role == 'college_admin':
                 target_type = 'C4'

@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+
+{% block title %}Course Assignments - {{ admin.full_name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('admin.list_admins') }}">Admin List</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('admin.edit_admin', admin_id=admin.id) }}">{{ admin.full_name }}</a></li>
+            <li class="breadcrumb-item active">Course Assignments</li>
+        </ol>
+    </nav>
+    <h1><i class="bi bi-journal-bookmark me-2"></i>Course Assignments</h1>
+    <p class="text-muted mb-0">Managing course coordinator assignments for: <strong>{{ admin.full_name }}</strong> ({{ admin.linkblue }})</p>
+</div>
+
+<div class="row">
+    <div class="col-lg-8">
+        <!-- Current Assignments -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-list-check me-2"></i>Current Assignments ({{ assignments|length }})</h5>
+            </div>
+            <div class="card-body">
+                {% if assignments %}
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Course Pattern</th>
+                                <th>Type</th>
+                                <th>Department</th>
+                                <th>Created</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for assignment in assignments %}
+                            <tr>
+                                <td>
+                                    <strong>{{ assignment.course_prefix }}</strong>
+                                    {% if assignment.course_number %}
+                                        {{ assignment.course_number }}
+                                    {% else %}
+                                        <span class="badge bg-info">All Courses</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if assignment.is_wildcard %}
+                                        <span class="badge bg-warning text-dark">Wildcard</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">Specific</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if assignment.department %}
+                                        {{ assignment.department.name }}
+                                    {% else %}
+                                        <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if assignment.created_at %}
+                                        {{ assignment.created_at.strftime('%Y-%m-%d') }}
+                                    {% else %}
+                                        <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <form method="POST" action="{{ url_for('admin.delete_course_assignment', admin_id=admin.id, assignment_id=assignment.id) }}"
+                                          style="display: inline;" onsubmit="return confirm('Remove this course assignment?');">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="alert alert-info mb-0">
+                    <i class="bi bi-info-circle me-2"></i>
+                    No course assignments yet. Add one below.
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Legacy Fields Info -->
+        {% if admin.course_prefix %}
+        <div class="card mb-4">
+            <div class="card-header bg-warning text-dark">
+                <h5 class="mb-0"><i class="bi bi-exclamation-triangle me-2"></i>Legacy Course Fields</h5>
+            </div>
+            <div class="card-body">
+                <p class="mb-2">This admin also has legacy course fields set:</p>
+                <ul class="mb-0">
+                    <li><strong>Prefix:</strong> {{ admin.course_prefix }}</li>
+                    <li><strong>Number:</strong> {{ admin.course_number or '(all - wildcard)' }}</li>
+                </ul>
+                <p class="text-muted mt-2 mb-0">
+                    <small>These fields are used for backwards compatibility. If course assignments exist in the table above, they take precedence.</small>
+                </p>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="col-lg-4">
+        <!-- Add New Assignment -->
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-plus-circle me-2"></i>Add Assignment</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('admin.add_course_assignment', admin_id=admin.id) }}">
+                    <div class="mb-3">
+                        <label for="prefix" class="form-label">Course Prefix <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="prefix" name="prefix"
+                               required placeholder="e.g., UK, BAE" maxlength="10">
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="course" class="form-label">Course Number <span class="text-muted">(optional)</span></label>
+                        <input type="text" class="form-control" id="course" name="course"
+                               placeholder="e.g., 101" maxlength="10">
+                        <div class="form-text">Leave empty to match ALL courses with this prefix (wildcard).</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="department_id" class="form-label">Department <span class="text-muted">(optional)</span></label>
+                        <select class="form-select" id="department_id" name="department_id">
+                            <option value="">Any Department</option>
+                            {% for dept in admin.departments.all() %}
+                            <option value="{{ dept.id }}">{{ dept.name }}</option>
+                            {% endfor %}
+                        </select>
+                        <div class="form-text">Optional: Restrict to courses in this department.</div>
+                    </div>
+
+                    <button type="submit" class="btn btn-uk-primary w-100">
+                        <i class="bi bi-plus-lg me-1"></i>Add Assignment
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Help Card -->
+        <div class="card mt-4">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-question-circle me-2"></i>Help</h5>
+            </div>
+            <div class="card-body">
+                <h6>Wildcard Assignments</h6>
+                <p class="small text-muted">
+                    If you leave the course number empty, the assignment becomes a "wildcard" that matches
+                    ALL courses with the specified prefix.
+                </p>
+                <p class="small text-muted mb-0">
+                    Example: Prefix "UK" with no number matches UK 101, UK 102, UK 201, etc.
+                </p>
+
+                <hr>
+
+                <h6>Multiple Assignments</h6>
+                <p class="small text-muted mb-0">
+                    A course coordinator can have multiple assignments. For example, someone could
+                    coordinate "UK 101", "BAE 201", and all "CS" courses.
+                </p>
+
+                <hr>
+
+                <h6>DRA Export</h6>
+                <p class="small text-muted mb-0">
+                    When exporting DRA data, all matching courses will be included for each assignment.
+                    Wildcard assignments will expand to include all matching class IDs.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="mt-4">
+    <a href="{{ url_for('admin.edit_admin', admin_id=admin.id) }}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left me-1"></i>Back to Edit Admin
+    </a>
+</div>
+{% endblock %}

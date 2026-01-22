@@ -227,6 +227,40 @@ class Admin(UserMixin, db.Model):
                 department_id=self.department_id
             )
     
+    @property
+    def is_course_coordinator(self):
+        """Check if this admin is a course coordinator (has course assignments or legacy fields)"""
+        # Check new assignment table first
+        if self.course_assignments.count() > 0:
+            return True
+        # Fallback to legacy fields
+        return self.contact_type == 'Course Coordinator' or bool(self.course_prefix)
+
+    @property
+    def all_course_patterns(self):
+        """Get all course patterns this admin coordinates (from both new table and legacy fields)"""
+        patterns = []
+
+        # From new assignment table
+        for assignment in self.course_assignments.all():
+            patterns.append({
+                'prefix': assignment.course_prefix,
+                'number': assignment.course_number,
+                'is_wildcard': assignment.is_wildcard,
+                'department_id': assignment.department_id
+            })
+
+        # From legacy fields (if not already covered)
+        if self.course_prefix and not patterns:
+            patterns.append({
+                'prefix': self.course_prefix,
+                'number': self.course_number,
+                'is_wildcard': not self.course_number,
+                'department_id': self.department_id
+            })
+
+        return patterns
+
     def to_dict(self):
         """Convert to dictionary for JSON serialization"""
         return {
@@ -246,7 +280,9 @@ class Admin(UserMixin, db.Model):
             'has_static_report_access': self.has_static_report_access,
             'has_qb_access': self.has_qb_access,
             'level_type': self.level_type,
-            'is_active': self.is_active
+            'is_active': self.is_active,
+            'is_course_coordinator': self.is_course_coordinator,
+            'course_assignments': [a.to_dict() for a in self.course_assignments.all()]
         }
     
     def to_csv_row(self):
@@ -383,6 +419,75 @@ class Admin(UserMixin, db.Model):
             created_by_id=created_by_id
         )
         return admin
+
+
+class CourseCoordinatorAssignment(db.Model):
+    """
+    Course Coordinator Assignments - allows a single admin (linkblue) to have multiple
+    course coordinator assignments without violating the unique linkblue constraint.
+
+    Each assignment links an admin to a course prefix and optional course number.
+    - If course_number is NULL, it's a wildcard for all courses with that prefix
+    - If course_number is provided, it's specific to that course pattern
+    """
+    __tablename__ = 'course_coordinator_assignments'
+
+    id = db.Column(db.Integer, primary_key=True)
+    admin_id = db.Column(db.Integer, db.ForeignKey('admins.id'), nullable=False, index=True)
+
+    # Course assignment - prefix is required, number is optional (wildcard if NULL)
+    course_prefix = db.Column(db.String(10), nullable=False)  # e.g., "UK", "BAE"
+    course_number = db.Column(db.String(10))  # e.g., "101", "201" - NULL means all courses with prefix
+
+    # Optional department scope for fail-safe validation
+    department_id = db.Column(db.String(50), db.ForeignKey('departments.id'))
+
+    # Audit fields
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_by_id = db.Column(db.Integer, db.ForeignKey('admins.id'))
+
+    # Relationships
+    admin = db.relationship('Admin', foreign_keys=[admin_id], backref=db.backref(
+        'course_assignments', lazy='dynamic', cascade='all, delete-orphan'
+    ))
+    department = db.relationship('Department', foreign_keys=[department_id])
+    created_by = db.relationship('Admin', foreign_keys=[created_by_id])
+
+    def __repr__(self):
+        course = f"{self.course_prefix} {self.course_number}" if self.course_number else f"{self.course_prefix} (all)"
+        return f'<CourseCoordinatorAssignment {self.admin_id}: {course}>'
+
+    @property
+    def course_pattern(self):
+        """Get the course pattern for matching"""
+        if self.course_number:
+            return f"{self.course_prefix} {self.course_number}"
+        return self.course_prefix
+
+    @property
+    def is_wildcard(self):
+        """Check if this is a wildcard assignment (prefix only)"""
+        return not self.course_number
+
+    @property
+    def display_name(self):
+        """Human-readable display name"""
+        if self.course_number:
+            return f"{self.course_prefix} {self.course_number}"
+        return f"{self.course_prefix} (all courses)"
+
+    def to_dict(self):
+        """Convert to dictionary for JSON serialization"""
+        return {
+            'id': self.id,
+            'admin_id': self.admin_id,
+            'course_prefix': self.course_prefix,
+            'course_number': self.course_number,
+            'department_id': self.department_id,
+            'is_wildcard': self.is_wildcard,
+            'display_name': self.display_name,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
 
 
 class AdminAuditLog(db.Model):
