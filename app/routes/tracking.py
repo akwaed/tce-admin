@@ -2,17 +2,44 @@
 Tracking Routes for Super Users
 View audit logs for admin changes and QB/QM changes
 Manage backups of QB and QM files
+Export DRA data for Explorance Blue integration
 """
 from flask import Blueprint, render_template, redirect, url_for, flash, request, Response, jsonify
 from flask_login import login_required, current_user
 from app.models import db
 from app.models.admin import Admin, AdminAuditLog
 from app.models.question import QBAuditLog, QBBackup
+from app.models.course import College, Department, Course
 from app.services.backup_service import get_backup_service
 from functools import wraps
 from datetime import datetime
+import csv
+import io
 
 tracking_bp = Blueprint('tracking', __name__)
+
+# DRA College Code Mapping - Maps internal college codes to Explorance DRA codes
+DRA_COLLEGE_CODES = {
+    'AS': '8E000',    # Arts and Sciences
+    'FA': '8X000',    # Fine Arts
+    'AG': '81010',    # Ag, Food and Environment
+    'BE': '8F000',    # Business & Economics
+    'EN': '8H000',    # Engineering
+    'ME': '7H000',    # Medicine
+    'DE': '8N000',    # Design
+    'HS': '7N800',    # Health Sciences
+    'PH': '7P610',    # Public Health
+    'ED': '8G000',    # Education
+    'DEN': '7A000',   # Dentistry
+    'CI': '8M000',    # Communication and Information
+    'SW': '8T110',    # Social Work
+    'GS': '8W300',    # Graduate School
+    'UE': '8Z110',    # Undergraduate Education
+    'LHC': '30000055',  # Lewis Honors College
+    'LA': '8K000',    # Law
+    'NU': '7E000',    # Nursing
+    'PHA': '7K000',   # Pharmacy
+}
 
 
 def super_admin_required(f):
@@ -319,3 +346,205 @@ def api_backups():
         backups = backup_service.get_backups()
 
     return jsonify([b.to_dict() for b in backups])
+
+
+@tracking_bp.route('/export-dra')
+@super_admin_required
+def export_dra():
+    """
+    Export DRA (Data Relationship Assignment) file for Explorance Blue.
+
+    Format: source,target,targetType
+    - source: The organizational unit code (college DRA code, department ID, or class ID)
+    - target: The admin's linkblue
+    - targetType: C4 (college), D3 (department), or CRS1 (course)
+    """
+    # Get all active admins (excluding super admins who don't have DRA assignments)
+    admins = Admin.query.filter(
+        Admin.is_active == True,
+        Admin.role != 'super_admin'
+    ).all()
+
+    # Create CSV in memory
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['source', 'target', 'targetType'])
+
+    rows_written = 0
+    errors = []
+
+    for admin in admins:
+        try:
+            # Determine the target type and source based on contact level
+            if admin.contact_type == 'College' or admin.role == 'college_admin':
+                # College-level contact
+                target_type = 'C4'
+                # Map internal college code to DRA code
+                dra_code = DRA_COLLEGE_CODES.get(admin.college_code)
+                if not dra_code:
+                    # Try to find from College table
+                    college = College.query.get(admin.college_code)
+                    if college:
+                        # If no mapping, use a default pattern or skip
+                        errors.append(f"No DRA code mapping for college {admin.college_code}")
+                        continue
+                    else:
+                        errors.append(f"College not found: {admin.college_code} for {admin.linkblue}")
+                        continue
+
+                writer.writerow([dra_code, admin.linkblue, target_type])
+                rows_written += 1
+
+            elif admin.contact_type == 'Department' or admin.role == 'dept_admin':
+                # Department-level contact
+                target_type = 'D3'
+
+                # Check if admin has multiple departments
+                if admin.departments.count() > 0:
+                    for dept in admin.departments.all():
+                        writer.writerow([dept.id, admin.linkblue, target_type])
+                        rows_written += 1
+                elif admin.department_id:
+                    writer.writerow([admin.department_id, admin.linkblue, target_type])
+                    rows_written += 1
+                else:
+                    errors.append(f"No department ID for dept admin {admin.linkblue}")
+
+            elif admin.course_prefix and admin.course_number:
+                # Course coordinator
+                target_type = 'CRS1'
+
+                # Find all courses matching this prefix and number
+                class_pattern = f"{admin.course_prefix} {admin.course_number}"
+                courses = Course.query.filter(
+                    Course.class_code.like(f"{class_pattern}%")
+                ).all()
+
+                if courses:
+                    # Get unique class_ids
+                    class_ids = set()
+                    for course in courses:
+                        if course.class_id:
+                            class_ids.add(course.class_id)
+
+                    for class_id in class_ids:
+                        writer.writerow([class_id, admin.linkblue, target_type])
+                        rows_written += 1
+                else:
+                    errors.append(f"No courses found for coordinator {admin.linkblue} ({class_pattern})")
+
+        except Exception as e:
+            errors.append(f"Error processing {admin.linkblue}: {str(e)}")
+
+    # Log the export
+    QBAuditLog.log_action('dra_export', current_user,
+                          details={
+                              'rows_exported': rows_written,
+                              'errors_count': len(errors),
+                              'errors': errors[:10]  # First 10 errors
+                          })
+    db.session.commit()
+
+    # Create response
+    output.seek(0)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f'DRA_export_{timestamp}.csv'
+
+    return Response(
+        output.getvalue(),
+        mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename={filename}'}
+    )
+
+
+@tracking_bp.route('/dra-preview')
+@super_admin_required
+def dra_preview():
+    """Preview DRA export data before downloading"""
+    # Get all active admins (excluding super admins)
+    admins = Admin.query.filter(
+        Admin.is_active == True,
+        Admin.role != 'super_admin'
+    ).all()
+
+    preview_data = []
+    errors = []
+
+    for admin in admins:
+        try:
+            if admin.contact_type == 'College' or admin.role == 'college_admin':
+                target_type = 'C4'
+                dra_code = DRA_COLLEGE_CODES.get(admin.college_code, f'UNMAPPED:{admin.college_code}')
+                preview_data.append({
+                    'source': dra_code,
+                    'target': admin.linkblue,
+                    'targetType': target_type,
+                    'admin_name': admin.full_name,
+                    'contact_type': 'College'
+                })
+
+            elif admin.contact_type == 'Department' or admin.role == 'dept_admin':
+                target_type = 'D3'
+                if admin.departments.count() > 0:
+                    for dept in admin.departments.all():
+                        preview_data.append({
+                            'source': dept.id,
+                            'target': admin.linkblue,
+                            'targetType': target_type,
+                            'admin_name': admin.full_name,
+                            'contact_type': f'Department: {dept.name}'
+                        })
+                elif admin.department_id:
+                    dept = Department.query.get(admin.department_id)
+                    dept_name = dept.name if dept else admin.department_id
+                    preview_data.append({
+                        'source': admin.department_id,
+                        'target': admin.linkblue,
+                        'targetType': target_type,
+                        'admin_name': admin.full_name,
+                        'contact_type': f'Department: {dept_name}'
+                    })
+                else:
+                    errors.append(f"No department for {admin.linkblue}")
+
+            elif admin.course_prefix and admin.course_number:
+                target_type = 'CRS1'
+                class_pattern = f"{admin.course_prefix} {admin.course_number}"
+                courses = Course.query.filter(
+                    Course.class_code.like(f"{class_pattern}%")
+                ).all()
+
+                if courses:
+                    class_ids = set()
+                    for course in courses:
+                        if course.class_id:
+                            class_ids.add(course.class_id)
+
+                    for class_id in class_ids:
+                        preview_data.append({
+                            'source': class_id,
+                            'target': admin.linkblue,
+                            'targetType': target_type,
+                            'admin_name': admin.full_name,
+                            'contact_type': f'Course: {class_pattern}'
+                        })
+                else:
+                    errors.append(f"No courses for coordinator {admin.linkblue} ({class_pattern})")
+
+        except Exception as e:
+            errors.append(f"Error: {admin.linkblue} - {str(e)}")
+
+    # Stats
+    stats = {
+        'total_rows': len(preview_data),
+        'college_rows': len([r for r in preview_data if r['targetType'] == 'C4']),
+        'department_rows': len([r for r in preview_data if r['targetType'] == 'D3']),
+        'course_rows': len([r for r in preview_data if r['targetType'] == 'CRS1']),
+        'errors': len(errors)
+    }
+
+    return render_template('tracking/dra_preview.html',
+                           preview_data=preview_data,
+                           errors=errors,
+                           stats=stats,
+                           dra_codes=DRA_COLLEGE_CODES)
