@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+
+{% block title %}QB/QM Change History{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('tracking.index') }}">Tracking</a></li>
+            <li class="breadcrumb-item active">QB/QM Changes</li>
+        </ol>
+    </nav>
+    <h1><i class="bi bi-question-circle me-2"></i>Question Bank & Mapping Change History</h1>
+    <p class="text-muted mb-0">View all changes to the Question Bank and Question Mapping</p>
+</div>
+
+<!-- Filters -->
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-funnel me-2"></i>Filters
+    </div>
+    <div class="card-body">
+        <form method="GET" class="row g-3">
+            <div class="col-md-3">
+                <label class="form-label">Action</label>
+                <select name="action" class="form-select">
+                    <option value="">All Actions</option>
+                    {% for action in action_options %}
+                    <option value="{{ action }}" {% if current_filters.action == action %}selected{% endif %}>
+                        {{ action.replace('_', ' ').title() }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Admin</label>
+                <input type="text" name="admin" class="form-control" placeholder="LinkBlue..."
+                       value="{{ current_filters.admin }}">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">From Date</label>
+                <input type="date" name="date_from" class="form-control"
+                       value="{{ current_filters.date_from }}">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">To Date</label>
+                <input type="date" name="date_to" class="form-control"
+                       value="{{ current_filters.date_to }}">
+            </div>
+            <div class="col-md-3 d-flex align-items-end">
+                <button type="submit" class="btn btn-uk-primary me-2">
+                    <i class="bi bi-search"></i> Filter
+                </button>
+                <a href="{{ url_for('tracking.qb_changes') }}" class="btn btn-uk-secondary">
+                    <i class="bi bi-x"></i> Clear
+                </a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Results -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-list me-2"></i>Change Log</span>
+        <span class="badge bg-secondary">{{ pagination.total }} total records</span>
+    </div>
+    <div class="card-body p-0">
+        {% if logs %}
+        <div class="table-responsive">
+            <table class="table table-hover table-uk mb-0">
+                <thead>
+                    <tr>
+                        <th style="width: 150px;">Date/Time</th>
+                        <th style="width: 160px;">Action</th>
+                        <th>Admin</th>
+                        <th>Details</th>
+                        <th style="width: 100px;">Backup</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for log in logs %}
+                    <tr>
+                        <td class="small">
+                            {{ log.timestamp.strftime('%Y-%m-%d %H:%M:%S') if log.timestamp else 'N/A' }}
+                        </td>
+                        <td>
+                            <span class="badge
+                                {% if 'import' in log.action %}bg-info
+                                {% elif 'export' in log.action %}bg-warning text-dark
+                                {% elif 'add' in log.action or 'create' in log.action %}bg-success
+                                {% elif 'remove' in log.action or 'delete' in log.action %}bg-danger
+                                {% elif 'backup' in log.action %}bg-secondary
+                                {% elif 'approved' in log.action %}bg-success
+                                {% elif 'rejected' in log.action %}bg-danger
+                                {% else %}bg-primary{% endif %}">
+                                {{ log.action_display }}
+                            </span>
+                        </td>
+                        <td>
+                            {{ log.admin_linkblue }}
+                            {% if log.admin %}
+                            <br><small class="text-muted">{{ log.admin.full_name }}</small>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if log.details %}
+                            <button type="button" class="btn btn-sm btn-outline-secondary"
+                                    data-bs-toggle="modal" data-bs-target="#detailsModal{{ log.id }}">
+                                <i class="bi bi-eye"></i> View Details
+                            </button>
+
+                            <!-- Modal -->
+                            <div class="modal fade" id="detailsModal{{ log.id }}" tabindex="-1">
+                                <div class="modal-dialog">
+                                    <div class="modal-content">
+                                        <div class="modal-header">
+                                            <h5 class="modal-title">
+                                                {{ log.action_display }} Details
+                                            </h5>
+                                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                                        </div>
+                                        <div class="modal-body">
+                                            <table class="table table-sm">
+                                                <tbody>
+                                                    {% for key, value in log.details.items() %}
+                                                    <tr>
+                                                        <td><strong>{{ key.replace('_', ' ').title() }}</strong></td>
+                                                        <td>{{ value }}</td>
+                                                    </tr>
+                                                    {% endfor %}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                        <div class="modal-footer">
+                                            <small class="text-muted me-auto">
+                                                {{ log.timestamp.strftime('%Y-%m-%d %H:%M:%S') if log.timestamp else '' }}
+                                            </small>
+                                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% else %}
+                            <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if log.backup_id %}
+                            <a href="{{ url_for('tracking.backups') }}?backup_id={{ log.backup_id }}"
+                               class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-archive"></i> #{{ log.backup_id }}
+                            </a>
+                            {% else %}
+                            <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        {% if pagination.pages > 1 %}
+        <nav class="p-3">
+            <ul class="pagination justify-content-center mb-0">
+                {% if pagination.has_prev %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('tracking.qb_changes', page=pagination.prev_num, **current_filters) }}">
+                        Previous
+                    </a>
+                </li>
+                {% endif %}
+
+                {% for page in pagination.iter_pages(left_edge=1, right_edge=1, left_current=2, right_current=2) %}
+                    {% if page %}
+                    <li class="page-item {% if page == pagination.page %}active{% endif %}">
+                        <a class="page-link" href="{{ url_for('tracking.qb_changes', page=page, **current_filters) }}">
+                            {{ page }}
+                        </a>
+                    </li>
+                    {% else %}
+                    <li class="page-item disabled"><span class="page-link">...</span></li>
+                    {% endif %}
+                {% endfor %}
+
+                {% if pagination.has_next %}
+                <li class="page-item">
+                    <a class="page-link" href="{{ url_for('tracking.qb_changes', page=pagination.next_num, **current_filters) }}">
+                        Next
+                    </a>
+                </li>
+                {% endif %}
+            </ul>
+        </nav>
+        {% endif %}
+
+        {% else %}
+        <div class="text-center text-muted py-5">
+            <i class="bi bi-inbox fs-1"></i>
+            <p class="mt-2">No QB/QM changes found matching your criteria</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

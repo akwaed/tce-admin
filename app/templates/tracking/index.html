@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+
+{% block title %}Tracking Dashboard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="d-flex justify-content-between align-items-center">
+        <div>
+            <h1><i class="bi bi-clock-history me-2"></i>Tracking Dashboard</h1>
+            <p class="text-muted mb-0">Monitor changes to the admin list and question bank/mapping</p>
+        </div>
+    </div>
+</div>
+
+<!-- Stats Cards -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-number">{{ backup_stats.qb_count }}</div>
+            <div class="stat-label">QB Backups</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-number">{{ backup_stats.qm_count }}</div>
+            <div class="stat-label">QM Backups</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-number">{{ backup_stats.total_count }}</div>
+            <div class="stat-label">Total Backups</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-number">{{ backup_stats.total_size_mb }} MB</div>
+            <div class="stat-label">Backup Storage</div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-lightning me-2"></i>Quick Actions</span>
+            </div>
+            <div class="card-body">
+                <div class="btn-group" role="group">
+                    <a href="{{ url_for('tracking.admin_changes') }}" class="btn btn-uk-primary">
+                        <i class="bi bi-people me-1"></i>View Admin Changes
+                    </a>
+                    <a href="{{ url_for('tracking.qb_changes') }}" class="btn btn-uk-primary">
+                        <i class="bi bi-question-circle me-1"></i>View QB/QM Changes
+                    </a>
+                    <a href="{{ url_for('tracking.backups') }}" class="btn btn-uk-primary">
+                        <i class="bi bi-archive me-1"></i>Manage Backups
+                    </a>
+                </div>
+                <form action="{{ url_for('tracking.create_backup') }}" method="POST" class="d-inline-block ms-3">
+                    <input type="hidden" name="backup_type" value="both">
+                    <button type="submit" class="btn btn-success">
+                        <i class="bi bi-plus-circle me-1"></i>Create Manual Backup
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <!-- Recent Admin Changes -->
+    <div class="col-md-6 mb-4">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-people me-2"></i>Recent Admin Changes</span>
+                <a href="{{ url_for('tracking.admin_changes') }}" class="btn btn-sm btn-outline-primary">View All</a>
+            </div>
+            <div class="card-body p-0">
+                {% if admin_logs %}
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Time</th>
+                                <th>Action</th>
+                                <th>Target</th>
+                                <th>By</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for log in admin_logs %}
+                            <tr>
+                                <td class="small">{{ log.timestamp.strftime('%m/%d %H:%M') if log.timestamp else 'N/A' }}</td>
+                                <td>
+                                    <span class="badge
+                                        {% if log.action == 'created' %}bg-success
+                                        {% elif log.action == 'deleted' or log.action == 'deactivated' %}bg-danger
+                                        {% elif log.action == 'updated' %}bg-primary
+                                        {% else %}bg-secondary{% endif %}">
+                                        {{ log.action_display }}
+                                    </span>
+                                </td>
+                                <td class="small">{{ log.target_linkblue }}</td>
+                                <td class="small">{{ log.actor_linkblue }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="text-center text-muted py-4">
+                    <i class="bi bi-inbox fs-1"></i>
+                    <p class="mt-2">No admin changes recorded yet</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent QB/QM Changes -->
+    <div class="col-md-6 mb-4">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-question-circle me-2"></i>Recent QB/QM Changes</span>
+                <a href="{{ url_for('tracking.qb_changes') }}" class="btn btn-sm btn-outline-primary">View All</a>
+            </div>
+            <div class="card-body p-0">
+                {% if qb_logs %}
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Time</th>
+                                <th>Action</th>
+                                <th>By</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for log in qb_logs %}
+                            <tr>
+                                <td class="small">{{ log.timestamp.strftime('%m/%d %H:%M') if log.timestamp else 'N/A' }}</td>
+                                <td>
+                                    <span class="badge
+                                        {% if 'import' in log.action %}bg-info
+                                        {% elif 'export' in log.action %}bg-warning text-dark
+                                        {% elif 'add' in log.action or 'create' in log.action %}bg-success
+                                        {% elif 'remove' in log.action or 'delete' in log.action %}bg-danger
+                                        {% elif 'backup' in log.action %}bg-secondary
+                                        {% else %}bg-primary{% endif %}">
+                                        {{ log.action_display }}
+                                    </span>
+                                </td>
+                                <td class="small">{{ log.admin_linkblue }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="text-center text-muted py-4">
+                    <i class="bi bi-inbox fs-1"></i>
+                    <p class="mt-2">No QB/QM changes recorded yet</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

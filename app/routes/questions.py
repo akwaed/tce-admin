@@ -11,6 +11,9 @@ import io
 import json
 from datetime import datetime
 from collections import defaultdict
+from app.models import db
+from app.models.question import QBAuditLog
+from app.services.backup_service import get_backup_service
 
 questions_bp = Blueprint('questions', __name__)
 
@@ -1014,14 +1017,26 @@ def api_update_question():
         return jsonify({'success': True, 'pending': True, 'message': 'Change submitted for approval'})
     
     # Super admin and college admin - apply immediately
+    # Create backup before change
+    backup_service = get_backup_service()
+    backup = backup_service.create_backup('qb', 'change', current_user,
+                                           details={'question_id': question_id, 'action': 'edit'})
+
     if qb_service.update_question_details(question_id, new_text=question_text, new_type=question_type):
         log_audit('question_edit', current_user, {
             'question_id': question_id,
             'updated_text': question_text is not None,
             'updated_type': bool(question_type)
         })
+        # Log to database
+        QBAuditLog.log_action('question_edit', current_user,
+                              details={'question_id': question_id,
+                                       'new_text': question_text[:100] if question_text else None,
+                                       'new_type': question_type},
+                              backup_id=backup.id if backup else None)
+        db.session.commit()
         return jsonify({'success': True})
-    
+
     return jsonify({'success': False, 'error': 'Question not found'})
 
 
@@ -1093,11 +1108,22 @@ def api_add_question():
         return jsonify({'success': True, 'pending': True, 'message': 'Change submitted for approval'})
 
     # Apply immediately for super/college admin
+    # Create backup before change
+    backup_service = get_backup_service()
+    backup = backup_service.create_backup('qm', 'change', current_user,
+                                           details={'unit_type': unit_type, 'unit_id': unit_id, 'action': 'add'})
+
     if qb_service.add_question_to_unit(unit_type, unit_id, placeholder, question_id):
         log_audit('question_add', current_user, {
             'unit_type': unit_type, 'unit_id': unit_id,
             'placeholder': placeholder, 'question_id': question_id
         })
+        # Log to database
+        QBAuditLog.log_action('question_add', current_user,
+                              details={'unit_type': unit_type, 'unit_id': unit_id,
+                                       'placeholder': placeholder, 'question_id': question_id},
+                              backup_id=backup.id if backup else None)
+        db.session.commit()
         return jsonify({'success': True})
 
     return jsonify({'success': False, 'error': 'Failed to add question'})
@@ -1149,13 +1175,24 @@ def api_remove_question():
         return jsonify({'success': True, 'pending': True, 'message': 'Change submitted for approval'})
     
     # Apply immediately
+    # Create backup before change
+    backup_service = get_backup_service()
+    backup = backup_service.create_backup('qm', 'change', current_user,
+                                           details={'unit_type': unit_type, 'unit_id': unit_id, 'action': 'remove'})
+
     if qb_service.remove_question_from_unit(unit_type, unit_id, placeholder):
         log_audit('question_remove', current_user, {
             'unit_type': unit_type, 'unit_id': unit_id,
             'placeholder': placeholder, 'question_id': question_id
         })
+        # Log to database
+        QBAuditLog.log_action('question_remove', current_user,
+                              details={'unit_type': unit_type, 'unit_id': unit_id,
+                                       'placeholder': placeholder, 'question_id': question_id},
+                              backup_id=backup.id if backup else None)
+        db.session.commit()
         return jsonify({'success': True})
-    
+
     return jsonify({'success': False, 'error': 'Failed to remove question'})
 
 
@@ -1305,7 +1342,13 @@ def api_approve_change():
     
     if change:
         qb_service = get_qb_service()
-        
+
+        # Create backup before applying change
+        backup_service = get_backup_service()
+        backup_type = 'qb' if change['type'] == 'edit' else 'qm'
+        backup = backup_service.create_backup(backup_type, 'change', current_user,
+                                               details={'change_id': change_id, 'change_type': change['type']})
+
         if change['type'] == 'add':
             qb_service.add_question_to_unit(change['unit_type'], change['unit_id'], change['placeholder'], change['question_id'])
         elif change['type'] == 'remove':
@@ -1316,8 +1359,16 @@ def api_approve_change():
                 new_text=change.get('new_text'),
                 new_type=change.get('new_type')
             )
-        
+
         log_audit('change_approved', current_user, {'change_id': change_id, 'submitted_by': change['submitted_by']})
+
+        # Log to database
+        QBAuditLog.log_action('change_approved', current_user,
+                              details={'change_id': change_id, 'change_type': change['type'],
+                                       'submitted_by': change['submitted_by']},
+                              backup_id=backup.id if backup else None)
+        db.session.commit()
+
         return jsonify({'success': True})
     
     return jsonify({'success': False, 'error': 'Change not found'})
@@ -1339,8 +1390,15 @@ def api_reject_change():
     
     if change:
         log_audit('change_rejected', current_user, {'change_id': change_id, 'reason': reason})
+
+        # Log to database
+        QBAuditLog.log_action('change_rejected', current_user,
+                              details={'change_id': change_id, 'change_type': change.get('type'),
+                                       'submitted_by': change.get('submitted_by'), 'reason': reason})
+        db.session.commit()
+
         return jsonify({'success': True})
-    
+
     return jsonify({'success': False, 'error': 'Change not found'})
 
 
@@ -1351,31 +1409,47 @@ def import_files():
     if not current_user.is_super_admin():
         flash('Only super administrators can import files.', 'danger')
         return redirect(url_for('questions.browser'))
-    
+
     if request.method == 'POST':
         os.makedirs(DATASOURCES_PATH, exist_ok=True)
         imported = []
-        
+        backup_service = get_backup_service()
+
         if 'qb_file' in request.files:
             qb_file = request.files['qb_file']
             if qb_file.filename:
+                # Create backup before import
+                backup = backup_service.create_backup('qb', 'import', current_user,
+                                                       details={'original_filename': qb_file.filename})
                 qb_file.save(os.path.join(DATASOURCES_PATH, QB_FILENAME))
                 imported.append('Question Bank')
                 log_audit('import_qb', current_user, {'filename': qb_file.filename})
-        
+                # Log to database
+                QBAuditLog.log_action('qb_import', current_user,
+                                      details={'filename': qb_file.filename},
+                                      backup_id=backup.id if backup else None)
+
         if 'qm_file' in request.files:
             qm_file = request.files['qm_file']
             if qm_file.filename:
+                # Create backup before import
+                backup = backup_service.create_backup('qm', 'import', current_user,
+                                                       details={'original_filename': qm_file.filename})
                 qm_file.save(os.path.join(DATASOURCES_PATH, QM_FILENAME))
                 imported.append('Question Mapping')
                 log_audit('import_qm', current_user, {'filename': qm_file.filename})
-        
+                # Log to database
+                QBAuditLog.log_action('qm_import', current_user,
+                                      details={'filename': qm_file.filename},
+                                      backup_id=backup.id if backup else None)
+
         if imported:
+            db.session.commit()
             get_qb_service(force_reload=True)
-            flash(f'Successfully imported: {", ".join(imported)}', 'success')
+            flash(f'Successfully imported: {", ".join(imported)}. Backups created automatically.', 'success')
         else:
             flash('No files were uploaded.', 'warning')
-        
+
         return redirect(url_for('questions.browser'))
     
     # GET - show form
@@ -1408,14 +1482,25 @@ def export_qb():
     if not current_user.is_super_admin():
         flash('Only super administrators can export files.', 'danger')
         return redirect(url_for('questions.browser'))
-    
+
     qb_service = get_qb_service()
     if not qb_service.questions:
         qb_service.load_question_bank()
-    
+
     try:
+        # Create backup on export
+        backup_service = get_backup_service()
+        backup = backup_service.create_backup('qb', 'export', current_user)
+
         output = qb_service.export_question_bank()
         log_audit('export_qb', current_user, {})
+
+        # Log to database
+        QBAuditLog.log_action('qb_export', current_user,
+                              details={'question_count': len(qb_service.questions)},
+                              backup_id=backup.id if backup else None)
+        db.session.commit()
+
         return Response(
             output.read(),
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -1433,14 +1518,26 @@ def export_qm():
     if not current_user.is_super_admin():
         flash('Only super administrators can export files.', 'danger')
         return redirect(url_for('questions.browser'))
-    
+
     qb_service = get_qb_service()
     if not qb_service.question_mapping:
         qb_service.load_question_mapping()
-    
+
     try:
+        # Create backup on export
+        backup_service = get_backup_service()
+        backup = backup_service.create_backup('qm', 'export', current_user)
+
         output = qb_service.export_question_mapping()
         log_audit('export_qm', current_user, {})
+
+        # Log to database
+        mapping_count = sum(len(m) for m in qb_service.question_mapping.values())
+        QBAuditLog.log_action('qm_export', current_user,
+                              details={'mapping_count': mapping_count},
+                              backup_id=backup.id if backup else None)
+        db.session.commit()
+
         return Response(
             output.read(),
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

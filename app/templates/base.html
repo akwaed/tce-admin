@@ -334,6 +334,14 @@
                         </a>
                     </li>
                     {% endif %}
+                    {% if current_user.is_super_admin() %}
+                    <li class="nav-item">
+                        <a class="nav-link {% if 'tracking' in request.endpoint %}active{% endif %}"
+                           href="{{ url_for('tracking.index') }}">
+                            <i class="bi bi-clock-history me-1"></i>Tracking
+                        </a>
+                    </li>
+                    {% endif %}
                 </ul>
                 
                 <!-- User Menu -->

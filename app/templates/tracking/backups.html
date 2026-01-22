@@ -1,0 +1,265 @@
+{% extends "base.html" %}
+
+{% block title %}Backup Management{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('tracking.index') }}">Tracking</a></li>
+            <li class="breadcrumb-item active">Backups</li>
+        </ol>
+    </nav>
+    <div class="d-flex justify-content-between align-items-center">
+        <div>
+            <h1><i class="bi bi-archive me-2"></i>Backup Management</h1>
+            <p class="text-muted mb-0">Manage Question Bank and Question Mapping backups</p>
+        </div>
+        <div class="dropdown">
+            <button class="btn btn-success dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                <i class="bi bi-plus-circle me-1"></i>Create Backup
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end">
+                <li>
+                    <form action="{{ url_for('tracking.create_backup') }}" method="POST" class="px-3 py-2">
+                        <input type="hidden" name="backup_type" value="both">
+                        <button type="submit" class="btn btn-sm btn-success w-100">
+                            <i class="bi bi-archive me-1"></i>Backup Both QB & QM
+                        </button>
+                    </form>
+                </li>
+                <li><hr class="dropdown-divider"></li>
+                <li>
+                    <form action="{{ url_for('tracking.create_backup') }}" method="POST" class="px-3 py-2">
+                        <input type="hidden" name="backup_type" value="qb">
+                        <button type="submit" class="btn btn-sm btn-outline-primary w-100">
+                            <i class="bi bi-question-circle me-1"></i>Backup Question Bank
+                        </button>
+                    </form>
+                </li>
+                <li>
+                    <form action="{{ url_for('tracking.create_backup') }}" method="POST" class="px-3 py-2">
+                        <input type="hidden" name="backup_type" value="qm">
+                        <button type="submit" class="btn btn-sm btn-outline-primary w-100">
+                            <i class="bi bi-diagram-3 me-1"></i>Backup Question Mapping
+                        </button>
+                    </form>
+                </li>
+            </ul>
+        </div>
+    </div>
+</div>
+
+<!-- Stats Cards -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-number">{{ backup_stats.qb_count }}</div>
+            <div class="stat-label">Question Bank Backups</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-number">{{ backup_stats.qm_count }}</div>
+            <div class="stat-label">Question Mapping Backups</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-number">{{ backup_stats.total_count }}</div>
+            <div class="stat-label">Total Backups</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="stat-number">{{ backup_stats.total_size_mb }} MB</div>
+            <div class="stat-label">Total Storage Used</div>
+        </div>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-funnel me-2"></i>Filters
+    </div>
+    <div class="card-body">
+        <form method="GET" class="row g-3">
+            <div class="col-md-3">
+                <label class="form-label">Backup Type</label>
+                <select name="type" class="form-select">
+                    <option value="">All Types</option>
+                    <option value="qb" {% if current_filters.type == 'qb' %}selected{% endif %}>Question Bank</option>
+                    <option value="qm" {% if current_filters.type == 'qm' %}selected{% endif %}>Question Mapping</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Reason</label>
+                <select name="reason" class="form-select">
+                    <option value="">All Reasons</option>
+                    <option value="import" {% if current_filters.reason == 'import' %}selected{% endif %}>Before Import</option>
+                    <option value="export" {% if current_filters.reason == 'export' %}selected{% endif %}>On Export</option>
+                    <option value="change" {% if current_filters.reason == 'change' %}selected{% endif %}>Before Change</option>
+                    <option value="manual" {% if current_filters.reason == 'manual' %}selected{% endif %}>Manual</option>
+                </select>
+            </div>
+            <div class="col-md-6 d-flex align-items-end">
+                <button type="submit" class="btn btn-uk-primary me-2">
+                    <i class="bi bi-search"></i> Filter
+                </button>
+                <a href="{{ url_for('tracking.backups') }}" class="btn btn-uk-secondary">
+                    <i class="bi bi-x"></i> Clear
+                </a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Backups List -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-list me-2"></i>Backups</span>
+        <span class="badge bg-secondary">{{ backups|length }} backups</span>
+    </div>
+    <div class="card-body p-0">
+        {% if backups %}
+        <div class="table-responsive">
+            <table class="table table-hover table-uk mb-0">
+                <thead>
+                    <tr>
+                        <th style="width: 60px;">ID</th>
+                        <th style="width: 140px;">Type</th>
+                        <th style="width: 180px;">Date/Time</th>
+                        <th style="width: 120px;">Reason</th>
+                        <th>Filename</th>
+                        <th style="width: 100px;">Size</th>
+                        <th>Created By</th>
+                        <th style="width: 180px;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for backup in backups %}
+                    <tr>
+                        <td>{{ backup.id }}</td>
+                        <td>
+                            <span class="badge {% if backup.backup_type == 'qb' %}bg-primary{% else %}bg-info{% endif %}">
+                                {{ backup.backup_type_display }}
+                            </span>
+                        </td>
+                        <td class="small">
+                            {{ backup.timestamp.strftime('%Y-%m-%d %H:%M:%S') if backup.timestamp else 'N/A' }}
+                        </td>
+                        <td>
+                            <span class="badge
+                                {% if backup.reason == 'import' %}bg-info
+                                {% elif backup.reason == 'export' %}bg-warning text-dark
+                                {% elif backup.reason == 'change' %}bg-secondary
+                                {% elif backup.reason == 'manual' %}bg-success
+                                {% else %}bg-secondary{% endif %}">
+                                {{ backup.reason_display }}
+                            </span>
+                        </td>
+                        <td class="small font-monospace">{{ backup.filename }}</td>
+                        <td class="small">
+                            {% if backup.file_size %}
+                            {{ (backup.file_size / 1024)|round(1) }} KB
+                            {% else %}
+                            -
+                            {% endif %}
+                        </td>
+                        <td class="small">{{ backup.created_by_linkblue or '-' }}</td>
+                        <td>
+                            <div class="btn-group btn-group-sm">
+                                <a href="{{ url_for('tracking.download_backup', backup_id=backup.id) }}"
+                                   class="btn btn-outline-primary" title="Download">
+                                    <i class="bi bi-download"></i>
+                                </a>
+                                <button type="button" class="btn btn-outline-warning" title="Restore"
+                                        data-bs-toggle="modal" data-bs-target="#restoreModal{{ backup.id }}">
+                                    <i class="bi bi-arrow-counterclockwise"></i>
+                                </button>
+                                <button type="button" class="btn btn-outline-danger" title="Delete"
+                                        data-bs-toggle="modal" data-bs-target="#deleteModal{{ backup.id }}">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </div>
+
+                            <!-- Restore Modal -->
+                            <div class="modal fade" id="restoreModal{{ backup.id }}" tabindex="-1">
+                                <div class="modal-dialog">
+                                    <div class="modal-content">
+                                        <div class="modal-header">
+                                            <h5 class="modal-title">Restore Backup</h5>
+                                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                                        </div>
+                                        <div class="modal-body">
+                                            <div class="alert alert-warning">
+                                                <i class="bi bi-exclamation-triangle me-2"></i>
+                                                <strong>Warning:</strong> This will replace the current {{ backup.backup_type_display }} file with this backup.
+                                            </div>
+                                            <p>Are you sure you want to restore:</p>
+                                            <ul>
+                                                <li><strong>File:</strong> {{ backup.filename }}</li>
+                                                <li><strong>From:</strong> {{ backup.timestamp.strftime('%Y-%m-%d %H:%M:%S') if backup.timestamp else 'N/A' }}</li>
+                                            </ul>
+                                            <p class="text-muted small">A backup of the current file will be created before restoring.</p>
+                                        </div>
+                                        <div class="modal-footer">
+                                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                            <form action="{{ url_for('tracking.restore_backup', backup_id=backup.id) }}" method="POST" class="d-inline">
+                                                <button type="submit" class="btn btn-warning">
+                                                    <i class="bi bi-arrow-counterclockwise me-1"></i>Restore
+                                                </button>
+                                            </form>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Delete Modal -->
+                            <div class="modal fade" id="deleteModal{{ backup.id }}" tabindex="-1">
+                                <div class="modal-dialog">
+                                    <div class="modal-content">
+                                        <div class="modal-header">
+                                            <h5 class="modal-title">Delete Backup</h5>
+                                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                                        </div>
+                                        <div class="modal-body">
+                                            <div class="alert alert-danger">
+                                                <i class="bi bi-exclamation-triangle me-2"></i>
+                                                <strong>Warning:</strong> This action cannot be undone.
+                                            </div>
+                                            <p>Are you sure you want to delete this backup?</p>
+                                            <ul>
+                                                <li><strong>Type:</strong> {{ backup.backup_type_display }}</li>
+                                                <li><strong>File:</strong> {{ backup.filename }}</li>
+                                                <li><strong>Created:</strong> {{ backup.timestamp.strftime('%Y-%m-%d %H:%M:%S') if backup.timestamp else 'N/A' }}</li>
+                                            </ul>
+                                        </div>
+                                        <div class="modal-footer">
+                                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                            <form action="{{ url_for('tracking.delete_backup', backup_id=backup.id) }}" method="POST" class="d-inline">
+                                                <button type="submit" class="btn btn-danger">
+                                                    <i class="bi bi-trash me-1"></i>Delete
+                                                </button>
+                                            </form>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-center text-muted py-5">
+            <i class="bi bi-archive fs-1"></i>
+            <p class="mt-2">No backups found</p>
+            <p class="small">Create a manual backup or backups will be created automatically on import/export/changes.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

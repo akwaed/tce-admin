@@ -1,11 +1,13 @@
 """
 Admin User Model
 Handles TCE administrators at various levels (Super Admin, College Admin, Department Admin)
+Also includes AdminAuditLog for tracking admin changes
 """
 from datetime import datetime
 from app.models import db
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import UserMixin
+import json
 
 
 # Association table for Admin <-> Department many-to-many relationship
@@ -369,3 +371,96 @@ class Admin(UserMixin, db.Model):
             created_by_id=created_by_id
         )
         return admin
+
+
+class AdminAuditLog(db.Model):
+    """
+    Audit trail for admin changes
+    Tracks all modifications to the admin list including:
+    - Admin created/updated/deleted
+    - Role changes
+    - Permission changes
+    """
+    __tablename__ = 'admin_audit_logs'
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    # Who was affected
+    target_admin_id = db.Column(db.Integer, db.ForeignKey('admins.id'))
+    target_linkblue = db.Column(db.String(50), nullable=False)  # Store linkblue in case admin is deleted
+
+    # Who made the change
+    actor_admin_id = db.Column(db.Integer, db.ForeignKey('admins.id'))
+    actor_linkblue = db.Column(db.String(50), nullable=False)
+
+    # What happened
+    action = db.Column(db.String(50), nullable=False)  # created, updated, deleted, role_changed, activated, deactivated, imported
+
+    # When
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    # Details of the change (JSON)
+    changes_json = db.Column(db.Text)
+
+    # Relationships
+    target_admin = db.relationship('Admin', foreign_keys=[target_admin_id], backref='audit_logs')
+    actor_admin = db.relationship('Admin', foreign_keys=[actor_admin_id])
+
+    def __repr__(self):
+        return f'<AdminAuditLog {self.id}: {self.action} on {self.target_linkblue} by {self.actor_linkblue}>'
+
+    @property
+    def changes(self):
+        """Parse changes JSON"""
+        if self.changes_json:
+            return json.loads(self.changes_json)
+        return {}
+
+    @changes.setter
+    def changes(self, value):
+        """Set changes from dict"""
+        self.changes_json = json.dumps(value) if value else None
+
+    @property
+    def action_display(self):
+        """Human-readable action name"""
+        action_names = {
+            'created': 'Created',
+            'updated': 'Updated',
+            'deleted': 'Deleted',
+            'role_changed': 'Role Changed',
+            'activated': 'Activated',
+            'deactivated': 'Deactivated',
+            'imported': 'Imported via CSV',
+            'copied': 'Copied from existing admin',
+            'elevated': 'Elevated to Super Admin',
+            'demoted': 'Demoted from Super Admin'
+        }
+        return action_names.get(self.action, self.action)
+
+    @staticmethod
+    def log_change(target_admin, actor_admin, action, changes=None):
+        """Helper method to create an audit log entry"""
+        log = AdminAuditLog(
+            target_admin_id=target_admin.id if target_admin else None,
+            target_linkblue=target_admin.linkblue if target_admin else 'unknown',
+            actor_admin_id=actor_admin.id if actor_admin else None,
+            actor_linkblue=actor_admin.linkblue if actor_admin else 'system',
+            action=action
+        )
+        if changes:
+            log.changes = changes
+        db.session.add(log)
+        return log
+
+    def to_dict(self):
+        """Convert to dictionary for JSON serialization"""
+        return {
+            'id': self.id,
+            'target_linkblue': self.target_linkblue,
+            'actor_linkblue': self.actor_linkblue,
+            'action': self.action,
+            'action_display': self.action_display,
+            'timestamp': self.timestamp.isoformat() if self.timestamp else None,
+            'changes': self.changes
+        }

@@ -230,3 +230,180 @@ class QuestionMapping(db.Model):
     
     def __repr__(self):
         return f'<QuestionMapping {self.mapping_type}:{self.unit_id} - {self.placeholder}>'
+
+
+class QBAuditLog(db.Model):
+    """
+    Audit trail for Question Bank and Question Mapping changes
+    Tracks all modifications including imports, exports, and edits
+    """
+    __tablename__ = 'qb_audit_logs_db'
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    # What type of change (qb_import, qb_export, qm_import, qm_export, question_add, question_remove, etc.)
+    action = db.Column(db.String(50), nullable=False, index=True)
+
+    # Who made the change
+    admin_id = db.Column(db.Integer, db.ForeignKey('admins.id'))
+    admin_linkblue = db.Column(db.String(50), nullable=False)
+
+    # When
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    # Optional: reference to backup created
+    backup_id = db.Column(db.Integer, db.ForeignKey('qb_backups.id'))
+
+    # Details of the change (JSON)
+    details_json = db.Column(db.Text)
+
+    # Relationships
+    admin = db.relationship('Admin')
+    backup = db.relationship('QBBackup', backref='audit_log')
+
+    def __repr__(self):
+        return f'<QBAuditLog {self.id}: {self.action} by {self.admin_linkblue}>'
+
+    @property
+    def details(self):
+        """Parse details JSON"""
+        if self.details_json:
+            return json.loads(self.details_json)
+        return {}
+
+    @details.setter
+    def details(self, value):
+        """Set details from dict"""
+        self.details_json = json.dumps(value) if value else None
+
+    @property
+    def action_display(self):
+        """Human-readable action name"""
+        action_names = {
+            'qb_import': 'Question Bank Import',
+            'qb_export': 'Question Bank Export',
+            'qm_import': 'Question Mapping Import',
+            'qm_export': 'Question Mapping Export',
+            'question_add': 'Question Added',
+            'question_remove': 'Question Removed',
+            'question_edit': 'Question Edited',
+            'question_create': 'New Question Created',
+            'change_approved': 'Change Approved',
+            'change_rejected': 'Change Rejected',
+            'backup_created': 'Backup Created',
+            'backup_deleted': 'Backup Deleted'
+        }
+        return action_names.get(self.action, self.action)
+
+    @staticmethod
+    def log_action(action, admin, details=None, backup_id=None):
+        """Helper method to create an audit log entry"""
+        log = QBAuditLog(
+            action=action,
+            admin_id=admin.id if admin else None,
+            admin_linkblue=admin.linkblue if admin else 'system',
+            backup_id=backup_id
+        )
+        if details:
+            log.details = details
+        db.session.add(log)
+        return log
+
+    def to_dict(self):
+        """Convert to dictionary for JSON serialization"""
+        return {
+            'id': self.id,
+            'action': self.action,
+            'action_display': self.action_display,
+            'admin_linkblue': self.admin_linkblue,
+            'timestamp': self.timestamp.isoformat() if self.timestamp else None,
+            'backup_id': self.backup_id,
+            'details': self.details
+        }
+
+
+class QBBackup(db.Model):
+    """
+    Backup records for Question Bank and Question Mapping files
+    Stores metadata about backups with files stored on filesystem
+    """
+    __tablename__ = 'qb_backups'
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    # Type of backup: 'qb' for Question Bank, 'qm' for Question Mapping
+    backup_type = db.Column(db.String(10), nullable=False, index=True)
+
+    # Timestamp for the backup (used in filename)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    # Filename of the backup (stored in backups directory)
+    filename = db.Column(db.String(255), nullable=False)
+
+    # File size in bytes
+    file_size = db.Column(db.Integer)
+
+    # Reason for backup (import, export, change, manual)
+    reason = db.Column(db.String(50), nullable=False)
+
+    # Who created the backup
+    created_by_id = db.Column(db.Integer, db.ForeignKey('admins.id'))
+    created_by_linkblue = db.Column(db.String(50))
+
+    # Additional details (JSON)
+    details_json = db.Column(db.Text)
+
+    # Track deletion
+    is_deleted = db.Column(db.Boolean, default=False)
+    deleted_at = db.Column(db.DateTime)
+    deleted_by_id = db.Column(db.Integer, db.ForeignKey('admins.id'))
+
+    # Relationships
+    created_by = db.relationship('Admin', foreign_keys=[created_by_id])
+    deleted_by = db.relationship('Admin', foreign_keys=[deleted_by_id])
+
+    def __repr__(self):
+        return f'<QBBackup {self.id}: {self.backup_type} - {self.filename}>'
+
+    @property
+    def details(self):
+        """Parse details JSON"""
+        if self.details_json:
+            return json.loads(self.details_json)
+        return {}
+
+    @details.setter
+    def details(self, value):
+        """Set details from dict"""
+        self.details_json = json.dumps(value) if value else None
+
+    @property
+    def backup_type_display(self):
+        """Human-readable backup type"""
+        return 'Question Bank' if self.backup_type == 'qb' else 'Question Mapping'
+
+    @property
+    def reason_display(self):
+        """Human-readable reason"""
+        reasons = {
+            'import': 'Before Import',
+            'export': 'On Export',
+            'change': 'Before Change',
+            'manual': 'Manual Backup'
+        }
+        return reasons.get(self.reason, self.reason)
+
+    def to_dict(self):
+        """Convert to dictionary for JSON serialization"""
+        return {
+            'id': self.id,
+            'backup_type': self.backup_type,
+            'backup_type_display': self.backup_type_display,
+            'timestamp': self.timestamp.isoformat() if self.timestamp else None,
+            'filename': self.filename,
+            'file_size': self.file_size,
+            'reason': self.reason,
+            'reason_display': self.reason_display,
+            'created_by_linkblue': self.created_by_linkblue,
+            'is_deleted': self.is_deleted
+        }
