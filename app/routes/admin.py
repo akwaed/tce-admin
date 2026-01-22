@@ -30,6 +30,15 @@ def validate_course_assignment(course_prefix, course_number, department_ids, req
         class_filter = Course.class_code.like(f"{course_prefix} %")
 
     course_query = Course.query.filter(class_filter)
+            return 'Course prefix and number are required for course coordinators.'
+        return None
+    if not course_prefix or not course_number:
+        return 'Course prefix and number are required for course coordinators.'
+
+    class_pattern = f"{course_prefix} {course_number}"
+    course_query = Course.query.filter(
+        Course.class_code.like(f"{class_pattern}%")
+    )
     if department_ids:
         course_query = course_query.filter(Course.department_id.in_(department_ids))
     courses = course_query.all()

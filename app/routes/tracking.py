@@ -385,6 +385,12 @@ def export_dra():
 
             if is_course_coordinator:
                 if not admin.course_prefix:
+                admin.contact_type == 'Course Coordinator' or
+                (admin.course_prefix and admin.course_number)
+            )
+
+            if is_course_coordinator:
+                if not (admin.course_prefix and admin.course_number):
                     errors.append(f"Missing course info for coordinator {admin.linkblue}")
                     continue
 
@@ -399,6 +405,11 @@ def export_dra():
                     class_pattern = f"{admin.course_prefix} (all)"
                     class_filter = Course.class_code.like(f"{admin.course_prefix} %")
                 courses = Course.query.filter(class_filter).all()
+                # Find all courses matching this prefix and number
+                class_pattern = f"{admin.course_prefix} {admin.course_number}"
+                courses = Course.query.filter(
+                    Course.class_code.like(f"{class_pattern}%")
+                ).all()
 
                 if courses:
                     # Get unique class_ids
@@ -498,6 +509,12 @@ def dra_preview():
 
             if is_course_coordinator:
                 if not admin.course_prefix:
+                admin.contact_type == 'Course Coordinator' or
+                (admin.course_prefix and admin.course_number)
+            )
+
+            if is_course_coordinator:
+                if not (admin.course_prefix and admin.course_number):
                     errors.append(f"Missing course info for coordinator {admin.linkblue}")
                     continue
 
@@ -509,6 +526,10 @@ def dra_preview():
                     class_pattern = f"{admin.course_prefix} (all)"
                     class_filter = Course.class_code.like(f"{admin.course_prefix} %")
                 courses = Course.query.filter(class_filter).all()
+                class_pattern = f"{admin.course_prefix} {admin.course_number}"
+                courses = Course.query.filter(
+                    Course.class_code.like(f"{class_pattern}%")
+                ).all()
 
                 if courses:
                     class_ids = set()
