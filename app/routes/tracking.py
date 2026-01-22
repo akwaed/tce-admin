@@ -378,8 +378,40 @@ def export_dra():
 
     for admin in admins:
         try:
+            is_course_coordinator = (
+                admin.contact_type == 'Course Coordinator' or
+                (admin.course_prefix and admin.course_number)
+            )
+
+            if is_course_coordinator:
+                if not (admin.course_prefix and admin.course_number):
+                    errors.append(f"Missing course info for coordinator {admin.linkblue}")
+                    continue
+
+                # Course coordinator
+                target_type = 'CRS1'
+
+                # Find all courses matching this prefix and number
+                class_pattern = f"{admin.course_prefix} {admin.course_number}"
+                courses = Course.query.filter(
+                    Course.class_code.like(f"{class_pattern}%")
+                ).all()
+
+                if courses:
+                    # Get unique class_ids
+                    class_ids = set()
+                    for course in courses:
+                        if course.class_id:
+                            class_ids.add(course.class_id)
+
+                    for class_id in class_ids:
+                        writer.writerow([class_id, admin.linkblue, target_type])
+                        rows_written += 1
+                else:
+                    errors.append(f"No courses found for coordinator {admin.linkblue} ({class_pattern})")
+
             # Determine the target type and source based on contact level
-            if admin.contact_type == 'College' or admin.role == 'college_admin':
+            elif admin.contact_type == 'College' or admin.role == 'college_admin':
                 # College-level contact
                 target_type = 'C4'
                 # Map internal college code to DRA code
@@ -412,29 +444,6 @@ def export_dra():
                     rows_written += 1
                 else:
                     errors.append(f"No department ID for dept admin {admin.linkblue}")
-
-            elif admin.course_prefix and admin.course_number:
-                # Course coordinator
-                target_type = 'CRS1'
-
-                # Find all courses matching this prefix and number
-                class_pattern = f"{admin.course_prefix} {admin.course_number}"
-                courses = Course.query.filter(
-                    Course.class_code.like(f"{class_pattern}%")
-                ).all()
-
-                if courses:
-                    # Get unique class_ids
-                    class_ids = set()
-                    for course in courses:
-                        if course.class_id:
-                            class_ids.add(course.class_id)
-
-                    for class_id in class_ids:
-                        writer.writerow([class_id, admin.linkblue, target_type])
-                        rows_written += 1
-                else:
-                    errors.append(f"No courses found for coordinator {admin.linkblue} ({class_pattern})")
 
         except Exception as e:
             errors.append(f"Error processing {admin.linkblue}: {str(e)}")
@@ -479,7 +488,40 @@ def dra_preview():
 
     for admin in admins:
         try:
-            if admin.contact_type == 'College' or admin.role == 'college_admin':
+            is_course_coordinator = (
+                admin.contact_type == 'Course Coordinator' or
+                (admin.course_prefix and admin.course_number)
+            )
+
+            if is_course_coordinator:
+                if not (admin.course_prefix and admin.course_number):
+                    errors.append(f"Missing course info for coordinator {admin.linkblue}")
+                    continue
+
+                target_type = 'CRS1'
+                class_pattern = f"{admin.course_prefix} {admin.course_number}"
+                courses = Course.query.filter(
+                    Course.class_code.like(f"{class_pattern}%")
+                ).all()
+
+                if courses:
+                    class_ids = set()
+                    for course in courses:
+                        if course.class_id:
+                            class_ids.add(course.class_id)
+
+                    for class_id in class_ids:
+                        preview_data.append({
+                            'source': class_id,
+                            'target': admin.linkblue,
+                            'targetType': target_type,
+                            'admin_name': admin.full_name,
+                            'contact_type': f'Course: {class_pattern}'
+                        })
+                else:
+                    errors.append(f"No courses for coordinator {admin.linkblue} ({class_pattern})")
+
+            elif admin.contact_type == 'College' or admin.role == 'college_admin':
                 target_type = 'C4'
                 dra_code = DRA_COLLEGE_CODES.get(admin.college_code, f'UNMAPPED:{admin.college_code}')
                 preview_data.append({
@@ -513,30 +555,6 @@ def dra_preview():
                     })
                 else:
                     errors.append(f"No department for {admin.linkblue}")
-
-            elif admin.course_prefix and admin.course_number:
-                target_type = 'CRS1'
-                class_pattern = f"{admin.course_prefix} {admin.course_number}"
-                courses = Course.query.filter(
-                    Course.class_code.like(f"{class_pattern}%")
-                ).all()
-
-                if courses:
-                    class_ids = set()
-                    for course in courses:
-                        if course.class_id:
-                            class_ids.add(course.class_id)
-
-                    for class_id in class_ids:
-                        preview_data.append({
-                            'source': class_id,
-                            'target': admin.linkblue,
-                            'targetType': target_type,
-                            'admin_name': admin.full_name,
-                            'contact_type': f'Course: {class_pattern}'
-                        })
-                else:
-                    errors.append(f"No courses for coordinator {admin.linkblue} ({class_pattern})")
 
         except Exception as e:
             errors.append(f"Error: {admin.linkblue} - {str(e)}")

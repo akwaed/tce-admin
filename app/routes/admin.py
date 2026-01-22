@@ -6,13 +6,34 @@ from flask import Blueprint, render_template, redirect, url_for, flash, request,
 from flask_login import login_required, current_user
 from app.models import db
 from app.models.admin import Admin, AdminAuditLog
-from app.models.course import College, Department
+from app.models.course import College, Department, Course
 from functools import wraps
 import csv
 import io
 from datetime import datetime
 
 admin_bp = Blueprint('admin', __name__)
+
+def validate_course_assignment(course_prefix, course_number, department_ids, require_course=False):
+    if not course_prefix and not course_number:
+        if require_course:
+            return 'Course prefix and number are required for course coordinators.'
+        return None
+    if not course_prefix or not course_number:
+        return 'Course prefix and number are required for course coordinators.'
+
+    class_pattern = f"{course_prefix} {course_number}"
+    course_query = Course.query.filter(
+        Course.class_code.like(f"{class_pattern}%")
+    )
+    if department_ids:
+        course_query = course_query.filter(Course.department_id.in_(department_ids))
+    courses = course_query.all()
+    if not courses:
+        if department_ids:
+            return f'No courses found for {class_pattern} in the selected department(s).'
+        return f'No courses found for {class_pattern}.'
+    return None
 
 
 def admin_required(f):
@@ -145,6 +166,7 @@ def add_admin():
         level_type = request.form.get('level_type', 'Subject Viewer')
         course_prefix = request.form.get('prefix', '').strip()
         course_number = request.form.get('course', '').strip()
+        is_course_coordinator = request.form.get('is_course_coordinator') == 'on'
 
         # Access flags
         has_dashboard = request.form.get('has_dashboard_access') == 'yes'
@@ -175,12 +197,27 @@ def add_admin():
                     flash('You can only add admins within your college.', 'danger')
                     return redirect(url_for('admin.add_admin'))
 
+            if contact_type != 'College' and (is_course_coordinator or course_prefix or course_number):
+                contact_type = 'Course Coordinator'
+
+            course_error = validate_course_assignment(
+                course_prefix,
+                course_number,
+                department_ids,
+                require_course=contact_type == 'Course Coordinator'
+            )
+            if contact_type == 'Course Coordinator' and course_error:
+                flash(course_error, 'danger')
+                return redirect(url_for('admin.add_admin'))
+
             # Determine role based on contact type and departments
-            if contact_type == 'College' or not department_ids:
+            if contact_type == 'College':
                 role = 'college_admin'
                 department_ids = []
-            else:
+            elif contact_type == 'Course Coordinator':
                 role = 'dept_admin'
+            else:
+                role = 'dept_admin' if department_ids else 'college_admin'
 
             # Primary contact validation
             if is_primary and contact_type == 'College':
@@ -574,6 +611,19 @@ def edit_admin(admin_id):
             new_department_ids = request.form.getlist('departments')
             new_department_ids = [d.strip() for d in new_department_ids if d.strip()]
 
+            if admin.contact_type != 'College' and (admin.course_prefix or admin.course_number):
+                admin.contact_type = 'Course Coordinator'
+
+            course_error = validate_course_assignment(
+                admin.course_prefix,
+                admin.course_number,
+                new_department_ids,
+                require_course=admin.contact_type == 'Course Coordinator'
+            )
+            if admin.contact_type == 'Course Coordinator' and course_error:
+                flash(course_error, 'danger')
+                return redirect(url_for('admin.edit_admin', admin_id=admin_id))
+
             if current_user.is_super_admin():
                 admin.college_code = new_college
                 # Set single department_id for backwards compatibility
@@ -597,12 +647,14 @@ def edit_admin(admin_id):
 
             # Determine role based on contact type and departments
             has_departments = bool(admin.departments.count()) or bool(admin.department_id)
-            if admin.contact_type == 'College' or not has_departments:
+            if admin.contact_type == 'College':
                 admin.role = 'college_admin'
                 admin.department_id = None
                 admin.departments = []
-            else:
+            elif admin.contact_type == 'Course Coordinator':
                 admin.role = 'dept_admin'
+            else:
+                admin.role = 'dept_admin' if has_departments else 'college_admin'
 
             # Primary contact - with validation
             is_primary = request.form.get('primary_contact') == 'yes'
