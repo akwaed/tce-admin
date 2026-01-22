@@ -29,7 +29,7 @@ class Admin(UserMixin, db.Model):
     __tablename__ = 'admins'
     
     id = db.Column(db.Integer, primary_key=True)
-    linkblue = db.Column(db.String(50), unique=True, nullable=False, index=True)
+    linkblue = db.Column(db.String(50), nullable=False, index=True)
     first_name = db.Column(db.String(100), nullable=False)
     last_name = db.Column(db.String(100), nullable=False)
     email = db.Column(db.String(200))
@@ -320,38 +320,50 @@ class Admin(UserMixin, db.Model):
                             # Last resort: use as-is (will likely fail foreign key)
                             college_code = college_value
 
-        if contact_type == 'College' or department.lower() == 'all' or not department:
-            role = 'college_admin'
-            dept_id = None
-        else:
-            role = 'dept_admin'
-            # Map department NAME to department ID
-            dept_id = None
+        def map_department_id(department_value):
+            if not department_value or department_value.lower() == 'all':
+                return None
 
             # First try the provided mapping (exact match)
-            if dept_name_to_id_map and department in dept_name_to_id_map:
-                dept_id = dept_name_to_id_map[department]
+            if dept_name_to_id_map and department_value in dept_name_to_id_map:
+                return dept_name_to_id_map[department_value]
             # Try lowercase version of mapping
-            elif dept_name_to_id_map and department.lower() in dept_name_to_id_map:
-                dept_id = dept_name_to_id_map[department.lower()]
+            if dept_name_to_id_map and department_value.lower() in dept_name_to_id_map:
+                return dept_name_to_id_map[department_value.lower()]
+
+            # Try to look up by name in Department table
+            dept = Department.query.filter_by(name=department_value).first()
+            if dept:
+                return dept.id
+
+            # Also try case-insensitive match
+            dept = Department.query.filter(
+                db.func.lower(Department.name) == department_value.lower()
+            ).first()
+            if dept:
+                return dept.id
+
+            return None
+
+        if contact_type == 'College':
+            role = 'college_admin'
+            dept_id = None
+        elif contact_type == 'Course Coordinator':
+            role = 'dept_admin'
+            dept_id = map_department_id(department)
+        else:
+            dept_id = map_department_id(department)
+            if department.lower() == 'all' or not department:
+                role = 'college_admin'
+                dept_id = None
+            elif dept_id:
+                role = 'dept_admin'
             else:
-                # Try to look up by name in Department table
-                dept = Department.query.filter_by(name=department).first()
-                if dept:
-                    dept_id = dept.id
-                else:
-                    # Also try case-insensitive match
-                    dept = Department.query.filter(
-                        db.func.lower(Department.name) == department.lower()
-                    ).first()
-                    if dept:
-                        dept_id = dept.id
-                    # If still not found, leave as None and set role to college_admin
-                    # This prevents foreign key violations - department contacts without
-                    # a valid department become college-level contacts
-                    else:
-                        dept_id = None
-                        role = 'college_admin'
+                # If still not found, leave as None and set role to college_admin
+                # This prevents foreign key violations - department contacts without
+                # a valid department become college-level contacts
+                dept_id = None
+                role = 'college_admin'
 
         admin = Admin(
             linkblue=row['linkblue'].lower().strip(),
