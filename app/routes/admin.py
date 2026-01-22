@@ -5,7 +5,7 @@ CRUD operations for TCE administrators with role-based access control
 from flask import Blueprint, render_template, redirect, url_for, flash, request, Response, jsonify
 from flask_login import login_required, current_user
 from app.models import db
-from app.models.admin import Admin, AdminAuditLog
+from app.models.admin import Admin, AdminAuditLog, CourseCoordinatorAssignment
 from app.models.course import College, Department, Course
 from functools import wraps
 import csv
@@ -14,26 +14,91 @@ from datetime import datetime
 
 admin_bp = Blueprint('admin', __name__)
 
-def validate_course_assignment(course_prefix, course_number, department_ids, require_course=False):
-    if not course_prefix and not course_number:
-        if require_course:
-            return 'Course prefix and number are required for course coordinators.'
-        return None
-    if not course_prefix or not course_number:
-        return 'Course prefix and number are required for course coordinators.'
+def validate_course_assignment(course_prefix, course_number, department_ids, require_course=False, validate_department=True):
+    """
+    Validate a course coordinator assignment.
 
-    class_pattern = f"{course_prefix} {course_number}"
-    course_query = Course.query.filter(
-        Course.class_code.like(f"{class_pattern}%")
-    )
+    Args:
+        course_prefix: Course prefix (e.g., "UK", "BAE") - required for course coordinators
+        course_number: Course number (e.g., "101") - optional, if omitted acts as wildcard for all courses with prefix
+        department_ids: List of department IDs for fail-safe validation
+        require_course: If True, at least a prefix is required
+        validate_department: If True, verify course exists in selected department(s)
+
+    Returns:
+        Error message string if validation fails, None if valid
+    """
+    # If no prefix provided
+    if not course_prefix:
+        if require_course:
+            return 'Course prefix is required for course coordinators.'
+        return None
+
+    # Normalize prefix
+    course_prefix = course_prefix.strip().upper()
+
+    # Build search pattern - if number is provided, use it; otherwise search by prefix only
+    if course_number and course_number.strip():
+        # Specific course pattern (e.g., "UK 101")
+        class_pattern = f"{course_prefix} {course_number.strip()}"
+        course_query = Course.query.filter(
+            Course.class_code.like(f"{class_pattern}%")
+        )
+    else:
+        # Wildcard - all courses with this prefix (e.g., "UK %")
+        course_query = Course.query.filter(
+            Course.class_code.like(f"{course_prefix} %")
+        )
+        class_pattern = f"{course_prefix} (all)"
+
+    # Fail-safe: If department_ids provided and validate_department is True,
+    # verify the courses are within the selected departments
+    if validate_department and department_ids:
+        course_query = course_query.filter(Course.department_id.in_(department_ids))
+
+    courses = course_query.all()
+
+    if not courses:
+        if validate_department and department_ids:
+            return f'No courses found for {class_pattern} in the selected department(s). Ensure the course belongs to your department.'
+        return f'No courses found matching {class_pattern}.'
+
+    return None
+
+
+def get_course_class_ids(course_prefix, course_number=None, department_ids=None):
+    """
+    Get all class IDs for a course pattern.
+
+    Args:
+        course_prefix: Course prefix (e.g., "UK")
+        course_number: Course number (optional - if omitted, returns all courses with prefix)
+        department_ids: Optional department filter
+
+    Returns:
+        Set of class_id values
+    """
+    if course_number and course_number.strip():
+        # Specific course pattern
+        class_pattern = f"{course_prefix} {course_number.strip()}"
+        course_query = Course.query.filter(
+            Course.class_code.like(f"{class_pattern}%")
+        )
+    else:
+        # Wildcard - all courses with this prefix
+        course_query = Course.query.filter(
+            Course.class_code.like(f"{course_prefix} %")
+        )
+
     if department_ids:
         course_query = course_query.filter(Course.department_id.in_(department_ids))
-    courses = course_query.all()
-    if not courses:
-        if department_ids:
-            return f'No courses found for {class_pattern} in the selected department(s).'
-        return f'No courses found for {class_pattern}.'
-    return None
+
+    class_ids = set()
+    for course in course_query.all():
+        if course.class_id:
+            class_ids.add(course.class_id)
+
+    return class_ids
 
 
 def admin_required(f):
@@ -138,48 +203,80 @@ def list_admins():
 @admin_bp.route('/add', methods=['GET', 'POST'])
 @admin_required
 def add_admin():
-    """Add a new admin"""
+    """Add a new admin or add a course assignment to existing admin"""
     # Super admins can always add admins
     # College admins can only add if they are primary contacts
     if current_user.role == 'college_admin' and not current_user.is_primary_contact:
         flash('Only primary college contacts can add new administrators.', 'danger')
         return redirect(url_for('admin.list_admins'))
 
+    # Helper to cache form data for re-rendering on error
+    def get_form_data():
+        return {
+            'linkblue': request.form.get('linkblue', '').strip().lower(),
+            'first_name': request.form.get('first_name', '').strip(),
+            'last_name': request.form.get('last_name', '').strip(),
+            'email': request.form.get('email', '').strip(),
+            'admin_role': request.form.get('admin_role', 'regular'),
+            'contact_type': request.form.get('contact_type', 'Department'),
+            'college': request.form.get('college', '').strip(),
+            'departments': request.form.getlist('departments'),
+            'primary_contact': request.form.get('primary_contact', 'no'),
+            'level_type': request.form.get('level_type', 'Subject Viewer'),
+            'prefix': request.form.get('prefix', '').strip(),
+            'course': request.form.get('course', '').strip(),
+            'is_course_coordinator': request.form.get('is_course_coordinator') == 'on',
+            'has_dashboard_access': request.form.get('has_dashboard_access') == 'yes',
+            'has_static_report_access': request.form.get('has_static_report_access') == 'yes',
+            'has_qb_access': request.form.get('has_qb_access') == 'yes'
+        }
+
+    def render_form_with_error(error_msg, form_data=None):
+        """Render the form with an error message and cached form data"""
+        flash(error_msg, 'danger')
+        colleges = get_colleges_for_user()
+        departments = get_departments_for_user()
+        college_depts = get_college_departments_map()
+        return render_template('admin/add.html',
+                             colleges=colleges,
+                             departments=departments,
+                             college_depts=college_depts,
+                             form_data=form_data or {})
+
     if request.method == 'POST':
-        # Get form data
-        linkblue = request.form.get('linkblue', '').strip().lower()
-        first_name = request.form.get('first_name', '').strip()
-        last_name = request.form.get('last_name', '').strip()
-        email = request.form.get('email', '').strip()
+        # Get and cache form data
+        form_data = get_form_data()
+
+        linkblue = form_data['linkblue']
+        first_name = form_data['first_name']
+        last_name = form_data['last_name']
+        email = form_data['email']
 
         # Check if creating a super admin (only super admins can do this)
-        admin_role = request.form.get('admin_role', 'regular')
+        admin_role = form_data['admin_role']
         is_creating_super_admin = admin_role == 'super_admin' and current_user.is_super_admin()
 
-        contact_type = request.form.get('contact_type', 'Department')
-        college_code = request.form.get('college', '').strip()
+        contact_type = form_data['contact_type']
+        college_code = form_data['college']
         # Support multiple department selections
-        department_ids = request.form.getlist('departments')
-        # Filter out empty values
-        department_ids = [d.strip() for d in department_ids if d.strip()]
-        is_primary = request.form.get('primary_contact') == 'yes'
-        level_type = request.form.get('level_type', 'Subject Viewer')
-        course_prefix = request.form.get('prefix', '').strip()
-        course_number = request.form.get('course', '').strip()
-        is_course_coordinator = request.form.get('is_course_coordinator') == 'on'
+        department_ids = [d.strip() for d in form_data['departments'] if d.strip()]
+        is_primary = form_data['primary_contact'] == 'yes'
+        level_type = form_data['level_type']
+        course_prefix = form_data['prefix'].upper() if form_data['prefix'] else ''
+        course_number = form_data['course']
+        is_course_coordinator = form_data['is_course_coordinator'] or bool(course_prefix)
 
         # Access flags
-        has_dashboard = request.form.get('has_dashboard_access') == 'yes'
-        has_static_report = request.form.get('has_static_report_access') == 'yes'
-        has_qb = request.form.get('has_qb_access') == 'yes' if (
+        has_dashboard = form_data['has_dashboard_access']
+        has_static_report = form_data['has_static_report_access']
+        has_qb = form_data['has_qb_access'] if (
             current_user.is_super_admin() or
             (current_user.is_college_admin() and current_user.is_primary_contact)
         ) else False
 
         # Validation
         if not linkblue or not first_name or not last_name:
-            flash('LinkBlue, First Name, and Last Name are required.', 'danger')
-            return redirect(url_for('admin.add_admin'))
+            return render_form_with_error('LinkBlue, First Name, and Last Name are required.', form_data)
 
         # Handle super admin creation
         # No password required - super admins authenticate via Azure AD
@@ -190,25 +287,28 @@ def add_admin():
             contact_type = None
             is_primary = False
             has_qb = True
+            is_course_coordinator = False
         else:
             # Permission check - can only add admins within your scope
             if not current_user.is_super_admin():
                 if college_code != current_user.college_code:
-                    flash('You can only add admins within your college.', 'danger')
-                    return redirect(url_for('admin.add_admin'))
+                    return render_form_with_error('You can only add admins within your college.', form_data)
 
-            if contact_type != 'College' and (is_course_coordinator or course_prefix or course_number):
+            # Determine if this is a course coordinator
+            if contact_type != 'College' and is_course_coordinator:
                 contact_type = 'Course Coordinator'
 
-            course_error = validate_course_assignment(
-                course_prefix,
-                course_number,
-                department_ids,
-                require_course=contact_type == 'Course Coordinator'
-            )
-            if contact_type == 'Course Coordinator' and course_error:
-                flash(course_error, 'danger')
-                return redirect(url_for('admin.add_admin'))
+            # Validate course assignment if this is a course coordinator
+            if contact_type == 'Course Coordinator':
+                course_error = validate_course_assignment(
+                    course_prefix,
+                    course_number,  # Can be empty for wildcard
+                    department_ids,
+                    require_course=True,
+                    validate_department=True  # Fail-safe: ensure course is in selected department
+                )
+                if course_error:
+                    return render_form_with_error(course_error, form_data)
 
             # Determine role based on contact type and departments
             if contact_type == 'College':
@@ -230,14 +330,69 @@ def add_admin():
                 if existing_primary:
                     flash(f'College {college_code} already has a primary contact: {existing_primary.full_name}', 'warning')
 
-        # Check for duplicate (reactivate if soft-deleted)
+        # Check for existing admin with same linkblue
         existing = Admin.query.filter_by(linkblue=linkblue).first()
+
         if existing:
             if existing.is_active:
-                flash(f'An admin with LinkBlue "{linkblue}" already exists.', 'danger')
-                return redirect(url_for('admin.add_admin'))
+                # Admin already exists and is active
+                # For course coordinators, allow adding another course assignment
+                if contact_type == 'Course Coordinator' and course_prefix:
+                    # Check if this exact assignment already exists
+                    existing_assignment = CourseCoordinatorAssignment.query.filter_by(
+                        admin_id=existing.id,
+                        course_prefix=course_prefix,
+                        course_number=course_number or None
+                    ).first()
 
-            # Reactivate and update details
+                    if existing_assignment:
+                        return render_form_with_error(
+                            f'Admin "{existing.full_name}" already has a course assignment for '
+                            f'{course_prefix} {course_number if course_number else "(all)"}.',
+                            form_data
+                        )
+
+                    # Add new course assignment to existing admin
+                    assignment = CourseCoordinatorAssignment(
+                        admin_id=existing.id,
+                        course_prefix=course_prefix,
+                        course_number=course_number or None,
+                        department_id=department_ids[0] if department_ids else None,
+                        created_by_id=current_user.id
+                    )
+                    db.session.add(assignment)
+
+                    # Update admin to be a course coordinator if not already
+                    if existing.contact_type != 'Course Coordinator':
+                        existing.contact_type = 'Course Coordinator'
+                        existing.role = 'dept_admin'
+
+                    db.session.commit()
+
+                    # Log the assignment addition
+                    AdminAuditLog.log_change(
+                        existing, current_user, 'updated',
+                        changes={
+                            'action': 'course_assignment_added',
+                            'course_prefix': course_prefix,
+                            'course_number': course_number,
+                            'is_wildcard': not course_number
+                        }
+                    )
+                    db.session.commit()
+
+                    flash(f'Course assignment "{course_prefix} {course_number if course_number else "(all)"}" '
+                          f'added to existing admin "{existing.full_name}".', 'success')
+                    return redirect(url_for('admin.list_admins'))
+                else:
+                    return render_form_with_error(
+                        f'An admin with LinkBlue "{linkblue}" already exists. '
+                        f'To add another course coordinator assignment, check the "Course Coordinator" box '
+                        f'and provide a course prefix.',
+                        form_data
+                    )
+
+            # Reactivate and update details for inactive admin
             existing.first_name = first_name
             existing.last_name = last_name
             existing.email = email or f'{linkblue}@uky.edu'
@@ -264,6 +419,17 @@ def add_admin():
                     if dept:
                         existing.departments.append(dept)
 
+            # Add course assignment to the new table if course coordinator
+            if contact_type == 'Course Coordinator' and course_prefix:
+                assignment = CourseCoordinatorAssignment(
+                    admin_id=existing.id,
+                    course_prefix=course_prefix,
+                    course_number=course_number or None,
+                    department_id=department_ids[0] if department_ids else None,
+                    created_by_id=current_user.id
+                )
+                db.session.add(assignment)
+
             db.session.add(existing)
             db.session.commit()
 
@@ -283,7 +449,7 @@ def add_admin():
             flash(f'Admin "{existing.full_name}" reactivated successfully.', 'success')
             return redirect(url_for('admin.list_admins'))
 
-        # Create admin
+        # Create new admin
         admin = Admin(
             linkblue=linkblue,
             first_name=first_name,
@@ -313,6 +479,17 @@ def add_admin():
                 if dept:
                     admin.departments.append(dept)
 
+        # Add course assignment to the new table if course coordinator
+        if contact_type == 'Course Coordinator' and course_prefix:
+            assignment = CourseCoordinatorAssignment(
+                admin_id=admin.id,
+                course_prefix=course_prefix,
+                course_number=course_number or None,
+                department_id=department_ids[0] if department_ids else None,
+                created_by_id=current_user.id
+            )
+            db.session.add(assignment)
+
         db.session.commit()
 
         # Log the creation
@@ -329,23 +506,26 @@ def add_admin():
                 'is_primary_contact': admin.is_primary_contact,
                 'has_dashboard_access': admin.has_dashboard_access,
                 'has_static_report_access': admin.has_static_report_access,
-                'has_qb_access': admin.has_qb_access
+                'has_qb_access': admin.has_qb_access,
+                'course_prefix': course_prefix if contact_type == 'Course Coordinator' else None,
+                'course_number': course_number if contact_type == 'Course Coordinator' else None
             }
         )
         db.session.commit()
 
         flash(f'Admin "{admin.full_name}" created successfully.', 'success')
         return redirect(url_for('admin.list_admins'))
-    
+
     # GET - show form
     colleges = get_colleges_for_user()
     departments = get_departments_for_user()
     college_depts = get_college_departments_map()
-    
+
     return render_template('admin/add.html',
                          colleges=colleges,
                          departments=departments,
-                         college_depts=college_depts)
+                         college_depts=college_depts,
+                         form_data={})
 
 
 @admin_bp.route('/copy/<int:admin_id>', methods=['GET', 'POST'])
@@ -480,7 +660,42 @@ def edit_admin(admin_id):
         flash('You do not have permission to edit this admin.', 'danger')
         return redirect(url_for('admin.list_admins'))
 
+    # Helper to cache form data for re-rendering on error
+    def get_form_data():
+        return {
+            'linkblue': request.form.get('linkblue', admin.linkblue).strip().lower(),
+            'first_name': request.form.get('first_name', admin.first_name).strip(),
+            'last_name': request.form.get('last_name', admin.last_name).strip(),
+            'email': request.form.get('email', admin.email or '').strip(),
+            'admin_role': request.form.get('admin_role', 'super_admin' if admin.role == 'super_admin' else 'regular'),
+            'contact_type': request.form.get('contact_type', admin.contact_type),
+            'college': request.form.get('college', admin.college_code or '').strip(),
+            'departments': request.form.getlist('departments') or admin.department_ids,
+            'primary_contact': request.form.get('primary_contact', 'yes' if admin.is_primary_contact else 'no'),
+            'level_type': request.form.get('level_type', admin.level_type),
+            'prefix': request.form.get('prefix', admin.course_prefix or '').strip(),
+            'course': request.form.get('course', admin.course_number or '').strip(),
+            'has_dashboard_access': request.form.get('has_dashboard_access') == 'yes' if request.form else admin.has_dashboard_access,
+            'has_static_report_access': request.form.get('has_static_report_access') == 'yes' if request.form else admin.has_static_report_access,
+            'has_qb_access': request.form.get('has_qb_access') == 'yes' if request.form else admin.has_qb_access
+        }
+
+    def render_form_with_error(error_msg, form_data=None):
+        """Render the form with an error message and cached form data"""
+        flash(error_msg, 'danger')
+        colleges = get_colleges_for_user()
+        departments = get_departments_for_user()
+        college_depts = get_college_departments_map()
+        return render_template('admin/edit.html',
+                             admin=admin,
+                             colleges=colleges,
+                             departments=departments,
+                             college_depts=college_depts,
+                             form_data=form_data or {})
+
     if request.method == 'POST':
+        form_data = get_form_data()
+
         # Store original values for audit logging
         original_values = {
             'linkblue': admin.linkblue,
@@ -498,14 +713,14 @@ def edit_admin(admin_id):
         }
 
         # Get form data
-        admin.linkblue = request.form.get('linkblue', admin.linkblue).strip().lower()
-        admin.first_name = request.form.get('first_name', admin.first_name).strip()
-        admin.last_name = request.form.get('last_name', admin.last_name).strip()
-        admin.email = request.form.get('email', admin.email).strip()
+        admin.linkblue = form_data['linkblue']
+        admin.first_name = form_data['first_name']
+        admin.last_name = form_data['last_name']
+        admin.email = form_data['email']
 
         # Handle role change (only super admins can change roles, and not their own)
         if current_user.is_super_admin() and admin.id != current_user.id:
-            new_admin_role = request.form.get('admin_role', 'regular')
+            new_admin_role = form_data['admin_role']
             was_super_admin = admin.role == 'super_admin'
             is_becoming_super_admin = new_admin_role == 'super_admin'
 
@@ -517,11 +732,9 @@ def edit_admin(admin_id):
                 # Password required when elevating (unless they already have one)
                 if password:
                     if len(password) < 8:
-                        flash('Password must be at least 8 characters.', 'danger')
-                        return redirect(url_for('admin.edit_admin', admin_id=admin_id))
+                        return render_form_with_error('Password must be at least 8 characters.', form_data)
                     if password != password_confirm:
-                        flash('Passwords do not match.', 'danger')
-                        return redirect(url_for('admin.edit_admin', admin_id=admin_id))
+                        return render_form_with_error('Passwords do not match.', form_data)
                     admin.set_password(password)
 
                 admin.role = 'super_admin'
@@ -549,10 +762,9 @@ def edit_admin(admin_id):
 
             elif not is_becoming_super_admin and was_super_admin:
                 # Demoting from super admin - need college assignment
-                new_college = request.form.get('college', '').strip()
+                new_college = form_data['college']
                 if not new_college:
-                    flash('Must assign a college when demoting from super admin.', 'danger')
-                    return redirect(url_for('admin.edit_admin', admin_id=admin_id))
+                    return render_form_with_error('Must assign a college when demoting from super admin.', form_data)
 
                 admin.role = 'college_admin'
                 admin.college_code = new_college
@@ -580,11 +792,9 @@ def edit_admin(admin_id):
                 if password:
                     password_confirm = request.form.get('password_confirm', '')
                     if len(password) < 8:
-                        flash('Password must be at least 8 characters.', 'danger')
-                        return redirect(url_for('admin.edit_admin', admin_id=admin_id))
+                        return render_form_with_error('Password must be at least 8 characters.', form_data)
                     if password != password_confirm:
-                        flash('Passwords do not match.', 'danger')
-                        return redirect(url_for('admin.edit_admin', admin_id=admin_id))
+                        return render_form_with_error('Passwords do not match.', form_data)
                     admin.set_password(password)
 
                 db.session.commit()
@@ -601,28 +811,33 @@ def edit_admin(admin_id):
 
         # Regular admin fields (skip if super admin)
         if admin.role != 'super_admin':
-            admin.contact_type = request.form.get('contact_type', admin.contact_type)
-            admin.level_type = request.form.get('level_type', admin.level_type)
-            admin.course_prefix = request.form.get('prefix', '').strip() or None
-            admin.course_number = request.form.get('course', '').strip() or None
+            admin.contact_type = form_data['contact_type']
+            admin.level_type = form_data['level_type']
+            course_prefix = form_data['prefix'].upper() if form_data['prefix'] else None
+            course_number = form_data['course'] or None
 
             # College and departments - only super admin can change these freely
-            new_college = request.form.get('college', '').strip()
-            new_department_ids = request.form.getlist('departments')
-            new_department_ids = [d.strip() for d in new_department_ids if d.strip()]
+            new_college = form_data['college']
+            new_department_ids = [d.strip() for d in form_data['departments'] if d and d.strip()]
 
-            if admin.contact_type != 'College' and (admin.course_prefix or admin.course_number):
+            if admin.contact_type != 'College' and course_prefix:
                 admin.contact_type = 'Course Coordinator'
 
-            course_error = validate_course_assignment(
-                admin.course_prefix,
-                admin.course_number,
-                new_department_ids,
-                require_course=admin.contact_type == 'Course Coordinator'
-            )
-            if admin.contact_type == 'Course Coordinator' and course_error:
-                flash(course_error, 'danger')
-                return redirect(url_for('admin.edit_admin', admin_id=admin_id))
+            # Validate course assignment - course number is now optional (wildcard if empty)
+            if admin.contact_type == 'Course Coordinator':
+                course_error = validate_course_assignment(
+                    course_prefix,
+                    course_number,  # Can be empty for wildcard
+                    new_department_ids,
+                    require_course=True,
+                    validate_department=True  # Fail-safe
+                )
+                if course_error:
+                    return render_form_with_error(course_error, form_data)
+
+            # Update legacy course fields
+            admin.course_prefix = course_prefix
+            admin.course_number = course_number
 
             if current_user.is_super_admin():
                 admin.college_code = new_college
@@ -651,13 +866,15 @@ def edit_admin(admin_id):
                 admin.role = 'college_admin'
                 admin.department_id = None
                 admin.departments = []
+                admin.course_prefix = None
+                admin.course_number = None
             elif admin.contact_type == 'Course Coordinator':
                 admin.role = 'dept_admin'
             else:
                 admin.role = 'dept_admin' if has_departments else 'college_admin'
 
             # Primary contact - with validation
-            is_primary = request.form.get('primary_contact') == 'yes'
+            is_primary = form_data['primary_contact'] == 'yes'
             if is_primary and admin.contact_type == 'College' and not admin.is_primary_contact:
                 existing_primary = Admin.query.filter(
                     Admin.id != admin.id,
@@ -669,6 +886,26 @@ def edit_admin(admin_id):
                 if existing_primary:
                     flash(f'Note: {existing_primary.full_name} is already the primary contact for this college.', 'warning')
             admin.is_primary_contact = is_primary
+
+            # Update course assignments in the new table if course coordinator
+            if admin.contact_type == 'Course Coordinator' and course_prefix:
+                # Check if assignment already exists
+                existing_assignment = CourseCoordinatorAssignment.query.filter_by(
+                    admin_id=admin.id,
+                    course_prefix=course_prefix,
+                    course_number=course_number
+                ).first()
+
+                if not existing_assignment:
+                    # Add new assignment
+                    assignment = CourseCoordinatorAssignment(
+                        admin_id=admin.id,
+                        course_prefix=course_prefix,
+                        course_number=course_number,
+                        department_id=new_department_ids[0] if new_department_ids else None,
+                        created_by_id=current_user.id
+                    )
+                    db.session.add(assignment)
 
         # Access flags
         admin.has_dashboard_access = request.form.get('has_dashboard_access') == 'yes'
@@ -707,17 +944,18 @@ def edit_admin(admin_id):
 
         flash(f'Admin "{admin.full_name}" updated successfully.', 'success')
         return redirect(url_for('admin.list_admins'))
-    
+
     # GET - show form
     colleges = get_colleges_for_user()
     departments = get_departments_for_user()
     college_depts = get_college_departments_map()
-    
+
     return render_template('admin/edit.html',
                          admin=admin,
                          colleges=colleges,
                          departments=departments,
-                         college_depts=college_depts)
+                         college_depts=college_depts,
+                         form_data={})
 
 
 @admin_bp.route('/delete/<int:admin_id>', methods=['POST'])
@@ -754,6 +992,136 @@ def delete_admin(admin_id):
 
     flash(f'Admin "{admin.full_name}" has been deactivated.', 'success')
     return redirect(url_for('admin.list_admins'))
+
+
+@admin_bp.route('/<int:admin_id>/assignments')
+@admin_required
+def view_course_assignments(admin_id):
+    """View all course assignments for an admin"""
+    admin = Admin.query.get_or_404(admin_id)
+
+    # Permission check
+    if not current_user.can_edit_admin(admin):
+        flash('You do not have permission to view this admin.', 'danger')
+        return redirect(url_for('admin.list_admins'))
+
+    assignments = admin.course_assignments.all()
+
+    return render_template('admin/course_assignments.html',
+                         admin=admin,
+                         assignments=assignments)
+
+
+@admin_bp.route('/<int:admin_id>/assignments/add', methods=['POST'])
+@admin_required
+def add_course_assignment(admin_id):
+    """Add a new course assignment to an existing admin"""
+    admin = Admin.query.get_or_404(admin_id)
+
+    # Permission check
+    if not current_user.can_edit_admin(admin):
+        flash('You do not have permission to edit this admin.', 'danger')
+        return redirect(url_for('admin.list_admins'))
+
+    course_prefix = request.form.get('prefix', '').strip().upper()
+    course_number = request.form.get('course', '').strip() or None
+    department_id = request.form.get('department_id', '').strip() or None
+
+    if not course_prefix:
+        flash('Course prefix is required.', 'danger')
+        return redirect(url_for('admin.view_course_assignments', admin_id=admin_id))
+
+    # Validate the course assignment
+    department_ids = [department_id] if department_id else admin.department_ids
+    course_error = validate_course_assignment(
+        course_prefix,
+        course_number,
+        department_ids,
+        require_course=True,
+        validate_department=bool(department_ids)  # Fail-safe validation
+    )
+    if course_error:
+        flash(course_error, 'danger')
+        return redirect(url_for('admin.view_course_assignments', admin_id=admin_id))
+
+    # Check if assignment already exists
+    existing = CourseCoordinatorAssignment.query.filter_by(
+        admin_id=admin.id,
+        course_prefix=course_prefix,
+        course_number=course_number
+    ).first()
+
+    if existing:
+        flash(f'Assignment for {course_prefix} {course_number if course_number else "(all)"} already exists.', 'warning')
+        return redirect(url_for('admin.view_course_assignments', admin_id=admin_id))
+
+    # Create new assignment
+    assignment = CourseCoordinatorAssignment(
+        admin_id=admin.id,
+        course_prefix=course_prefix,
+        course_number=course_number,
+        department_id=department_id,
+        created_by_id=current_user.id
+    )
+    db.session.add(assignment)
+
+    # Update admin to be course coordinator if not already
+    if admin.contact_type != 'Course Coordinator':
+        admin.contact_type = 'Course Coordinator'
+        admin.role = 'dept_admin'
+
+    db.session.commit()
+
+    # Log the change
+    AdminAuditLog.log_change(
+        admin, current_user, 'updated',
+        changes={
+            'action': 'course_assignment_added',
+            'course_prefix': course_prefix,
+            'course_number': course_number,
+            'is_wildcard': not course_number
+        }
+    )
+    db.session.commit()
+
+    flash(f'Course assignment "{course_prefix} {course_number if course_number else "(all)"}" added.', 'success')
+    return redirect(url_for('admin.view_course_assignments', admin_id=admin_id))
+
+
+@admin_bp.route('/<int:admin_id>/assignments/<int:assignment_id>/delete', methods=['POST'])
+@admin_required
+def delete_course_assignment(admin_id, assignment_id):
+    """Delete a course assignment from an admin"""
+    admin = Admin.query.get_or_404(admin_id)
+    assignment = CourseCoordinatorAssignment.query.get_or_404(assignment_id)
+
+    # Permission check
+    if not current_user.can_edit_admin(admin):
+        flash('You do not have permission to edit this admin.', 'danger')
+        return redirect(url_for('admin.list_admins'))
+
+    # Verify assignment belongs to this admin
+    if assignment.admin_id != admin.id:
+        flash('Invalid assignment.', 'danger')
+        return redirect(url_for('admin.view_course_assignments', admin_id=admin_id))
+
+    course_display = assignment.display_name
+    db.session.delete(assignment)
+
+    # Log the change
+    AdminAuditLog.log_change(
+        admin, current_user, 'updated',
+        changes={
+            'action': 'course_assignment_removed',
+            'course_prefix': assignment.course_prefix,
+            'course_number': assignment.course_number
+        }
+    )
+
+    db.session.commit()
+
+    flash(f'Course assignment "{course_display}" removed.', 'success')
+    return redirect(url_for('admin.view_course_assignments', admin_id=admin_id))
 
 
 @admin_bp.route('/export')

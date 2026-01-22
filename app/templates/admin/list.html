@@ -137,8 +137,13 @@
                             {% else %}
                             {{ admin.department.name if admin.department else (admin.department_id or '-') }}
                             {% endif %}
-                            {% if admin.course_prefix %}
-                            <br><small class="text-muted">{{ admin.course_prefix }} {{ admin.course_number }}</small>
+                            {% set assignment_count = admin.course_assignments.count() %}
+                            {% if assignment_count > 0 %}
+                            <br><a href="{{ url_for('admin.view_course_assignments', admin_id=admin.id) }}" class="small text-info" title="View course assignments">
+                                <i class="bi bi-journal-bookmark"></i> {{ assignment_count }} course(s)
+                            </a>
+                            {% elif admin.course_prefix %}
+                            <br><small class="text-muted">{{ admin.course_prefix }} {{ admin.course_number or '(all)' }}</small>
                             {% endif %}
                             {% else %}
                             {% set dept_names = admin.department_names %}

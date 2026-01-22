@@ -25,27 +25,31 @@
                         <label for="linkblue" class="form-label">LinkBlue <span class="text-danger">*</span></label>
                         <div class="input-group">
                             <span class="input-group-text">@</span>
-                            <input type="text" class="form-control" id="linkblue" name="linkblue" 
-                                   required placeholder="e.g., jsmith2" pattern="[a-z0-9]+">
+                            <input type="text" class="form-control" id="linkblue" name="linkblue"
+                                   required placeholder="e.g., jsmith2" pattern="[a-z0-9]+"
+                                   value="{{ form_data.linkblue or '' }}">
                         </div>
-                        <div class="form-text">University ID (lowercase, no spaces)</div>
+                        <div class="form-text">University ID (lowercase, no spaces). For course coordinators, you can add the same person multiple times with different course assignments.</div>
                     </div>
-                    
+
                     <div class="row mb-3">
                         <div class="col-md-6">
                             <label for="first_name" class="form-label">First Name <span class="text-danger">*</span></label>
-                            <input type="text" class="form-control" id="first_name" name="first_name" required>
+                            <input type="text" class="form-control" id="first_name" name="first_name" required
+                                   value="{{ form_data.first_name or '' }}">
                         </div>
                         <div class="col-md-6">
                             <label for="last_name" class="form-label">Last Name <span class="text-danger">*</span></label>
-                            <input type="text" class="form-control" id="last_name" name="last_name" required>
+                            <input type="text" class="form-control" id="last_name" name="last_name" required
+                                   value="{{ form_data.last_name or '' }}">
                         </div>
                     </div>
-                    
+
                     <div class="mb-3">
                         <label for="email" class="form-label">Email</label>
-                        <input type="email" class="form-control" id="email" name="email" 
-                               placeholder="Will default to linkblue@uky.edu">
+                        <input type="email" class="form-control" id="email" name="email"
+                               placeholder="Will default to linkblue@uky.edu"
+                               value="{{ form_data.email or '' }}">
                     </div>
                     
                     <hr class="my-4">
@@ -68,17 +72,17 @@
                     <div class="mb-3">
                         <label for="contact_type" class="form-label">Contact Type <span class="text-danger">*</span></label>
                         <select class="form-select" id="contact_type" name="contact_type" required>
-                            <option value="College">College</option>
-                            <option value="Department" selected>Department</option>
+                            <option value="College" {% if form_data.contact_type == 'College' %}selected{% endif %}>College</option>
+                            <option value="Department" {% if form_data.contact_type != 'College' %}selected{% endif %}>Department</option>
                         </select>
                     </div>
-                    
+
                     <div class="mb-3">
                         <label for="college" class="form-label">College <span class="text-danger">*</span></label>
                         <select class="form-select" id="college" name="college" required>
                             <option value="">Select College</option>
                             {% for college in colleges %}
-                            <option value="{{ college.code or college.name }}">{{ college.name or college.code }}</option>
+                            <option value="{{ college.code or college.name }}" {% if form_data.college == (college.code or college.name) %}selected{% endif %}>{{ college.name or college.code }}</option>
                             {% endfor %}
                         </select>
                     </div>
@@ -107,7 +111,8 @@
                     <div id="course_fields" style="display: none;">
                         <div class="mb-3">
                             <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="is_course_coordinator" name="is_course_coordinator">
+                                <input class="form-check-input" type="checkbox" id="is_course_coordinator" name="is_course_coordinator"
+                                       {% if form_data.is_course_coordinator %}checked{% endif %}>
                                 <label class="form-check-label" for="is_course_coordinator">
                                     This is a Course Coordinator
                                 </label>
@@ -116,15 +121,22 @@
 
                         <div class="row mb-3" id="course_details" style="display: none;">
                             <div class="col-md-6">
-                                <label for="prefix" class="form-label">Course Prefix</label>
+                                <label for="prefix" class="form-label">Course Prefix <span class="text-danger">*</span></label>
                                 <input type="text" class="form-control" id="prefix" name="prefix"
-                                       placeholder="e.g., UK, BAE" maxlength="10">
+                                       placeholder="e.g., UK, BAE" maxlength="10"
+                                       value="{{ form_data.prefix or '' }}">
                             </div>
                             <div class="col-md-6">
-                                <label for="course" class="form-label">Course Number</label>
+                                <label for="course" class="form-label">Course Number <span class="text-muted">(optional)</span></label>
                                 <input type="text" class="form-control" id="course" name="course"
-                                       placeholder="e.g., 101" maxlength="10">
+                                       placeholder="e.g., 101 (leave empty for all)" maxlength="10"
+                                       value="{{ form_data.course or '' }}">
+                                <div class="form-text">Leave empty to include ALL courses with this prefix.</div>
                             </div>
+                        </div>
+                        <div class="alert alert-info" id="course_info" style="display: none;">
+                            <i class="bi bi-info-circle me-2"></i>
+                            <strong>Course Coordinators:</strong> If you leave the course number empty, the coordinator will have access to ALL courses with the specified prefix. You can also add the same person multiple times with different course assignments.
                         </div>
                     </div>
                     </div><!-- end regular_admin_fields -->
@@ -315,7 +327,12 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function updateCourseCoordinator() {
-        courseDetailsDiv.style.display = isCourseCoordinator.checked ? 'block' : 'none';
+        const isChecked = isCourseCoordinator.checked;
+        courseDetailsDiv.style.display = isChecked ? 'block' : 'none';
+        const courseInfo = document.getElementById('course_info');
+        if (courseInfo) {
+            courseInfo.style.display = isChecked ? 'block' : 'none';
+        }
     }
 
     // Event listeners
