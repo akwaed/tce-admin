@@ -49,10 +49,11 @@ def list_admins():
     type_filter = request.args.get('type', '')
     search = request.args.get('search', '').strip().lower()
     primary_filter = request.args.get('primary', '')
-    
+    access_filter = request.args.get('access', '')
+
     # Base query based on user's access
     query = current_user.get_visible_admins_query()
-    
+
     # Apply filters
     if college_filter:
         query = query.filter(Admin.college_code == college_filter)
@@ -64,6 +65,12 @@ def list_admins():
         query = query.filter(Admin.is_primary_contact == True)
     elif primary_filter == 'no':
         query = query.filter(Admin.is_primary_contact == False)
+    if access_filter == 'D':
+        query = query.filter(Admin.has_dashboard_access == True)
+    elif access_filter == 'S':
+        query = query.filter(Admin.has_static_report_access == True)
+    elif access_filter == 'QB':
+        query = query.filter(Admin.has_qb_access == True)
     if search:
         query = query.filter(
             db.or_(
@@ -72,12 +79,12 @@ def list_admins():
                 Admin.last_name.ilike(f'%{search}%')
             )
         )
-    
+
     # Only show active admins by default
     query = query.filter(Admin.is_active == True)
-    
+
     admins = query.order_by(Admin.college_code, Admin.department_id, Admin.last_name).all()
-    
+
     # Get colleges and departments for filter dropdowns
     if current_user.is_super_admin():
         colleges = College.query.order_by(College.name).all()
@@ -88,11 +95,11 @@ def list_admins():
     else:
         colleges = []
         departments = [Department.query.get(current_user.department_id)] if current_user.department_id else []
-    
+
     # Get unique colleges from admins for backwards compatibility when no College model data
     unique_colleges = sorted(set(a.college_code for a in Admin.query.distinct(Admin.college_code).all() if a.college_code))
-    
-    return render_template('admin/list.html', 
+
+    return render_template('admin/list.html',
                          admins=admins,
                          colleges=colleges,
                          departments=departments,
@@ -102,7 +109,8 @@ def list_admins():
                              'department': dept_filter,
                              'type': type_filter,
                              'search': search,
-                             'primary': primary_filter
+                             'primary': primary_filter,
+                             'access': access_filter
                          })
 
 
