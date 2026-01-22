@@ -23,6 +23,9 @@
                 <i class="bi bi-upload me-1"></i>Import CSV
             </a>
             {% if current_user.is_super_admin() %}
+            <a href="{{ url_for('tracking.dra_preview') }}" class="btn btn-warning">
+                <i class="bi bi-file-earmark-spreadsheet me-1"></i>Export DRA
+            </a>
             <a href="{{ url_for('admin.fix_department_ids') }}" class="btn btn-outline-warning">
                 <i class="bi bi-wrench me-1"></i>Fix Dept IDs
             </a>
@@ -40,9 +43,9 @@
     <div class="card-body">
         <form method="GET" action="{{ url_for('admin.list_admins') }}">
             <div class="row g-3">
-                <div class="col-md-3">
-                    <input type="text" class="form-control" name="search" 
-                           placeholder="Search name or LinkBlue..." 
+                <div class="col-md-2">
+                    <input type="text" class="form-control" name="search"
+                           placeholder="Search name or LinkBlue..."
                            value="{{ current_filters.search }}">
                 </div>
                 <div class="col-md-2">
@@ -65,12 +68,20 @@
                 </div>
                 <div class="col-md-2">
                     <select name="primary" class="form-select">
-                        <option value="">All</option>
+                        <option value="">All Primary</option>
                         <option value="yes" {% if current_filters.primary == 'yes' %}selected{% endif %}>Primary Only</option>
                         <option value="no" {% if current_filters.primary == 'no' %}selected{% endif %}>Non-Primary</option>
                     </select>
                 </div>
-                <div class="col-md-3">
+                <div class="col-md-2">
+                    <select name="access" class="form-select">
+                        <option value="">All Access</option>
+                        <option value="D" {% if current_filters.access == 'D' %}selected{% endif %}>Dashboard (D)</option>
+                        <option value="S" {% if current_filters.access == 'S' %}selected{% endif %}>Static Reports (S)</option>
+                        <option value="QB" {% if current_filters.access == 'QB' %}selected{% endif %}>Question Bank (QB)</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
                     <button type="submit" class="btn btn-uk-primary">
                         <i class="bi bi-search me-1"></i>Filter
                     </button>

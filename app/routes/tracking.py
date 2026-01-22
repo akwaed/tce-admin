@@ -358,11 +358,14 @@ def export_dra():
     - source: The organizational unit code (college DRA code, department ID, or class ID)
     - target: The admin's linkblue
     - targetType: C4 (college), D3 (department), or CRS1 (course)
+
+    Only exports admins with the S flag (has_static_report_access = True)
     """
-    # Get all active admins (excluding super admins who don't have DRA assignments)
+    # Get all active admins with S flag (excluding super admins who don't have DRA assignments)
     admins = Admin.query.filter(
         Admin.is_active == True,
-        Admin.role != 'super_admin'
+        Admin.role != 'super_admin',
+        Admin.has_static_report_access == True  # S flag filter
     ).all()
 
     # Create CSV in memory
@@ -460,11 +463,15 @@ def export_dra():
 @tracking_bp.route('/dra-preview')
 @super_admin_required
 def dra_preview():
-    """Preview DRA export data before downloading"""
-    # Get all active admins (excluding super admins)
+    """Preview DRA export data before downloading.
+
+    Only includes admins with the S flag (has_static_report_access = True)
+    """
+    # Get all active admins with S flag (excluding super admins)
     admins = Admin.query.filter(
         Admin.is_active == True,
-        Admin.role != 'super_admin'
+        Admin.role != 'super_admin',
+        Admin.has_static_report_access == True  # S flag filter
     ).all()
 
     preview_data = []
