@@ -107,36 +107,45 @@
                         </div>
                     </div>
                     
-                    <!-- Course Coordinator Fields -->
+                    <!-- Course Coordinator Fields - shown for Department contacts -->
                     <div id="course_fields" style="display: none;">
-                        <div class="mb-3">
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="is_course_coordinator" name="is_course_coordinator"
-                                       {% if form_data.is_course_coordinator %}checked{% endif %}>
-                                <label class="form-check-label" for="is_course_coordinator">
-                                    This is a Course Coordinator
-                                </label>
-                            </div>
-                        </div>
+                        <div class="card bg-light mb-3">
+                            <div class="card-body">
+                                <h6 class="card-title mb-3">
+                                    <i class="bi bi-mortarboard me-2"></i>Course Coordinator Options
+                                </h6>
+                                <div class="mb-3">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" id="is_course_coordinator" name="is_course_coordinator"
+                                               {% if form_data.is_course_coordinator %}checked{% endif %}>
+                                        <label class="form-check-label" for="is_course_coordinator">
+                                            <strong>This is a Course Coordinator</strong>
+                                        </label>
+                                    </div>
+                                    <div class="form-text ms-4">Check this if the contact manages specific courses rather than the entire department.</div>
+                                </div>
 
-                        <div class="row mb-3" id="course_details" style="display: none;">
-                            <div class="col-md-6">
-                                <label for="prefix" class="form-label">Course Prefix <span class="text-danger">*</span></label>
-                                <input type="text" class="form-control" id="prefix" name="prefix"
-                                       placeholder="e.g., UK, BAE" maxlength="10"
-                                       value="{{ form_data.prefix or '' }}">
+                                <div class="row mb-3" id="course_details" style="display: none;">
+                                    <div class="col-md-6">
+                                        <label for="prefix" class="form-label">Course Prefix <span class="text-danger">*</span></label>
+                                        <input type="text" class="form-control" id="prefix" name="prefix"
+                                               placeholder="e.g., UK, BAE" maxlength="10"
+                                               value="{{ form_data.prefix or '' }}">
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label for="course" class="form-label">Course Number <span class="text-muted">(optional)</span></label>
+                                        <input type="text" class="form-control" id="course" name="course"
+                                               placeholder="e.g., 101 (leave empty for all)" maxlength="10"
+                                               value="{{ form_data.course or '' }}">
+                                        <div class="form-text">Leave empty to include ALL courses with this prefix.</div>
+                                    </div>
+                                </div>
+                                <div class="alert alert-info mb-0" id="course_info" style="display: none;">
+                                    <i class="bi bi-info-circle me-2"></i>
+                                    <strong>Tip:</strong> After creating this contact, you can add more course assignments from their profile page.
+                                    Course coordinators can manage multiple course prefixes.
+                                </div>
                             </div>
-                            <div class="col-md-6">
-                                <label for="course" class="form-label">Course Number <span class="text-muted">(optional)</span></label>
-                                <input type="text" class="form-control" id="course" name="course"
-                                       placeholder="e.g., 101 (leave empty for all)" maxlength="10"
-                                       value="{{ form_data.course or '' }}">
-                                <div class="form-text">Leave empty to include ALL courses with this prefix.</div>
-                            </div>
-                        </div>
-                        <div class="alert alert-info" id="course_info" style="display: none;">
-                            <i class="bi bi-info-circle me-2"></i>
-                            <strong>Course Coordinators:</strong> If you leave the course number empty, the coordinator will have access to ALL courses with the specified prefix. You can also add the same person multiple times with different course assignments.
                         </div>
                     </div>
                     </div><!-- end regular_admin_fields -->
@@ -332,6 +341,13 @@ document.addEventListener('DOMContentLoaded', function() {
         const courseInfo = document.getElementById('course_info');
         if (courseInfo) {
             courseInfo.style.display = isChecked ? 'block' : 'none';
+        }
+        // Clear prefix field if unchecking to ensure 'All' legacy values don't cause issues
+        if (!isChecked) {
+            const prefixField = document.getElementById('prefix');
+            const courseField = document.getElementById('course');
+            if (prefixField) prefixField.value = '';
+            if (courseField) courseField.value = '';
         }
     }
 

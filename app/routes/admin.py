@@ -264,7 +264,12 @@ def add_admin():
         level_type = form_data['level_type']
         course_prefix = form_data['prefix'].upper() if form_data['prefix'] else ''
         course_number = form_data['course']
-        is_course_coordinator = form_data['is_course_coordinator'] or bool(course_prefix)
+        # 'All' prefix is a legacy value meaning departmental access, not course coordination
+        is_all_prefix = course_prefix.upper() in ('ALL', '*', '')
+        is_course_coordinator = form_data['is_course_coordinator'] and not is_all_prefix
+        # Clear the prefix if it's the special 'All' value
+        if course_prefix.upper() in ('ALL', '*'):
+            course_prefix = ''
 
         # Access flags
         has_dashboard = form_data['has_dashboard_access']
@@ -816,10 +821,16 @@ def edit_admin(admin_id):
             course_prefix = form_data['prefix'].upper() if form_data['prefix'] else None
             course_number = form_data['course'] or None
 
+            # 'All' prefix is a legacy value meaning departmental access, not course coordination
+            if course_prefix and course_prefix.upper() in ('ALL', '*'):
+                course_prefix = None
+                course_number = None
+
             # College and departments - only super admin can change these freely
             new_college = form_data['college']
             new_department_ids = [d.strip() for d in form_data['departments'] if d and d.strip()]
 
+            # Only treat as course coordinator if there's a valid (non-All) prefix
             if admin.contact_type != 'College' and course_prefix:
                 admin.contact_type = 'Course Coordinator'
 

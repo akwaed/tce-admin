@@ -229,16 +229,25 @@ class Admin(UserMixin, db.Model):
     
     @property
     def is_course_coordinator(self):
-        """Check if this admin is a course coordinator (has course assignments or legacy fields)"""
+        """Check if this admin is a course coordinator (has course assignments or legacy fields)
+
+        Note: 'All' prefix is treated as a departmental contact, not a course coordinator.
+        This handles legacy data where contacts had 'All' set as their prefix.
+        """
         # Check new assignment table first
         if self.course_assignments.count() > 0:
             return True
-        # Fallback to legacy fields
-        return self.contact_type == 'Course Coordinator' or bool(self.course_prefix)
+        # Fallback to legacy fields - but 'All' prefix means departmental contact, not course coordinator
+        if self.course_prefix and self.course_prefix.upper() not in ('ALL', '*'):
+            return True
+        return self.contact_type == 'Course Coordinator' and self.course_prefix and self.course_prefix.upper() not in ('ALL', '*')
 
     @property
     def all_course_patterns(self):
-        """Get all course patterns this admin coordinates (from both new table and legacy fields)"""
+        """Get all course patterns this admin coordinates (from both new table and legacy fields)
+
+        Note: 'All' prefix is excluded as it represents departmental access, not course coordination.
+        """
         patterns = []
 
         # From new assignment table
@@ -250,8 +259,8 @@ class Admin(UserMixin, db.Model):
                 'department_id': assignment.department_id
             })
 
-        # From legacy fields (if not already covered)
-        if self.course_prefix and not patterns:
+        # From legacy fields (if not already covered) - exclude 'All' prefix
+        if self.course_prefix and not patterns and self.course_prefix.upper() not in ('ALL', '*'):
             patterns.append({
                 'prefix': self.course_prefix,
                 'number': self.course_number,

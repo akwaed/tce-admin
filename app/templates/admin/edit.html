@@ -125,30 +125,56 @@
                     
                     <!-- Course Coordinator Fields -->
                     <div id="course_fields" style="{% if admin.contact_type == 'College' %}display: none;{% endif %}">
-                        <div class="row mb-3">
-                            <div class="col-md-6">
-                                <label for="prefix" class="form-label">Course Prefix <span class="text-danger" id="prefix_required" style="display: none;">*</span></label>
-                                <input type="text" class="form-control" id="prefix" name="prefix"
-                                       value="{{ admin.course_prefix or '' }}" maxlength="10"
-                                       placeholder="e.g., UK, BAE">
-                            </div>
-                            <div class="col-md-6">
-                                <label for="course" class="form-label">Course Number <span class="text-muted">(optional)</span></label>
-                                <input type="text" class="form-control" id="course" name="course"
-                                       value="{{ admin.course_number or '' }}" maxlength="10"
-                                       placeholder="e.g., 101 (leave empty for all)">
-                                <div class="form-text">Leave empty to include ALL courses with this prefix.</div>
+                        <div class="card bg-light mb-3">
+                            <div class="card-body">
+                                <h6 class="card-title mb-3">
+                                    <i class="bi bi-mortarboard me-2"></i>Course Coordinator Settings
+                                </h6>
+
+                                {% if admin.contact_type == 'Course Coordinator' or admin.course_prefix %}
+                                <!-- Show current assignments and add more button -->
+                                {% set assignment_count = admin.course_assignments.count() %}
+                                {% if assignment_count > 0 %}
+                                <div class="alert alert-success mb-3">
+                                    <i class="bi bi-check-circle me-2"></i>
+                                    This contact has <strong>{{ assignment_count }}</strong> course assignment(s).
+                                    <a href="{{ url_for('admin.view_course_assignments', admin_id=admin.id) }}" class="alert-link ms-2">
+                                        <i class="bi bi-plus-circle me-1"></i>Add More Courses
+                                    </a>
+                                </div>
+                                {% elif admin.course_prefix and admin.course_prefix.upper() not in ('ALL', '*') %}
+                                <div class="alert alert-info mb-3">
+                                    <i class="bi bi-info-circle me-2"></i>
+                                    Current course: <strong>{{ admin.course_prefix }} {{ admin.course_number or '(all)' }}</strong>
+                                    <a href="{{ url_for('admin.view_course_assignments', admin_id=admin.id) }}" class="alert-link ms-2">
+                                        <i class="bi bi-plus-circle me-1"></i>Add More Courses
+                                    </a>
+                                </div>
+                                {% endif %}
+                                {% endif %}
+
+                                <div class="row mb-3">
+                                    <div class="col-md-6">
+                                        <label for="prefix" class="form-label">Course Prefix <span class="text-danger" id="prefix_required" style="display: none;">*</span></label>
+                                        <input type="text" class="form-control" id="prefix" name="prefix"
+                                               value="{% if admin.course_prefix and admin.course_prefix.upper() not in ('ALL', '*') %}{{ admin.course_prefix }}{% endif %}" maxlength="10"
+                                               placeholder="e.g., UK, BAE (leave empty for department-level access)">
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label for="course" class="form-label">Course Number <span class="text-muted">(optional)</span></label>
+                                        <input type="text" class="form-control" id="course" name="course"
+                                               value="{{ admin.course_number or '' }}" maxlength="10"
+                                               placeholder="e.g., 101 (leave empty for all)">
+                                        <div class="form-text">Leave empty to include ALL courses with this prefix.</div>
+                                    </div>
+                                </div>
+
+                                <div class="form-text text-muted">
+                                    <i class="bi bi-lightbulb me-1"></i>
+                                    <strong>Tip:</strong> Leave prefix empty for department-level contacts. Fill in prefix (and optionally course number) for course coordinators.
+                                </div>
                             </div>
                         </div>
-                        {% if admin.contact_type == 'Course Coordinator' and admin.course_assignments.count() > 0 %}
-                        <div class="alert alert-info">
-                            <i class="bi bi-info-circle me-2"></i>
-                            This admin has <strong>{{ admin.course_assignments.count() }}</strong> course assignment(s).
-                            <a href="{{ url_for('admin.view_course_assignments', admin_id=admin.id) }}" class="alert-link">
-                                Manage Course Assignments
-                            </a>
-                        </div>
-                        {% endif %}
                     </div>
                     </div><!-- end regular_admin_fields -->
 

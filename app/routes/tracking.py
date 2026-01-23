@@ -355,6 +355,8 @@ def get_course_class_ids_for_coordinator(admin):
     Uses the new CourseCoordinatorAssignment table first, then falls back to legacy fields.
     Handles both wildcard (prefix-only) and specific (prefix+number) assignments.
 
+    Note: 'All' prefix is treated as a departmental contact and returns empty set.
+
     Returns:
         tuple: (set of class_ids, list of error messages)
     """
@@ -387,8 +389,8 @@ def get_course_class_ids_for_coordinator(admin):
                 pattern = assignment.display_name
                 errors.append(f"No courses found for {admin.linkblue} ({pattern})")
 
-    elif admin.course_prefix:
-        # Fallback to legacy fields
+    elif admin.course_prefix and admin.course_prefix.upper() not in ('ALL', '*'):
+        # Fallback to legacy fields - but skip 'All' prefix (it's departmental, not course coordination)
         if admin.course_number:
             # Specific course pattern
             class_pattern = f"{admin.course_prefix} {admin.course_number}"
@@ -408,8 +410,8 @@ def get_course_class_ids_for_coordinator(admin):
         else:
             pattern = f"{admin.course_prefix} {admin.course_number if admin.course_number else '(all)'}"
             errors.append(f"No courses found for {admin.linkblue} ({pattern})")
-    else:
-        errors.append(f"Missing course info for coordinator {admin.linkblue}")
+    # Note: We don't add an error for missing course info here anymore,
+    # because 'All' prefix means departmental contact, handled elsewhere
 
     return class_ids, errors
 
