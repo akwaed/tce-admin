@@ -1114,14 +1114,17 @@ def api_add_question():
                                            details={'unit_type': unit_type, 'unit_id': unit_id, 'action': 'add'})
 
     if qb_service.add_question_to_unit(unit_type, unit_id, placeholder, question_id):
+        # Get question text for logging
+        q_text = question_text if question_text else qb_service.questions.get(question_id, {}).get('text', '')
         log_audit('question_add', current_user, {
             'unit_type': unit_type, 'unit_id': unit_id,
             'placeholder': placeholder, 'question_id': question_id
         })
-        # Log to database
+        # Log to database with question text for tracking visibility
         QBAuditLog.log_action('question_add', current_user,
                               details={'unit_type': unit_type, 'unit_id': unit_id,
-                                       'placeholder': placeholder, 'question_id': question_id},
+                                       'placeholder': placeholder, 'question_id': question_id,
+                                       'question_text': q_text[:150] if q_text else None},
                               backup_id=backup.id if backup else None)
         db.session.commit()
         return jsonify({'success': True})
@@ -1185,10 +1188,11 @@ def api_remove_question():
             'unit_type': unit_type, 'unit_id': unit_id,
             'placeholder': placeholder, 'question_id': question_id
         })
-        # Log to database
+        # Log to database with question text for tracking visibility
         QBAuditLog.log_action('question_remove', current_user,
                               details={'unit_type': unit_type, 'unit_id': unit_id,
-                                       'placeholder': placeholder, 'question_id': question_id},
+                                       'placeholder': placeholder, 'question_id': question_id,
+                                       'question_text': question_text[:150] if question_text else None},
                               backup_id=backup.id if backup else None)
         db.session.commit()
         return jsonify({'success': True})
