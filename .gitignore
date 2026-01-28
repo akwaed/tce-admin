@@ -25,6 +25,7 @@ datasources/*.csv
 datasources/*.xlsx
 datasources/*.xls
 datasources/*.json
+datasources/backups/
 
 # IDE/editor
 .idea/

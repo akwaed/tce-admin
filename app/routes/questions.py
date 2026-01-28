@@ -1354,7 +1354,24 @@ def api_approve_change():
                                                details={'change_id': change_id, 'change_type': change['type']})
 
         if change['type'] == 'add':
-            qb_service.add_question_to_unit(change['unit_type'], change['unit_id'], change['placeholder'], change['question_id'])
+            # Get next available placeholder instead of using submitted one
+            # This fixes the bug where multiple questions submitted with same placeholder
+            # would overwrite each other when approved
+            q = qb_service.questions.get(change['question_id'], {})
+            q_type = q.get('type', 'Selection')
+            # Determine if instructor question from placeholder naming convention
+            submitted_placeholder = change.get('placeholder', '')
+            is_instructor = 'ins_' in submitted_placeholder.lower() or '_ins_' in submitted_placeholder.lower()
+
+            # Get the next available placeholder for this unit
+            next_placeholder = qb_service.get_next_placeholder(
+                change['unit_type'], change['unit_id'], q_type, is_instructor
+            )
+
+            if not next_placeholder:
+                return jsonify({'success': False, 'error': 'No available placeholders for this unit'})
+
+            qb_service.add_question_to_unit(change['unit_type'], change['unit_id'], next_placeholder, change['question_id'])
         elif change['type'] == 'remove':
             qb_service.remove_question_from_unit(change['unit_type'], change['unit_id'], change['placeholder'])
         elif change['type'] == 'edit':
