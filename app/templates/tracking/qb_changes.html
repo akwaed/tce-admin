@@ -14,6 +14,28 @@
     <p class="text-muted mb-0">View all changes to the Question Bank and Question Mapping</p>
 </div>
 
+<!-- Quick Filters -->
+<div class="mb-3">
+    <span class="me-2">Quick filters:</span>
+    <a href="{{ url_for('tracking.qb_changes', quick='48h') }}"
+       class="btn btn-sm {% if current_filters.quick == '48h' %}btn-uk-primary{% else %}btn-outline-primary{% endif %} me-1">
+        Last 48 Hours
+    </a>
+    <a href="{{ url_for('tracking.qb_changes', quick='7d') }}"
+       class="btn btn-sm {% if current_filters.quick == '7d' %}btn-uk-primary{% else %}btn-outline-primary{% endif %} me-1">
+        Last 7 Days
+    </a>
+    <a href="{{ url_for('tracking.qb_changes', quick='30d') }}"
+       class="btn btn-sm {% if current_filters.quick == '30d' %}btn-uk-primary{% else %}btn-outline-primary{% endif %} me-1">
+        Last 30 Days
+    </a>
+    {% if current_filters.quick %}
+    <a href="{{ url_for('tracking.qb_changes') }}" class="btn btn-sm btn-outline-secondary ms-2">
+        <i class="bi bi-x"></i> Clear
+    </a>
+    {% endif %}
+</div>
+
 <!-- Filters -->
 <div class="card mb-4">
     <div class="card-header">
@@ -71,18 +93,19 @@
             <table class="table table-hover table-uk mb-0">
                 <thead>
                     <tr>
-                        <th style="width: 150px;">Date/Time</th>
-                        <th style="width: 160px;">Action</th>
-                        <th>Admin</th>
-                        <th>Details</th>
-                        <th style="width: 100px;">Backup</th>
+                        <th style="width: 140px;">Date/Time</th>
+                        <th style="width: 140px;">Action</th>
+                        <th style="width: 100px;">Admin</th>
+                        <th style="width: 120px;">Unit</th>
+                        <th>Question/Details</th>
+                        <th style="width: 80px;">Backup</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for log in logs %}
                     <tr>
                         <td class="small">
-                            {{ log.timestamp.strftime('%Y-%m-%d %H:%M:%S') if log.timestamp else 'N/A' }}
+                            {{ log.timestamp.strftime('%Y-%m-%d %H:%M') if log.timestamp else 'N/A' }}
                         </td>
                         <td>
                             <span class="badge
@@ -97,50 +120,59 @@
                                 {{ log.action_display }}
                             </span>
                         </td>
-                        <td>
+                        <td class="small">
                             {{ log.admin_linkblue }}
-                            {% if log.admin %}
-                            <br><small class="text-muted">{{ log.admin.full_name }}</small>
+                        </td>
+                        <td class="small">
+                            {% if log.details %}
+                                {% if log.details.unit_type %}
+                                <span class="badge bg-light text-dark">{{ log.details.unit_type }}</span><br>
+                                <code class="small">{{ log.details.unit_id }}</code>
+                                {% elif log.details.backup_type %}
+                                <span class="badge bg-light text-dark">{{ log.details.backup_type|upper }}</span>
+                                {% else %}
+                                <span class="text-muted">-</span>
+                                {% endif %}
+                            {% else %}
+                            <span class="text-muted">-</span>
                             {% endif %}
                         </td>
-                        <td>
+                        <td class="small">
                             {% if log.details %}
-                            <button type="button" class="btn btn-sm btn-outline-secondary"
-                                    data-bs-toggle="modal" data-bs-target="#detailsModal{{ log.id }}">
-                                <i class="bi bi-eye"></i> View Details
-                            </button>
+                                {# Show question-related info #}
+                                {% if log.details.question_id %}
+                                <strong>Q:</strong> <code>{{ log.details.question_id }}</code>
+                                {% endif %}
+                                {% if log.details.question_text %}
+                                <br><em>"{{ log.details.question_text[:80] }}{% if log.details.question_text|length > 80 %}...{% endif %}"</em>
+                                {% endif %}
+                                {% if log.details.new_text %}
+                                <br><em>"{{ log.details.new_text[:80] }}{% if log.details.new_text|length > 80 %}...{% endif %}"</em>
+                                {% endif %}
+                                {% if log.details.placeholder %}
+                                <br><small class="text-muted">Placeholder: {{ log.details.placeholder }}</small>
+                                {% endif %}
 
-                            <!-- Modal -->
-                            <div class="modal fade" id="detailsModal{{ log.id }}" tabindex="-1">
-                                <div class="modal-dialog">
-                                    <div class="modal-content">
-                                        <div class="modal-header">
-                                            <h5 class="modal-title">
-                                                {{ log.action_display }} Details
-                                            </h5>
-                                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                                        </div>
-                                        <div class="modal-body">
-                                            <table class="table table-sm">
-                                                <tbody>
-                                                    {% for key, value in log.details.items() %}
-                                                    <tr>
-                                                        <td><strong>{{ key.replace('_', ' ').title() }}</strong></td>
-                                                        <td>{{ value }}</td>
-                                                    </tr>
-                                                    {% endfor %}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                        <div class="modal-footer">
-                                            <small class="text-muted me-auto">
-                                                {{ log.timestamp.strftime('%Y-%m-%d %H:%M:%S') if log.timestamp else '' }}
-                                            </small>
-                                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                                        </div>
+                                {# Show import/export info #}
+                                {% if log.details.filename %}
+                                <br><i class="bi bi-file-earmark"></i> {{ log.details.filename }}
+                                {% endif %}
+                                {% if log.details.reason %}
+                                <br><small class="text-muted">Reason: {{ log.details.reason }}</small>
+                                {% endif %}
+
+                                {# Expand button for full details #}
+                                <button type="button" class="btn btn-sm btn-link p-0 ms-2"
+                                        data-bs-toggle="collapse" data-bs-target="#details{{ log.id }}">
+                                    <i class="bi bi-three-dots"></i>
+                                </button>
+                                <div class="collapse mt-2" id="details{{ log.id }}">
+                                    <div class="bg-light p-2 rounded small">
+                                        {% for key, value in log.details.items() %}
+                                        <div><strong>{{ key.replace('_', ' ').title() }}:</strong> {{ value }}</div>
+                                        {% endfor %}
                                     </div>
                                 </div>
-                            </div>
                             {% else %}
                             <span class="text-muted">-</span>
                             {% endif %}
@@ -148,8 +180,8 @@
                         <td>
                             {% if log.backup_id %}
                             <a href="{{ url_for('tracking.backups') }}?backup_id={{ log.backup_id }}"
-                               class="btn btn-sm btn-outline-primary">
-                                <i class="bi bi-archive"></i> #{{ log.backup_id }}
+                               class="btn btn-sm btn-outline-primary" title="View backup #{{ log.backup_id }}">
+                                <i class="bi bi-archive"></i>
                             </a>
                             {% else %}
                             <span class="text-muted">-</span>

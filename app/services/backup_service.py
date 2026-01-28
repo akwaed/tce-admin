@@ -39,7 +39,29 @@ class BackupService:
         ts_str = timestamp.strftime('%Y%m%d_%H%M%S')
         return f'{prefix}_backup_{ts_str}.xlsx'
 
-    def create_backup(self, backup_type, reason, admin, details=None):
+    def _has_backup_today(self, backup_type):
+        """
+        Check if a backup of this type already exists for today.
+
+        Args:
+            backup_type: 'qb' for Question Bank, 'qm' for Question Mapping
+
+        Returns:
+            QBBackup record if exists, None otherwise
+        """
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end = today_start.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+        existing = QBBackup.query.filter(
+            QBBackup.backup_type == backup_type,
+            QBBackup.is_deleted == False,
+            QBBackup.timestamp >= today_start,
+            QBBackup.timestamp <= today_end
+        ).first()
+
+        return existing
+
+    def create_backup(self, backup_type, reason, admin, details=None, force=False):
         """
         Create a backup of the specified file type
 
@@ -48,15 +70,24 @@ class BackupService:
             reason: 'import', 'export', 'change', 'manual'
             admin: The admin user creating the backup
             details: Optional dict with additional details
+            force: If True, create backup even if one exists today (for manual backups)
 
         Returns:
-            QBBackup record or None if source file doesn't exist
+            QBBackup record or None if source file doesn't exist or backup already exists today
         """
         source_path = self._get_source_path(backup_type)
 
         # Check if source file exists
         if not os.path.exists(source_path):
             return None
+
+        # EOD Logic: Only create one backup per day per type (unless manual/forced)
+        # Manual backups always create a new backup
+        if reason != 'manual' and not force:
+            existing_backup = self._has_backup_today(backup_type)
+            if existing_backup:
+                # Return existing backup instead of creating a new one
+                return existing_backup
 
         timestamp = datetime.utcnow()
         backup_filename = self._get_backup_filename(backup_type, timestamp)
@@ -99,7 +130,7 @@ class BackupService:
 
         return backup
 
-    def create_both_backups(self, reason, admin, details=None):
+    def create_both_backups(self, reason, admin, details=None, force=False):
         """
         Create backups of both QB and QM files
 
@@ -107,12 +138,13 @@ class BackupService:
             reason: 'import', 'export', 'change', 'manual'
             admin: The admin user creating the backup
             details: Optional dict with additional details
+            force: If True, create backup even if one exists today
 
         Returns:
             Tuple of (qb_backup, qm_backup) - either can be None if file doesn't exist
         """
-        qb_backup = self.create_backup('qb', reason, admin, details)
-        qm_backup = self.create_backup('qm', reason, admin, details)
+        qb_backup = self.create_backup('qb', reason, admin, details, force)
+        qm_backup = self.create_backup('qm', reason, admin, details, force)
         return qb_backup, qm_backup
 
     def delete_backup(self, backup_id, admin):

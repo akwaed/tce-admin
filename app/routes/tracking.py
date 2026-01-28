@@ -145,11 +145,14 @@ def admin_changes():
 @super_admin_required
 def qb_changes():
     """View all QB/QM audit logs with filtering"""
+    from datetime import timedelta
+
     # Get filter parameters
     action_filter = request.args.get('action', '')
     admin_filter = request.args.get('admin', '')
     date_from = request.args.get('date_from', '')
     date_to = request.args.get('date_to', '')
+    quick_filter = request.args.get('quick', '')  # 48h, 7d, 30d
     page = request.args.get('page', 1, type=int)
     per_page = 25
 
@@ -162,20 +165,33 @@ def qb_changes():
     if admin_filter:
         query = query.filter(QBAuditLog.admin_linkblue.ilike(f'%{admin_filter}%'))
 
-    if date_from:
-        try:
-            from_date = datetime.strptime(date_from, '%Y-%m-%d')
+    # Quick filter takes precedence over date filters
+    if quick_filter:
+        now = datetime.utcnow()
+        if quick_filter == '48h':
+            from_date = now - timedelta(hours=48)
             query = query.filter(QBAuditLog.timestamp >= from_date)
-        except ValueError:
-            pass
+        elif quick_filter == '7d':
+            from_date = now - timedelta(days=7)
+            query = query.filter(QBAuditLog.timestamp >= from_date)
+        elif quick_filter == '30d':
+            from_date = now - timedelta(days=30)
+            query = query.filter(QBAuditLog.timestamp >= from_date)
+    else:
+        if date_from:
+            try:
+                from_date = datetime.strptime(date_from, '%Y-%m-%d')
+                query = query.filter(QBAuditLog.timestamp >= from_date)
+            except ValueError:
+                pass
 
-    if date_to:
-        try:
-            to_date = datetime.strptime(date_to, '%Y-%m-%d')
-            to_date = to_date.replace(hour=23, minute=59, second=59)
-            query = query.filter(QBAuditLog.timestamp <= to_date)
-        except ValueError:
-            pass
+        if date_to:
+            try:
+                to_date = datetime.strptime(date_to, '%Y-%m-%d')
+                to_date = to_date.replace(hour=23, minute=59, second=59)
+                query = query.filter(QBAuditLog.timestamp <= to_date)
+            except ValueError:
+                pass
 
     # Order and paginate
     query = query.order_by(QBAuditLog.timestamp.desc())
@@ -194,7 +210,8 @@ def qb_changes():
                                'action': action_filter,
                                'admin': admin_filter,
                                'date_from': date_from,
-                               'date_to': date_to
+                               'date_to': date_to,
+                               'quick': quick_filter
                            })
 
 
@@ -237,14 +254,15 @@ def create_backup():
     backup_type = request.form.get('backup_type', 'both')
     backup_service = get_backup_service()
 
+    # Manual backups always create new ones (force=True)
     if backup_type == 'both':
-        qb_backup, qm_backup = backup_service.create_both_backups('manual', current_user)
+        qb_backup, qm_backup = backup_service.create_both_backups('manual', current_user, force=True)
         if qb_backup or qm_backup:
             flash('Manual backups created successfully.', 'success')
         else:
             flash('No files to backup.', 'warning')
     elif backup_type in ['qb', 'qm']:
-        backup = backup_service.create_backup(backup_type, 'manual', current_user)
+        backup = backup_service.create_backup(backup_type, 'manual', current_user, force=True)
         if backup:
             flash(f'{backup.backup_type_display} backup created successfully.', 'success')
         else:
