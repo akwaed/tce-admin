@@ -44,7 +44,7 @@
         <i class="bi bi-lightning me-2"></i>Manual Sync Actions
     </div>
     <div class="card-body">
-        <div class="row">
+        <div class="row mb-3">
             <div class="col-md-4 mb-2">
                 <form action="{{ url_for('settings.trigger_hana_sync') }}" method="post">
                     <button type="submit" class="btn btn-outline-primary w-100"
@@ -55,23 +55,71 @@
                 </form>
             </div>
             <div class="col-md-4 mb-2">
-                <form action="{{ url_for('settings.trigger_blue_sync') }}" method="post">
-                    <button type="submit" class="btn btn-outline-primary w-100"
-                            {% if hana_progress.running or blue_progress.running %}disabled{% endif %}
-                            onclick="return confirm('Push datasource files to Explorance Blue?\n\nThis will upload Users, Courses, Instructors, and Students to Blue.')">
-                        <i class="bi bi-cloud-upload me-1"></i>Datasource to Blue
-                    </button>
-                </form>
-            </div>
-            <div class="col-md-4 mb-2">
                 <form action="{{ url_for('settings.trigger_full_sync') }}" method="post">
                     <button type="submit" class="btn btn-uk-primary w-100"
                             {% if hana_progress.running or blue_progress.running %}disabled{% endif %}
-                            onclick="return confirm('Run full sync?\n\nThis will:\n1. Fetch from HANA\n2. Update local database\n3. Push to Explorance Blue')">
+                            onclick="return confirm('Run full sync?\n\nThis will:\n1. Fetch from HANA\n2. Update local database\n3. Push to Explorance Blue\n\nNote: There is a 60s delay between each Blue datasource.')">
                         <i class="bi bi-arrow-repeat me-1"></i>Full Sync
                     </button>
                 </form>
             </div>
+        </div>
+
+        <!-- Datasource to Blue with individual selection -->
+        <div class="border-top pt-3">
+            <h6 class="mb-3"><i class="bi bi-cloud-upload me-2"></i>Push to Explorance Blue</h6>
+            <form action="{{ url_for('settings.trigger_blue_sync') }}" method="post" id="blue-sync-form">
+                <div class="row mb-3">
+                    <div class="col-md-3">
+                        <div class="form-check">
+                            <input class="form-check-input ds-checkbox" type="checkbox" name="datasources" value="users" id="ds-users" checked>
+                            <label class="form-check-label" for="ds-users">
+                                <i class="bi bi-people me-1"></i>Users
+                            </label>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="form-check">
+                            <input class="form-check-input ds-checkbox" type="checkbox" name="datasources" value="courses" id="ds-courses" checked>
+                            <label class="form-check-label" for="ds-courses">
+                                <i class="bi bi-book me-1"></i>Courses
+                            </label>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="form-check">
+                            <input class="form-check-input ds-checkbox" type="checkbox" name="datasources" value="instructors" id="ds-instructors" checked>
+                            <label class="form-check-label" for="ds-instructors">
+                                <i class="bi bi-person-badge me-1"></i>Instructors
+                            </label>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="form-check">
+                            <input class="form-check-input ds-checkbox" type="checkbox" name="datasources" value="students" id="ds-students" checked>
+                            <label class="form-check-label" for="ds-students">
+                                <i class="bi bi-mortarboard me-1"></i>Students
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="d-flex align-items-center">
+                    <button type="submit" class="btn btn-outline-primary me-2"
+                            {% if hana_progress.running or blue_progress.running %}disabled{% endif %}
+                            id="blue-sync-btn">
+                        <i class="bi bi-cloud-upload me-1"></i>Push Selected to Blue
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm me-2" onclick="selectAllDatasources()">
+                        Select All
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="clearAllDatasources()">
+                        Clear All
+                    </button>
+                    <small class="text-muted ms-3">
+                        <i class="bi bi-info-circle me-1"></i>60s delay between each datasource
+                    </small>
+                </div>
+            </form>
         </div>
     </div>
 </div>
@@ -256,12 +304,61 @@
 {% endblock %}
 
 {% block extra_js %}
-{% if hana_progress.running or blue_progress.running %}
 <script>
+// Select/clear all datasources
+function selectAllDatasources() {
+    document.querySelectorAll('.ds-checkbox').forEach(cb => cb.checked = true);
+    updateBlueSyncButton();
+}
+
+function clearAllDatasources() {
+    document.querySelectorAll('.ds-checkbox').forEach(cb => cb.checked = false);
+    updateBlueSyncButton();
+}
+
+function updateBlueSyncButton() {
+    const checkboxes = document.querySelectorAll('.ds-checkbox:checked');
+    const btn = document.getElementById('blue-sync-btn');
+    if (checkboxes.length === 0) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="bi bi-cloud-upload me-1"></i>Select at least one';
+    } else {
+        btn.disabled = {% if hana_progress.running or blue_progress.running %}true{% else %}false{% endif %};
+        const count = checkboxes.length;
+        const label = count === 4 ? 'All' : count;
+        btn.innerHTML = '<i class="bi bi-cloud-upload me-1"></i>Push ' + label + ' to Blue';
+    }
+}
+
+// Form validation
+document.getElementById('blue-sync-form').addEventListener('submit', function(e) {
+    const checkboxes = document.querySelectorAll('.ds-checkbox:checked');
+    if (checkboxes.length === 0) {
+        e.preventDefault();
+        alert('Please select at least one datasource to push.');
+        return false;
+    }
+    const names = Array.from(checkboxes).map(cb => cb.value.charAt(0).toUpperCase() + cb.value.slice(1));
+    const msg = 'Push the following to Explorance Blue?\n\n• ' + names.join('\n• ') + '\n\nNote: There is a 60s delay between each datasource.';
+    if (!confirm(msg)) {
+        e.preventDefault();
+        return false;
+    }
+});
+
+// Update button on checkbox change
+document.querySelectorAll('.ds-checkbox').forEach(cb => {
+    cb.addEventListener('change', updateBlueSyncButton);
+});
+
+// Initial button state
+updateBlueSyncButton();
+
+{% if hana_progress.running or blue_progress.running %}
 // Auto-refresh when sync is running
 setTimeout(function() {
     location.reload();
 }, 5000);
-</script>
 {% endif %}
+</script>
 {% endblock %}

@@ -30,6 +30,7 @@ import requests
 import csv
 import re
 import os
+import time
 import threading
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Any
@@ -44,6 +45,10 @@ DEFAULT_BLUE_WS_URL = "https://my-uky-ws-bc.bluera.com/BlueWebService.svc/file"
 
 # Batch size for pushing data
 BATCH_SIZE = 1000
+
+# Delay between datasource imports (seconds)
+# This helps prevent timeouts on the Blue server
+IMPORT_DELAY_SECONDS = 60
 
 # ============================================================================
 # DATASOURCE DEFINITIONS
@@ -490,6 +495,14 @@ class BlueSyncService:
                         result='SUCCESS' if success else 'FAILED'
                     )
 
+                    # Add delay between datasources to prevent timeouts
+                    # Skip delay after the last datasource
+                    if idx < len(to_push) and not dry_run:
+                        _update_blue_progress(
+                            step=f'Waiting {IMPORT_DELAY_SECONDS}s before next datasource...'
+                        )
+                        time.sleep(IMPORT_DELAY_SECONDS)
+
                 except Exception as e:
                     self.errors.append(f"{ds_key}: {str(e)}")
                     self.results[ds_key] = f'ERROR: {str(e)}'
@@ -499,6 +512,10 @@ class BlueSyncService:
                         error=str(e),
                         result='ERROR'
                     )
+
+                    # Also add delay after errors to give server time to recover
+                    if idx < len(to_push):
+                        time.sleep(IMPORT_DELAY_SECONDS)
 
             # Update sync log
             all_success = self.stats['datasources_failed'] == 0
