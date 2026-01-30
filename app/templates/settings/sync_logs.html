@@ -1,0 +1,267 @@
+{% extends "base.html" %}
+
+{% block title %}Sync Logs{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1><i class="bi bi-journal-text me-2"></i>Data Sync Logs</h1>
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('main.dashboard') }}">Dashboard</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('settings.index') }}">Settings</a></li>
+            <li class="breadcrumb-item active">Sync Logs</li>
+        </ol>
+    </nav>
+</div>
+
+<!-- Running Sync Status -->
+{% if hana_progress.running or blue_progress.running %}
+<div class="alert alert-info" id="running-sync-alert">
+    <div class="d-flex align-items-center">
+        <div class="spinner-border spinner-border-sm me-3" role="status">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+        <div class="flex-grow-1">
+            {% if hana_progress.running %}
+            <strong>HANA Sync Running:</strong> {{ hana_progress.current_step }}
+            (Step {{ hana_progress.step_number }}/{{ hana_progress.total_steps }})
+            {% endif %}
+            {% if blue_progress.running %}
+            <strong>Blue Sync Running:</strong> {{ blue_progress.current_datasource }} - {{ blue_progress.current_step }}
+            ({{ blue_progress.datasource_number }}/{{ blue_progress.total_datasources }})
+            {% endif %}
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-info" onclick="location.reload()">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+        </button>
+    </div>
+</div>
+{% endif %}
+
+<!-- Quick Actions -->
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-lightning me-2"></i>Manual Sync Actions
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-4 mb-2">
+                <form action="{{ url_for('settings.trigger_hana_sync') }}" method="post">
+                    <button type="submit" class="btn btn-outline-primary w-100"
+                            {% if hana_progress.running or blue_progress.running %}disabled{% endif %}
+                            onclick="return confirm('Start HANA to Datasource sync?\n\nThis will fetch fresh data from SAP HANA and generate CSV files.')">
+                        <i class="bi bi-database-down me-1"></i>HANA to Datasource
+                    </button>
+                </form>
+            </div>
+            <div class="col-md-4 mb-2">
+                <form action="{{ url_for('settings.trigger_blue_sync') }}" method="post">
+                    <button type="submit" class="btn btn-outline-primary w-100"
+                            {% if hana_progress.running or blue_progress.running %}disabled{% endif %}
+                            onclick="return confirm('Push datasource files to Explorance Blue?\n\nThis will upload Users, Courses, Instructors, and Students to Blue.')">
+                        <i class="bi bi-cloud-upload me-1"></i>Datasource to Blue
+                    </button>
+                </form>
+            </div>
+            <div class="col-md-4 mb-2">
+                <form action="{{ url_for('settings.trigger_full_sync') }}" method="post">
+                    <button type="submit" class="btn btn-uk-primary w-100"
+                            {% if hana_progress.running or blue_progress.running %}disabled{% endif %}
+                            onclick="return confirm('Run full sync?\n\nThis will:\n1. Fetch from HANA\n2. Update local database\n3. Push to Explorance Blue')">
+                        <i class="bi bi-arrow-repeat me-1"></i>Full Sync
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Filters -->
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-funnel me-2"></i>Filters
+    </div>
+    <div class="card-body">
+        <form method="get" class="row g-3">
+            <div class="col-md-3">
+                <label class="form-label">Sync Type</label>
+                <select name="type" class="form-select">
+                    <option value="">All Types</option>
+                    <option value="hana_to_datasource" {% if current_filters.type == 'hana_to_datasource' %}selected{% endif %}>HANA to Datasource</option>
+                    <option value="datasource_to_blue" {% if current_filters.type == 'datasource_to_blue' %}selected{% endif %}>Datasource to Blue</option>
+                    <option value="full_sync" {% if current_filters.type == 'full_sync' %}selected{% endif %}>Full Sync</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label">Status</label>
+                <select name="status" class="form-select">
+                    <option value="">All Statuses</option>
+                    <option value="completed" {% if current_filters.status == 'completed' %}selected{% endif %}>Completed</option>
+                    <option value="failed" {% if current_filters.status == 'failed' %}selected{% endif %}>Failed</option>
+                    <option value="running" {% if current_filters.status == 'running' %}selected{% endif %}>Running</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">From Date</label>
+                <input type="date" name="date_from" class="form-control" value="{{ current_filters.date_from }}">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">To Date</label>
+                <input type="date" name="date_to" class="form-control" value="{{ current_filters.date_to }}">
+            </div>
+            <div class="col-md-2 d-flex align-items-end">
+                <button type="submit" class="btn btn-uk-primary me-2">
+                    <i class="bi bi-search"></i> Filter
+                </button>
+                <a href="{{ url_for('settings.sync_logs') }}" class="btn btn-outline-secondary">
+                    <i class="bi bi-x"></i>
+                </a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Logs Table -->
+<div class="card">
+    <div class="card-header">
+        <i class="bi bi-list-ul me-2"></i>Sync History
+        {% if pagination.total > 0 %}
+        <span class="badge bg-secondary ms-2">{{ pagination.total }} logs</span>
+        {% endif %}
+    </div>
+    <div class="card-body p-0">
+        {% if logs %}
+        <div class="table-responsive">
+            <table class="table table-uk table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Date/Time</th>
+                        <th>Type</th>
+                        <th>Status</th>
+                        <th>Duration</th>
+                        <th>Records</th>
+                        <th>Triggered By</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for log in logs %}
+                    <tr>
+                        <td>
+                            <span class="text-nowrap">{{ log.started_at.strftime('%Y-%m-%d') }}</span><br>
+                            <small class="text-muted">{{ log.started_at.strftime('%H:%M:%S') }}</small>
+                        </td>
+                        <td>
+                            {% if log.sync_type == 'hana_to_datasource' %}
+                                <span class="badge bg-info">HANA to Datasource</span>
+                            {% elif log.sync_type == 'datasource_to_blue' %}
+                                <span class="badge bg-primary">Datasource to Blue</span>
+                            {% elif log.sync_type == 'full_sync' %}
+                                <span class="badge bg-dark">Full Sync</span>
+                            {% else %}
+                                <span class="badge bg-secondary">{{ log.sync_type }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <span class="badge {{ log.status_class }}">
+                                {% if log.status == 'running' %}
+                                    <span class="spinner-border spinner-border-sm me-1" style="width: 0.7rem; height: 0.7rem;"></span>
+                                {% elif log.status == 'completed' %}
+                                    <i class="bi bi-check-circle me-1"></i>
+                                {% elif log.status == 'failed' %}
+                                    <i class="bi bi-x-circle me-1"></i>
+                                {% endif %}
+                                {{ log.status|title }}
+                            </span>
+                        </td>
+                        <td>{{ log.duration_display }}</td>
+                        <td>
+                            {{ log.records_processed or 0 }}
+                            {% if log.records_failed %}
+                                <span class="text-danger">({{ log.records_failed }} failed)</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if log.triggered_by %}
+                                {{ log.triggered_by.linkblue }}
+                                <small class="text-muted">({{ log.trigger_type }})</small>
+                            {% else %}
+                                <span class="text-muted">{{ log.trigger_type or 'Scheduled' }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <a href="{{ url_for('settings.sync_log_detail', log_id=log.id) }}"
+                               class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-eye"></i> Details
+                            </a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-center py-5">
+            <i class="bi bi-journal-x text-muted" style="font-size: 3rem;"></i>
+            <p class="text-muted mt-3">No sync logs found.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Pagination -->
+{% if pagination.pages > 1 %}
+<nav class="mt-4">
+    <ul class="pagination justify-content-center">
+        {% if pagination.has_prev %}
+        <li class="page-item">
+            <a class="page-link" href="{{ url_for('settings.sync_logs', page=pagination.prev_num, **current_filters) }}">
+                Previous
+            </a>
+        </li>
+        {% else %}
+        <li class="page-item disabled">
+            <span class="page-link">Previous</span>
+        </li>
+        {% endif %}
+
+        {% for page_num in pagination.iter_pages(left_edge=1, right_edge=1, left_current=2, right_current=2) %}
+            {% if page_num %}
+                <li class="page-item {% if page_num == pagination.page %}active{% endif %}">
+                    <a class="page-link" href="{{ url_for('settings.sync_logs', page=page_num, **current_filters) }}">
+                        {{ page_num }}
+                    </a>
+                </li>
+            {% else %}
+                <li class="page-item disabled">
+                    <span class="page-link">...</span>
+                </li>
+            {% endif %}
+        {% endfor %}
+
+        {% if pagination.has_next %}
+        <li class="page-item">
+            <a class="page-link" href="{{ url_for('settings.sync_logs', page=pagination.next_num, **current_filters) }}">
+                Next
+            </a>
+        </li>
+        {% else %}
+        <li class="page-item disabled">
+            <span class="page-link">Next</span>
+        </li>
+        {% endif %}
+    </ul>
+</nav>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+{% if hana_progress.running or blue_progress.running %}
+<script>
+// Auto-refresh when sync is running
+setTimeout(function() {
+    location.reload();
+}, 5000);
+</script>
+{% endif %}
+{% endblock %}

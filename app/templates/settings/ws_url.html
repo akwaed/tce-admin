@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block title %}Configure Web Service URL{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1><i class="bi bi-link-45deg me-2"></i>Web Service URL</h1>
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('main.dashboard') }}">Dashboard</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('settings.index') }}">Settings</a></li>
+            <li class="breadcrumb-item active">Web Service URL</li>
+        </ol>
+    </nav>
+</div>
+
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-link-45deg me-2"></i>Explorance Blue Web Service URL
+            </div>
+            <div class="card-body">
+                <p class="text-muted">
+                    Configure the SOAP Web Service endpoint for Explorance Blue. Only change this if instructed
+                    by Explorance support or if you have a custom Blue deployment.
+                </p>
+
+                <div class="mb-4 p-3 bg-light rounded">
+                    <h6><i class="bi bi-info-circle me-2"></i>Current Configuration</h6>
+                    <table class="table table-sm mb-0">
+                        <tr>
+                            <td width="150"><strong>URL:</strong></td>
+                            <td>
+                                {% if current_setting and current_setting.value %}
+                                    <code class="text-break">{{ current_setting.value }}</code>
+                                    <span class="badge bg-info ms-2">Custom</span>
+                                {% else %}
+                                    <code class="text-break">{{ default_url }}</code>
+                                    <span class="badge bg-secondary ms-2">Default</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+
+                <form method="post">
+                    <div class="mb-3">
+                        <label for="ws_url" class="form-label">
+                            <strong>Web Service URL</strong>
+                        </label>
+                        <input type="url"
+                               class="form-control font-monospace"
+                               id="ws_url"
+                               name="ws_url"
+                               placeholder="{{ default_url }}"
+                               value="{{ current_setting.value if current_setting and current_setting.value else '' }}">
+                        <div class="form-text">
+                            Leave empty to use the default URL: <code>{{ default_url }}</code>
+                        </div>
+                    </div>
+
+                    <div class="d-flex justify-content-between">
+                        <a href="{{ url_for('settings.index') }}" class="btn btn-outline-secondary">
+                            <i class="bi bi-x me-1"></i>Cancel
+                        </a>
+                        <button type="submit" class="btn btn-uk-primary">
+                            <i class="bi bi-check me-1"></i>Save
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+
+{% block title %}Configure API Key{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1><i class="bi bi-key me-2"></i>Explorance Blue API Key</h1>
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('main.dashboard') }}">Dashboard</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('settings.index') }}">Settings</a></li>
+            <li class="breadcrumb-item active">API Key</li>
+        </ol>
+    </nav>
+</div>
+
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-key me-2"></i>Configure API Key
+            </div>
+            <div class="card-body">
+                <div class="alert alert-warning">
+                    <i class="bi bi-exclamation-triangle me-2"></i>
+                    <strong>Important:</strong> Changing the API key will affect all data synchronization with Explorance Blue.
+                    Please ensure you have the correct key before proceeding.
+                </div>
+
+                {% if current_setting and current_setting.value %}
+                <div class="mb-4 p-3 bg-light rounded">
+                    <h6><i class="bi bi-info-circle me-2"></i>Current Configuration</h6>
+                    <table class="table table-sm mb-0">
+                        <tr>
+                            <td width="150"><strong>API Key:</strong></td>
+                            <td><code>{{ current_setting.masked_value }}</code></td>
+                        </tr>
+                        <tr>
+                            <td><strong>Last Updated:</strong></td>
+                            <td>{{ current_setting.updated_at.strftime('%Y-%m-%d %H:%M') if current_setting.updated_at else 'Unknown' }}</td>
+                        </tr>
+                        {% if current_setting.updated_by %}
+                        <tr>
+                            <td><strong>Updated By:</strong></td>
+                            <td>{{ current_setting.updated_by.full_name }} ({{ current_setting.updated_by.linkblue }})</td>
+                        </tr>
+                        {% endif %}
+                    </table>
+                </div>
+                {% endif %}
+
+                <form method="post" id="api-key-form">
+                    <input type="hidden" name="action" value="confirm">
+
+                    <div class="mb-3">
+                        <label for="api_key" class="form-label">
+                            <strong>New API Key</strong>
+                        </label>
+                        <div class="input-group">
+                            <input type="password"
+                                   class="form-control font-monospace"
+                                   id="api_key"
+                                   name="api_key"
+                                   placeholder="Enter the Explorance Blue API Key"
+                                   required
+                                   minlength="10"
+                                   autocomplete="off">
+                            <button type="button" class="btn btn-outline-secondary" id="toggle-visibility">
+                                <i class="bi bi-eye"></i>
+                            </button>
+                        </div>
+                        <div class="form-text">
+                            The API key is typically a UUID format like: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+                        </div>
+                    </div>
+
+                    <div class="alert alert-info">
+                        <i class="bi bi-shield-check me-2"></i>
+                        <strong>Two-Step Verification:</strong> After clicking "Continue", you will be asked to confirm
+                        the key before it is saved. The key will also be validated against the Explorance Blue server.
+                    </div>
+
+                    <div class="d-flex justify-content-between">
+                        <a href="{{ url_for('settings.index') }}" class="btn btn-outline-secondary">
+                            <i class="bi bi-x me-1"></i>Cancel
+                        </a>
+                        <div>
+                            {% if current_setting and current_setting.value %}
+                            <button type="button" class="btn btn-outline-danger me-2" data-bs-toggle="modal" data-bs-target="#deleteModal">
+                                <i class="bi bi-trash me-1"></i>Remove Key
+                            </button>
+                            {% endif %}
+                            <button type="submit" class="btn btn-uk-primary">
+                                <i class="bi bi-arrow-right me-1"></i>Continue to Confirmation
+                            </button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if current_setting and current_setting.value %}
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="deleteModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-exclamation-triangle text-danger me-2"></i>Remove API Key</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to remove the API key?</p>
+                <p class="text-danger"><strong>Warning:</strong> This will disable all data synchronization with Explorance Blue until a new key is configured.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <form action="{{ url_for('settings.api_key') }}" method="post" class="d-inline">
+                    <input type="hidden" name="action" value="delete">
+                    <button type="submit" class="btn btn-danger">
+                        <i class="bi bi-trash me-1"></i>Remove Key
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Toggle password visibility
+    const toggleBtn = document.getElementById('toggle-visibility');
+    const apiKeyInput = document.getElementById('api_key');
+
+    toggleBtn.addEventListener('click', function() {
+        if (apiKeyInput.type === 'password') {
+            apiKeyInput.type = 'text';
+            this.innerHTML = '<i class="bi bi-eye-slash"></i>';
+        } else {
+            apiKeyInput.type = 'password';
+            this.innerHTML = '<i class="bi bi-eye"></i>';
+        }
+    });
+});
+</script>
+{% endblock %}

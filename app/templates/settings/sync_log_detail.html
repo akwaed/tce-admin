@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+
+{% block title %}Sync Log Details{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1><i class="bi bi-journal-text me-2"></i>Sync Log Details</h1>
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('main.dashboard') }}">Dashboard</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('settings.index') }}">Settings</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('settings.sync_logs') }}">Sync Logs</a></li>
+            <li class="breadcrumb-item active">Log #{{ log.id }}</li>
+        </ol>
+    </nav>
+</div>
+
+<!-- Summary Card -->
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-info-circle me-2"></i>Sync Summary</span>
+        <span class="badge {{ log.status_class }} fs-6">
+            {% if log.status == 'running' %}
+                <span class="spinner-border spinner-border-sm me-1"></span>
+            {% elif log.status == 'completed' %}
+                <i class="bi bi-check-circle me-1"></i>
+            {% elif log.status == 'failed' %}
+                <i class="bi bi-x-circle me-1"></i>
+            {% endif %}
+            {{ log.status|title }}
+        </span>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-6">
+                <table class="table table-sm">
+                    <tr>
+                        <td width="150"><strong>Sync Type:</strong></td>
+                        <td>{{ log.sync_type_display }}</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Started At:</strong></td>
+                        <td>{{ log.started_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Completed At:</strong></td>
+                        <td>{{ log.completed_at.strftime('%Y-%m-%d %H:%M:%S') if log.completed_at else '-' }}</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Duration:</strong></td>
+                        <td>{{ log.duration_display }}</td>
+                    </tr>
+                </table>
+            </div>
+            <div class="col-md-6">
+                <table class="table table-sm">
+                    <tr>
+                        <td width="150"><strong>Triggered By:</strong></td>
+                        <td>
+                            {% if log.triggered_by %}
+                                {{ log.triggered_by.full_name }} ({{ log.triggered_by.linkblue }})
+                            {% else %}
+                                <span class="text-muted">System</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Trigger Type:</strong></td>
+                        <td>{{ log.trigger_type|title if log.trigger_type else 'Scheduled' }}</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Records Processed:</strong></td>
+                        <td>{{ log.records_processed or 0 }}</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Records Added:</strong></td>
+                        <td>{{ log.records_added or 0 }}</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Records Updated:</strong></td>
+                        <td>{{ log.records_updated or 0 }}</td>
+                    </tr>
+                    {% if log.records_failed %}
+                    <tr>
+                        <td><strong>Records Failed:</strong></td>
+                        <td class="text-danger">{{ log.records_failed }}</td>
+                    </tr>
+                    {% endif %}
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Blue Import Results (for Blue syncs) -->
+{% if log.blue_results %}
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-cloud-upload me-2"></i>Explorance Blue Import Results
+    </div>
+    <div class="card-body">
+        <div class="row">
+            {% for ds_key, result in log.blue_results.items() %}
+            <div class="col-md-3 mb-3">
+                <div class="card h-100 {% if result == 'SUCCESS' %}border-success{% elif 'ERROR' in result or 'FAILED' in result %}border-danger{% else %}border-secondary{% endif %}">
+                    <div class="card-body text-center">
+                        <h5 class="card-title text-capitalize">{{ ds_key }}</h5>
+                        {% if result == 'SUCCESS' %}
+                            <span class="badge bg-success fs-6"><i class="bi bi-check-circle me-1"></i>Success</span>
+                        {% elif 'ERROR' in result or 'FAILED' in result %}
+                            <span class="badge bg-danger fs-6"><i class="bi bi-x-circle me-1"></i>Failed</span>
+                            <p class="small text-danger mt-2 mb-0">{{ result }}</p>
+                        {% else %}
+                            <span class="badge bg-secondary fs-6">{{ result }}</span>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Field Changes -->
+{% if log.field_changes %}
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-list-check me-2"></i>Field Change Counts
+    </div>
+    <div class="card-body">
+        <p class="text-muted mb-3">Number of records where each field value changed during this sync.</p>
+        <div class="row">
+            {% for file_name, fields in log.field_changes.items() %}
+            <div class="col-md-6 mb-4">
+                <h6 class="border-bottom pb-2"><i class="bi bi-file-earmark-text me-2"></i>{{ file_name }}</h6>
+                <table class="table table-sm">
+                    <thead>
+                        <tr>
+                            <th>Field Name</th>
+                            <th class="text-end">Changes</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for field_name, count in fields.items() %}
+                        <tr>
+                            <td><code>{{ field_name }}</code></td>
+                            <td class="text-end">
+                                <span class="badge bg-info">{{ count }}</span>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- File Statistics -->
+{% if log.file_stats %}
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-file-earmark-bar-graph me-2"></i>File Statistics
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-uk">
+                <thead>
+                    <tr>
+                        <th>File</th>
+                        <th class="text-end">Added</th>
+                        <th class="text-end">Updated</th>
+                        <th class="text-end">Unchanged</th>
+                        <th class="text-end">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for file_name, stats in log.file_stats.items() %}
+                    <tr>
+                        <td><i class="bi bi-file-earmark-text me-2"></i>{{ file_name }}</td>
+                        <td class="text-end"><span class="badge bg-success">{{ stats.get('added', 0) }}</span></td>
+                        <td class="text-end"><span class="badge bg-warning text-dark">{{ stats.get('updated', 0) }}</span></td>
+                        <td class="text-end"><span class="badge bg-secondary">{{ stats.get('unchanged', 0) }}</span></td>
+                        <td class="text-end"><strong>{{ stats.get('total', stats.get('added', 0) + stats.get('updated', 0) + stats.get('unchanged', 0)) }}</strong></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Summary Data -->
+{% if log.summary %}
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-clipboard-data me-2"></i>Summary Data
+    </div>
+    <div class="card-body">
+        <pre class="bg-light p-3 rounded mb-0" style="max-height: 300px; overflow-y: auto;">{{ log.summary | tojson(indent=2) }}</pre>
+    </div>
+</div>
+{% endif %}
+
+<!-- Errors -->
+{% if log.errors %}
+<div class="card mb-4 border-danger">
+    <div class="card-header bg-danger text-white">
+        <i class="bi bi-exclamation-triangle me-2"></i>Errors ({{ log.errors|length }})
+    </div>
+    <div class="card-body">
+        <ul class="list-group list-group-flush">
+            {% for error in log.errors %}
+            <li class="list-group-item text-danger">
+                <i class="bi bi-x-circle me-2"></i>{{ error }}
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+</div>
+{% endif %}
+
+<!-- Back Button -->
+<div class="mt-4">
+    <a href="{{ url_for('settings.sync_logs') }}" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left me-1"></i>Back to Sync Logs
+    </a>
+</div>
+{% endblock %}

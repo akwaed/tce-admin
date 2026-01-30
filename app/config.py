@@ -44,8 +44,8 @@ class Config:
     UK_BLACK = '#000000'
     
     # Data sync settings
-    UKDIG_SYNC_HOUR = 18  # 6 PM
-    DATA_REFRESH_NOTE = "Data is refreshed daily at 6:00 PM EST"
+    UKDIG_SYNC_HOUR = 4  # 4 AM
+    DATA_REFRESH_NOTE = "Data is refreshed daily at 4:00 AM EST"
     
     # Pagination
     ITEMS_PER_PAGE = 50

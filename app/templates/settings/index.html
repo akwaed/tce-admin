@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+
+{% block title %}System Settings{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1><i class="bi bi-gear me-2"></i>System Settings</h1>
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('main.dashboard') }}">Dashboard</a></li>
+            <li class="breadcrumb-item active">Settings</li>
+        </ol>
+    </nav>
+</div>
+
+<div class="row">
+    <!-- Explorance Blue API Configuration -->
+    <div class="col-lg-6 mb-4">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-cloud-upload me-2"></i>Explorance Blue API</span>
+                {% if api_key_valid %}
+                    <span class="badge bg-success">Connected</span>
+                {% elif api_key_setting and api_key_setting.value %}
+                    <span class="badge bg-danger">Invalid Key</span>
+                {% else %}
+                    <span class="badge bg-secondary">Not Configured</span>
+                {% endif %}
+            </div>
+            <div class="card-body">
+                <p class="text-muted">Configure the connection to Explorance Blue for pushing datasource files.</p>
+
+                <table class="table table-sm">
+                    <tr>
+                        <td><strong>API Key:</strong></td>
+                        <td>
+                            {% if api_key_setting and api_key_setting.value %}
+                                <code>{{ api_key_setting.masked_value }}</code>
+                            {% else %}
+                                <span class="text-muted">Not configured</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Status:</strong></td>
+                        <td>
+                            {% if api_key_valid %}
+                                <span class="text-success"><i class="bi bi-check-circle me-1"></i>{{ api_key_message }}</span>
+                            {% elif api_key_setting and api_key_setting.value %}
+                                <span class="text-danger"><i class="bi bi-x-circle me-1"></i>{{ api_key_message }}</span>
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% if api_key_setting and api_key_setting.updated_at %}
+                    <tr>
+                        <td><strong>Last Updated:</strong></td>
+                        <td>{{ api_key_setting.updated_at.strftime('%Y-%m-%d %H:%M') }}
+                            {% if api_key_setting.updated_by %}
+                            by {{ api_key_setting.updated_by.linkblue }}
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endif %}
+                    <tr>
+                        <td><strong>Web Service URL:</strong></td>
+                        <td>
+                            {% if ws_url_setting and ws_url_setting.value %}
+                                <small class="text-break">{{ ws_url_setting.value }}</small>
+                            {% else %}
+                                <small class="text-muted">(default)</small>
+                            {% endif %}
+                        </td>
+                    </tr>
+                </table>
+
+                <div class="mt-3">
+                    <a href="{{ url_for('settings.api_key') }}" class="btn btn-uk-primary">
+                        <i class="bi bi-key me-1"></i>Configure API Key
+                    </a>
+                    <a href="{{ url_for('settings.ws_url') }}" class="btn btn-outline-secondary">
+                        <i class="bi bi-link-45deg me-1"></i>WS URL
+                    </a>
+                    {% if api_key_setting and api_key_setting.value %}
+                    <button type="button" class="btn btn-outline-info" id="btn-validate-key">
+                        <i class="bi bi-arrow-repeat me-1"></i>Re-validate
+                    </button>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Data Sync -->
+    <div class="col-lg-6 mb-4">
+        <div class="card h-100">
+            <div class="card-header">
+                <i class="bi bi-arrow-repeat me-2"></i>Data Synchronization
+            </div>
+            <div class="card-body">
+                <p class="text-muted">
+                    Data is automatically synchronized daily at <strong>4:00 AM EST</strong>.
+                    Use the buttons below to manually trigger a sync.
+                </p>
+
+                <div class="alert alert-info py-2 mb-3">
+                    <small>
+                        <i class="bi bi-info-circle me-1"></i>
+                        <strong>Sync Flow:</strong> HANA Database → CSV Files → Application Database → Explorance Blue
+                    </small>
+                </div>
+
+                <div class="d-grid gap-2">
+                    <form action="{{ url_for('settings.trigger_hana_sync') }}" method="post" class="d-inline">
+                        <button type="submit" class="btn btn-outline-primary w-100"
+                                onclick="return confirm('Start HANA to Datasource sync? This will fetch fresh data from SAP HANA.')">
+                            <i class="bi bi-database-down me-1"></i>Sync: HANA to Datasource
+                        </button>
+                    </form>
+
+                    <form action="{{ url_for('settings.trigger_blue_sync') }}" method="post" class="d-inline">
+                        <button type="submit" class="btn btn-outline-primary w-100"
+                                {% if not api_key_valid %}disabled{% endif %}
+                                onclick="return confirm('Push datasource files to Explorance Blue?')">
+                            <i class="bi bi-cloud-upload me-1"></i>Sync: Datasource to Blue
+                        </button>
+                    </form>
+
+                    <form action="{{ url_for('settings.trigger_full_sync') }}" method="post" class="d-inline">
+                        <button type="submit" class="btn btn-uk-primary w-100"
+                                {% if not api_key_valid %}disabled{% endif %}
+                                onclick="return confirm('Run full sync? This will:\n1. Fetch from HANA\n2. Update local database\n3. Push to Blue')">
+                            <i class="bi bi-arrow-repeat me-1"></i>Full Sync (All Steps)
+                        </button>
+                    </form>
+                </div>
+
+                <div class="mt-3 text-center">
+                    <a href="{{ url_for('settings.sync_logs') }}" class="btn btn-link">
+                        <i class="bi bi-journal-text me-1"></i>View Sync Logs
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Links -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <i class="bi bi-link-45deg me-2"></i>Quick Links
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4">
+                        <a href="{{ url_for('settings.sync_logs') }}" class="btn btn-outline-secondary w-100 mb-2">
+                            <i class="bi bi-journal-text me-2"></i>Sync Logs
+                        </a>
+                    </div>
+                    <div class="col-md-4">
+                        <a href="{{ url_for('tracking.index') }}" class="btn btn-outline-secondary w-100 mb-2">
+                            <i class="bi bi-clock-history me-2"></i>Audit Tracking
+                        </a>
+                    </div>
+                    <div class="col-md-4">
+                        <a href="{{ url_for('tracking.dra_preview') }}" class="btn btn-outline-secondary w-100 mb-2">
+                            <i class="bi bi-file-earmark-text me-2"></i>DRA Export Preview
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Re-validate API key button
+    const validateBtn = document.getElementById('btn-validate-key');
+    if (validateBtn) {
+        validateBtn.addEventListener('click', function() {
+            this.disabled = true;
+            this.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Validating...';
+
+            fetch('{{ url_for("settings.api_validate_key") }}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.valid) {
+                    alert('API key is valid: ' + data.message);
+                } else {
+                    alert('API key validation failed: ' + data.message);
+                }
+                location.reload();
+            })
+            .catch(error => {
+                alert('Error validating API key: ' + error);
+                location.reload();
+            });
+        });
+    }
+});
+</script>
+{% endblock %}

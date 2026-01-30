@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+
+{% block title %}Confirm API Key{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1><i class="bi bi-shield-check me-2"></i>Confirm API Key Change</h1>
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('main.dashboard') }}">Dashboard</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('settings.index') }}">Settings</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('settings.api_key') }}">API Key</a></li>
+            <li class="breadcrumb-item active">Confirm</li>
+        </ol>
+    </nav>
+</div>
+
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <div class="card border-warning">
+            <div class="card-header bg-warning text-dark">
+                <i class="bi bi-exclamation-triangle me-2"></i>Confirm API Key Change
+            </div>
+            <div class="card-body">
+                <div class="alert alert-warning">
+                    <i class="bi bi-exclamation-triangle me-2"></i>
+                    <strong>Please verify the API key before saving.</strong>
+                    This change will affect all data synchronization with Explorance Blue.
+                </div>
+
+                <div class="mb-4 p-3 bg-light rounded">
+                    <h6><i class="bi bi-key me-2"></i>New API Key</h6>
+                    <div class="d-flex align-items-center">
+                        <code class="fs-5 user-select-all" id="new-key-display">{{ new_key[:4] }}...{{ new_key[-4:] }}</code>
+                        <button type="button" class="btn btn-sm btn-outline-secondary ms-2" id="show-full-key">
+                            <i class="bi bi-eye"></i> Show Full
+                        </button>
+                    </div>
+                    <div id="full-key-container" class="mt-2 d-none">
+                        <code class="fs-6 text-break user-select-all">{{ new_key }}</code>
+                    </div>
+                </div>
+
+                {% if current_setting and current_setting.value %}
+                <div class="mb-4 p-3 bg-light rounded">
+                    <h6><i class="bi bi-key text-muted me-2"></i>Previous API Key</h6>
+                    <code class="text-muted">{{ current_setting.masked_value }}</code>
+                    <small class="text-muted d-block mt-1">
+                        Last updated: {{ current_setting.updated_at.strftime('%Y-%m-%d %H:%M') if current_setting.updated_at else 'Unknown' }}
+                    </small>
+                </div>
+                {% endif %}
+
+                <form method="post" action="{{ url_for('settings.api_key') }}">
+                    <input type="hidden" name="action" value="save">
+                    <input type="hidden" name="api_key" value="{{ new_key }}">
+
+                    <div class="mb-4">
+                        <label for="confirm_key" class="form-label">
+                            <strong>Re-enter the API Key to confirm</strong>
+                        </label>
+                        <input type="text"
+                               class="form-control font-monospace"
+                               id="confirm_key"
+                               name="confirm_key"
+                               placeholder="Paste or type the API key again"
+                               required
+                               autocomplete="off">
+                        <div class="form-text">
+                            Please re-enter the full API key to confirm you have it correctly.
+                        </div>
+                    </div>
+
+                    <div id="match-indicator" class="mb-3 d-none">
+                        <span id="match-success" class="text-success d-none">
+                            <i class="bi bi-check-circle me-1"></i>Keys match
+                        </span>
+                        <span id="match-error" class="text-danger d-none">
+                            <i class="bi bi-x-circle me-1"></i>Keys do not match
+                        </span>
+                    </div>
+
+                    <div class="d-flex justify-content-between">
+                        <a href="{{ url_for('settings.api_key') }}" class="btn btn-outline-secondary">
+                            <i class="bi bi-arrow-left me-1"></i>Go Back
+                        </a>
+                        <button type="submit" class="btn btn-success" id="save-btn" disabled>
+                            <i class="bi bi-check-lg me-1"></i>Save API Key
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const newKey = '{{ new_key }}';
+    const confirmInput = document.getElementById('confirm_key');
+    const matchIndicator = document.getElementById('match-indicator');
+    const matchSuccess = document.getElementById('match-success');
+    const matchError = document.getElementById('match-error');
+    const saveBtn = document.getElementById('save-btn');
+    const showFullKeyBtn = document.getElementById('show-full-key');
+    const fullKeyContainer = document.getElementById('full-key-container');
+    const newKeyDisplay = document.getElementById('new-key-display');
+
+    // Show/hide full key
+    showFullKeyBtn.addEventListener('click', function() {
+        fullKeyContainer.classList.toggle('d-none');
+        if (fullKeyContainer.classList.contains('d-none')) {
+            this.innerHTML = '<i class="bi bi-eye"></i> Show Full';
+        } else {
+            this.innerHTML = '<i class="bi bi-eye-slash"></i> Hide';
+        }
+    });
+
+    // Check if keys match
+    confirmInput.addEventListener('input', function() {
+        const entered = this.value.trim();
+
+        if (entered.length === 0) {
+            matchIndicator.classList.add('d-none');
+            saveBtn.disabled = true;
+            return;
+        }
+
+        matchIndicator.classList.remove('d-none');
+
+        if (entered === newKey) {
+            matchSuccess.classList.remove('d-none');
+            matchError.classList.add('d-none');
+            saveBtn.disabled = false;
+        } else {
+            matchSuccess.classList.add('d-none');
+            matchError.classList.remove('d-none');
+            saveBtn.disabled = true;
+        }
+    });
+});
+</script>
+{% endblock %}
