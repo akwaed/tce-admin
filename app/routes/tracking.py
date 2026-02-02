@@ -27,8 +27,10 @@ DRA_COLLEGE_CODES = {
     'EN': '8H000',    # Engineering
     'ME': '7H000',    # Medicine
     'DE': '8N000',    # Design
+    'DS': '8N000',    # Design (alternate code)
     'HS': '7N800',    # Health Sciences
     'PH': '7P610',    # Public Health
+    'PU': '7P610',    # Public Health (alternate code)
     'ED': '8G000',    # Education
     'DEN': '7A000',   # Dentistry
     'CI': '8M000',    # Communication and Information
@@ -36,6 +38,7 @@ DRA_COLLEGE_CODES = {
     'GS': '8W300',    # Graduate School
     'UE': '8Z110',    # Undergraduate Education
     'LHC': '30000055',  # Lewis Honors College
+    '30000055': '30000055',  # Lewis Honors College (direct code)
     'LA': '8K000',    # Law
     'NU': '7E000',    # Nursing
     'PHA': '7K000',   # Pharmacy
