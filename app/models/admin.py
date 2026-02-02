@@ -316,7 +316,8 @@ class Admin(UserMixin, db.Model):
             'department': dept_value,
             'course': self.course_number or '',
             'prefix': self.course_prefix or '',
-            'level_type': self.level_type
+            'level_type': self.level_type,
+            'has_static_report_access': 'true' if self.has_static_report_access else 'false'
         }
     
     @staticmethod

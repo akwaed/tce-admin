@@ -1146,7 +1146,8 @@ def export_admins():
     # Create CSV in memory
     output = io.StringIO()
     fieldnames = ['id', 'linkblue', 'first_name', 'last_name', 'primary_contact',
-                  'contact_type', 'college', 'department', 'course', 'prefix', 'level_type']
+                  'contact_type', 'college', 'department', 'course', 'prefix', 'level_type',
+                  'has_static_report_access']
     writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
     
