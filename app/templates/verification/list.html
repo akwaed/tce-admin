@@ -164,17 +164,94 @@
             <table class="table table-uk table-hover mb-0">
                 <thead>
                     <tr>
-                        <th style="width: 120px;">Course</th>
-                        <th style="width: 80px;">Section</th>
-                        <th>Instructor(s)</th>
-                        <th>Title</th>
-                        <th style="width: 80px;">College</th>
-                        <th>Department</th>
-                        <th style="width: 110px;">Course Start</th>
-                        <th style="width: 110px;">Course End</th>
-                        <th style="width: 110px;">TCE Start</th>
-                        <th style="width: 100px;">Status</th>
-                        <th style="width: 80px;" class="text-center">Students</th>
+                        <th style="width: 120px;" class="sortable-header" data-sort="course">
+                            Course
+                            <span class="sort-icon">
+                                {% if current_filters.sort == 'course' %}
+                                    {% if current_filters.order == 'asc' %}<i class="bi bi-caret-up-fill"></i>{% else %}<i class="bi bi-caret-down-fill"></i>{% endif %}
+                                {% else %}<i class="bi bi-caret-down text-muted opacity-25"></i>{% endif %}
+                            </span>
+                        </th>
+                        <th style="width: 80px;" class="sortable-header" data-sort="section">
+                            Section
+                            <span class="sort-icon">
+                                {% if current_filters.sort == 'section' %}
+                                    {% if current_filters.order == 'asc' %}<i class="bi bi-caret-up-fill"></i>{% else %}<i class="bi bi-caret-down-fill"></i>{% endif %}
+                                {% else %}<i class="bi bi-caret-down text-muted opacity-25"></i>{% endif %}
+                            </span>
+                        </th>
+                        <th class="sortable-header" data-sort="instructor">
+                            Instructor(s)
+                            <span class="sort-icon">
+                                {% if current_filters.sort == 'instructor' %}
+                                    {% if current_filters.order == 'asc' %}<i class="bi bi-caret-up-fill"></i>{% else %}<i class="bi bi-caret-down-fill"></i>{% endif %}
+                                {% else %}<i class="bi bi-caret-down text-muted opacity-25"></i>{% endif %}
+                            </span>
+                        </th>
+                        <th class="sortable-header" data-sort="title">
+                            Title
+                            <span class="sort-icon">
+                                {% if current_filters.sort == 'title' %}
+                                    {% if current_filters.order == 'asc' %}<i class="bi bi-caret-up-fill"></i>{% else %}<i class="bi bi-caret-down-fill"></i>{% endif %}
+                                {% else %}<i class="bi bi-caret-down text-muted opacity-25"></i>{% endif %}
+                            </span>
+                        </th>
+                        <th style="width: 80px;" class="sortable-header" data-sort="college">
+                            College
+                            <span class="sort-icon">
+                                {% if current_filters.sort == 'college' %}
+                                    {% if current_filters.order == 'asc' %}<i class="bi bi-caret-up-fill"></i>{% else %}<i class="bi bi-caret-down-fill"></i>{% endif %}
+                                {% else %}<i class="bi bi-caret-down text-muted opacity-25"></i>{% endif %}
+                            </span>
+                        </th>
+                        <th class="sortable-header" data-sort="department">
+                            Department
+                            <span class="sort-icon">
+                                {% if current_filters.sort == 'department' %}
+                                    {% if current_filters.order == 'asc' %}<i class="bi bi-caret-up-fill"></i>{% else %}<i class="bi bi-caret-down-fill"></i>{% endif %}
+                                {% else %}<i class="bi bi-caret-down text-muted opacity-25"></i>{% endif %}
+                            </span>
+                        </th>
+                        <th style="width: 110px;" class="sortable-header" data-sort="course_start">
+                            Course Start
+                            <span class="sort-icon">
+                                {% if current_filters.sort == 'course_start' %}
+                                    {% if current_filters.order == 'asc' %}<i class="bi bi-caret-up-fill"></i>{% else %}<i class="bi bi-caret-down-fill"></i>{% endif %}
+                                {% else %}<i class="bi bi-caret-down text-muted opacity-25"></i>{% endif %}
+                            </span>
+                        </th>
+                        <th style="width: 110px;" class="sortable-header" data-sort="course_end">
+                            Course End
+                            <span class="sort-icon">
+                                {% if current_filters.sort == 'course_end' %}
+                                    {% if current_filters.order == 'asc' %}<i class="bi bi-caret-up-fill"></i>{% else %}<i class="bi bi-caret-down-fill"></i>{% endif %}
+                                {% else %}<i class="bi bi-caret-down text-muted opacity-25"></i>{% endif %}
+                            </span>
+                        </th>
+                        <th style="width: 110px;" class="sortable-header" data-sort="tce_start">
+                            TCE Start
+                            <span class="sort-icon">
+                                {% if current_filters.sort == 'tce_start' %}
+                                    {% if current_filters.order == 'asc' %}<i class="bi bi-caret-up-fill"></i>{% else %}<i class="bi bi-caret-down-fill"></i>{% endif %}
+                                {% else %}<i class="bi bi-caret-down text-muted opacity-25"></i>{% endif %}
+                            </span>
+                        </th>
+                        <th style="width: 100px;" class="sortable-header" data-sort="status">
+                            Status
+                            <span class="sort-icon">
+                                {% if current_filters.sort == 'status' %}
+                                    {% if current_filters.order == 'asc' %}<i class="bi bi-caret-up-fill"></i>{% else %}<i class="bi bi-caret-down-fill"></i>{% endif %}
+                                {% else %}<i class="bi bi-caret-down text-muted opacity-25"></i>{% endif %}
+                            </span>
+                        </th>
+                        <th style="width: 80px;" class="text-center sortable-header" data-sort="students">
+                            Students
+                            <span class="sort-icon">
+                                {% if current_filters.sort == 'students' %}
+                                    {% if current_filters.order == 'asc' %}<i class="bi bi-caret-up-fill"></i>{% else %}<i class="bi bi-caret-down-fill"></i>{% endif %}
+                                {% else %}<i class="bi bi-caret-down text-muted opacity-25"></i>{% endif %}
+                            </span>
+                        </th>
                     </tr>
                 </thead>
                 <tbody>
@@ -318,6 +395,25 @@
 .has-questions-below:hover {
     background-color: #ffb300 !important;
 }
+
+/* Sortable table headers */
+.sortable-header {
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+    transition: background-color 0.15s ease;
+}
+.sortable-header:hover {
+    background-color: rgba(0, 91, 187, 0.1);
+}
+.sortable-header .sort-icon {
+    margin-left: 4px;
+    display: inline-block;
+    font-size: 0.75em;
+}
+.sortable-header:hover .sort-icon .text-muted {
+    opacity: 0.6 !important;
+}
 </style>
 {% endblock %}
 
@@ -326,13 +422,13 @@
 function updateDepartments() {
     const collegeCode = document.getElementById('collegeFilter').value;
     const deptSelect = document.getElementById('deptFilter');
-    
+
     if (!collegeCode) {
         // Show all departments or clear
         deptSelect.innerHTML = '<option value="">All Departments</option>';
         return;
     }
-    
+
     // Fetch departments for selected college
     fetch(`{{ url_for('verification.get_departments_api', college_code='PLACEHOLDER') }}`.replace('PLACEHOLDER', collegeCode))
         .then(response => response.json())
@@ -346,5 +442,33 @@ function updateDepartments() {
             });
         });
 }
+
+// Sortable table headers
+document.addEventListener('DOMContentLoaded', function() {
+    const sortableHeaders = document.querySelectorAll('.sortable-header');
+    const currentSort = '{{ current_filters.sort }}';
+    const currentOrder = '{{ current_filters.order }}';
+
+    sortableHeaders.forEach(header => {
+        header.addEventListener('click', function() {
+            const sortColumn = this.dataset.sort;
+            let newOrder = 'asc';
+
+            // If clicking the same column, toggle the order
+            if (sortColumn === currentSort) {
+                newOrder = currentOrder === 'asc' ? 'desc' : 'asc';
+            }
+
+            // Build new URL with sort parameters while preserving existing filters
+            const url = new URL(window.location.href);
+            url.searchParams.set('sort', sortColumn);
+            url.searchParams.set('order', newOrder);
+            // Reset to page 1 when changing sort
+            url.searchParams.set('page', '1');
+
+            window.location.href = url.toString();
+        });
+    });
+});
 </script>
 {% endblock %}
