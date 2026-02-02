@@ -7,10 +7,25 @@ from flask_login import login_required, current_user
 from app.models import db
 from app.models.course import Course, College, Department, Instructor, SyncLog
 from app.models.admin import Admin
-from sqlalchemy import func, case
+from sqlalchemy import func, case, asc, desc
 import csv
 import io
 from datetime import datetime
+
+# Mapping of sort column names to database fields
+SORT_COLUMNS = {
+    'course': Course.class_code,
+    'section': Course.crs_section,
+    'instructor': None,  # Special case - handled separately
+    'title': Course.section_title,
+    'college': Course.college_code,
+    'department': Course.department_id,
+    'course_start': Course.course_start,
+    'course_end': Course.course_end,
+    'tce_start': Course.tce_start,
+    'status': Course.marked_for_tce,
+    'students': Course.student_count,
+}
 
 verification_bp = Blueprint('verification', __name__)
 
@@ -26,6 +41,10 @@ def list_courses():
     search = request.args.get('search', '').strip()
     page = request.args.get('page', 1, type=int)
     per_page = 50
+
+    # Get sort parameters
+    sort_by = request.args.get('sort', 'course')  # Default sort by course code
+    sort_order = request.args.get('order', 'asc')  # Default ascending
     
     # Base query based on user's access
     query = Course.query
@@ -91,13 +110,24 @@ def list_courses():
     
     # Get total count before pagination
     total_count = query.count()
-    
+
+    # Apply sorting
+    sort_column = SORT_COLUMNS.get(sort_by)
+    if sort_column is not None:
+        if sort_order == 'desc':
+            query = query.order_by(desc(sort_column))
+        else:
+            query = query.order_by(asc(sort_column))
+    else:
+        # Default sort: college, department, course code
+        query = query.order_by(
+            Course.college_code,
+            Course.department_id,
+            Course.class_code
+        )
+
     # Paginate results
-    courses = query.order_by(
-        Course.college_code, 
-        Course.department_id, 
-        Course.class_code
-    ).paginate(page=page, per_page=per_page, error_out=False)
+    courses = query.paginate(page=page, per_page=per_page, error_out=False)
     
     # Get statistics for the filtered data
     stats = get_verification_stats(current_user, college_filter, dept_filter)
@@ -134,7 +164,9 @@ def list_courses():
                              'college': college_filter,
                              'department': dept_filter,
                              'tce_status': tce_filters,
-                             'search': search
+                             'search': search,
+                             'sort': sort_by,
+                             'order': sort_order
                          })
 
 
