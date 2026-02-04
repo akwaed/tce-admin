@@ -27,6 +27,34 @@ SORT_COLUMNS = {
     'students': Course.student_count,
 }
 
+
+def format_term_code(term_code):
+    """Convert term code to readable format.
+
+    Term codes follow the pattern: YYYYSSS where:
+    - YYYY = year
+    - SSS = semester code (010=Spring, 020=Summer, 030=Fall)
+
+    Examples:
+    - 2025010 -> Spring 2025
+    - 2025020 -> Summer 2025
+    - 2025030 -> Fall 2025
+    """
+    if not term_code or len(term_code) < 7:
+        return term_code or 'Unknown'
+
+    year = term_code[:4]
+    semester_code = term_code[4:7]
+
+    semester_map = {
+        '010': 'Spring',
+        '020': 'Summer',
+        '030': 'Fall',
+    }
+
+    semester = semester_map.get(semester_code, f'Term {semester_code}')
+    return f'{semester} {year}'
+
 verification_bp = Blueprint('verification', __name__)
 
 
@@ -37,6 +65,7 @@ def list_courses():
     # Get filter parameters
     college_filter = request.args.get('college', '')
     dept_filter = request.args.get('department', '')
+    term_filter = request.args.get('term', '')
     tce_filters = request.args.getlist('tce_status')  # marked, not_marked, zero_enrollment
     search = request.args.get('search', '').strip()
     page = request.args.get('page', 1, type=int)
@@ -45,10 +74,10 @@ def list_courses():
     # Get sort parameters
     sort_by = request.args.get('sort', 'course')  # Default sort by course code
     sort_order = request.args.get('order', 'asc')  # Default ascending
-    
+
     # Base query based on user's access
     query = Course.query
-    
+
     # Apply access restrictions
     if not current_user.is_super_admin():
         if current_user.is_college_admin():
@@ -58,12 +87,14 @@ def list_courses():
                 Course.college_code == current_user.college_code,
                 Course.department_id == current_user.department_id
             )
-    
+
     # Apply filters
     if college_filter:
         query = query.filter(Course.college_code == college_filter)
     if dept_filter:
         query = query.filter(Course.department_id == dept_filter)
+    if term_filter:
+        query = query.filter(Course.term_code == term_filter)
     if tce_filters:
         # Check for compound filter combinations
         has_marked = 'marked' in tce_filters
@@ -139,7 +170,7 @@ def list_courses():
         colleges = College.query.filter_by(code=current_user.college_code).all()
     else:
         colleges = []
-    
+
     # Get departments (filtered by college if selected)
     if college_filter:
         departments = Department.query.filter_by(college_code=college_filter).order_by(Department.name).all()
@@ -149,20 +180,35 @@ def list_courses():
         departments = Department.query.filter_by(college_code=current_user.college_code).order_by(Department.name).all()
     else:
         departments = []
-    
+
+    # Get distinct academic terms for filter dropdown
+    term_query = db.session.query(Course.term_code).distinct()
+    if not current_user.is_super_admin():
+        if current_user.is_college_admin():
+            term_query = term_query.filter(Course.college_code == current_user.college_code)
+        else:
+            term_query = term_query.filter(
+                Course.college_code == current_user.college_code,
+                Course.department_id == current_user.department_id
+            )
+    term_codes = [t[0] for t in term_query.order_by(Course.term_code.desc()).all() if t[0]]
+    terms = [{'code': tc, 'name': format_term_code(tc)} for tc in term_codes]
+
     # Get last sync time
     last_sync = SyncLog.query.filter_by(status='completed').order_by(SyncLog.completed_at.desc()).first()
-    
+
     return render_template('verification/list.html',
                          courses=courses,
                          colleges=colleges,
                          departments=departments,
+                         terms=terms,
                          stats=stats,
                          last_sync=last_sync,
                          total_count=total_count,
                          current_filters={
                              'college': college_filter,
                              'department': dept_filter,
+                             'term': term_filter,
                              'tce_status': tce_filters,
                              'search': search,
                              'sort': sort_by,
@@ -206,11 +252,12 @@ def export_courses():
     # Get same filters as list view
     college_filter = request.args.get('college', '')
     dept_filter = request.args.get('department', '')
+    term_filter = request.args.get('term', '')
     tce_filters = request.args.getlist('tce_status')
-    
+
     # Build query with same logic as list view
     query = Course.query
-    
+
     if not current_user.is_super_admin():
         if current_user.is_college_admin():
             query = query.filter(Course.college_code == current_user.college_code)
@@ -219,11 +266,13 @@ def export_courses():
                 Course.college_code == current_user.college_code,
                 Course.department_id == current_user.department_id
             )
-    
+
     if college_filter:
         query = query.filter(Course.college_code == college_filter)
     if dept_filter:
         query = query.filter(Course.department_id == dept_filter)
+    if term_filter:
+        query = query.filter(Course.term_code == term_filter)
     if tce_filters:
         # Check for compound filter combinations
         has_marked = 'marked' in tce_filters

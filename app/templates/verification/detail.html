@@ -22,6 +22,11 @@
                 <i class="bi bi-book me-2"></i>Course Information
             </div>
             <div class="card-body">
+                <!-- Section Title displayed prominently -->
+                <div class="mb-3 pb-3 border-bottom">
+                    <label class="text-muted small d-block">Section Title</label>
+                    <div class="fs-5 fw-semibold">{{ course.section_title or '-' }}</div>
+                </div>
                 <div class="row">
                     <div class="col-md-6">
                         <table class="table table-sm table-borderless">
@@ -40,6 +45,10 @@
                             <tr>
                                 <td class="text-muted">Department:</td>
                                 <td>{{ course.department_id }}</td>
+                            </tr>
+                            <tr>
+                                <td class="text-muted">Academic Term:</td>
+                                <td>{{ course.term_code or '-' }}</td>
                             </tr>
                             <tr>
                                 <td class="text-muted">Crosslisted ID:</td>
