@@ -112,6 +112,17 @@ class Course(db.Model):
         if self.has_zero_enrollment:
             return "badge-warning"
         return "badge-success"
+
+    @property
+    def section_number(self):
+        """Best-effort section number (e.g., 001) from available fields."""
+        if self.crs_section and '-' in self.crs_section:
+            return self.crs_section.split('-')[-1].strip()
+        if self.section_key and '-' in self.section_key:
+            parts = [p.strip() for p in self.section_key.split('-') if p.strip()]
+            if len(parts) >= 3:
+                return parts[-2]
+        return self.section_id or ''
     
     def to_dict(self):
         """Convert to dictionary for JSON"""

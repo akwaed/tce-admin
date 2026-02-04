@@ -7,10 +7,10 @@
     <nav aria-label="breadcrumb">
         <ol class="breadcrumb">
             <li class="breadcrumb-item"><a href="{{ url_for('verification.list_courses') }}">Verification</a></li>
-            <li class="breadcrumb-item active">{{ course.class_code }}-{{ course.section_id }}</li>
+            <li class="breadcrumb-item active">{{ course.class_code }}-{{ course.section_number }}</li>
         </ol>
     </nav>
-    <h1>{{ course.class_code }}-{{ course.section_id }}</h1>
+    <h1>{{ course.class_code }}-{{ course.section_number }}</h1>
     <p class="text-muted mb-0">{{ course.section_title }}</p>
 </div>
 
@@ -35,8 +35,8 @@
                                 <td><strong>{{ course.class_code }}</strong></td>
                             </tr>
                             <tr>
-                                <td class="text-muted">Section ID:</td>
-                                <td>{{ course.section_id }}</td>
+                                <td class="text-muted">Section:</td>
+                                <td>{{ course.section_number or '-' }}</td>
                             </tr>
                             <tr>
                                 <td class="text-muted">College:</td>
@@ -44,7 +44,7 @@
                             </tr>
                             <tr>
                                 <td class="text-muted">Department:</td>
-                                <td>{{ course.department_id }}</td>
+                                <td>{{ course.department.name if course.department else course.department_id }}</td>
                             </tr>
                             <tr>
                                 <td class="text-muted">Academic Term:</td>
