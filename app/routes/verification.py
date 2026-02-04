@@ -192,7 +192,7 @@ def list_courses():
                 Course.department_id == current_user.department_id
             )
     term_codes = [t[0] for t in term_query.order_by(Course.term_code.desc()).all() if t[0]]
-    terms = [{'code': tc, 'name': format_term_code(tc)} for tc in term_codes]
+    terms = [{'code': tc, 'name': tc} for tc in term_codes]
 
     # Get last sync time
     last_sync = SyncLog.query.filter_by(status='completed').order_by(SyncLog.completed_at.desc()).first()

@@ -227,9 +227,7 @@ class CourseSyncService:
                     course.tce_end = self._parse_date(row.get('TCE_END_DATE'))
                     course.tce_reminder = self._parse_date(row.get('TCE_R2'))
                     
-                    # Extract term from section_key (last 7 chars typically)
-                    if len(section_key) >= 7:
-                        course.term_code = section_key[-7:]
+                    course.term_code = row.get('ACADEMIC_TERM', '').strip()
                     
                     course.last_synced = datetime.utcnow()
                     course.marked_for_tce = False  # Will be set by instructor sync
