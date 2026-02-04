@@ -330,7 +330,7 @@ def export_courses():
         instructors = ', '.join([f"{i.first_name} {i.last_name}" for i in course.instructors])
         writer.writerow({
             'class_code': course.class_code,
-            'section': course.section_number,
+            'section': course.section_id,
             'section_title': course.section_title,
             'college': course.college_code,
             'department': course.department_id,
