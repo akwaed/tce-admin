@@ -254,6 +254,7 @@ def export_courses():
     dept_filter = request.args.get('department', '')
     term_filter = request.args.get('term', '')
     tce_filters = request.args.getlist('tce_status')
+    search = request.args.get('search', '').strip()
 
     # Build query with same logic as list view
     query = Course.query
@@ -306,11 +307,20 @@ def export_courses():
             if status_conditions:
                 query = query.filter(db.or_(*status_conditions))
 
+    if search:
+        query = query.filter(
+            db.or_(
+                Course.class_code.ilike(f'%{search}%'),
+                Course.section_title.ilike(f'%{search}%'),
+                Course.section_id.ilike(f'%{search}%')
+            )
+        )
+
     courses = query.order_by(Course.college_code, Course.class_code).all()
     
     # Create CSV
     output = io.StringIO()
-    fieldnames = ['class_code', 'section_id', 'section_title', 'college', 'department',
+    fieldnames = ['class_code', 'section', 'section_title', 'college', 'department', 'department_name',
                   'marked_for_tce', 'student_count', 'course_start', 'course_end',
                   'tce_start', 'tce_end', 'instructors', 'crosslisted_id']
     writer = csv.DictWriter(output, fieldnames=fieldnames)
@@ -320,10 +330,11 @@ def export_courses():
         instructors = ', '.join([f"{i.first_name} {i.last_name}" for i in course.instructors])
         writer.writerow({
             'class_code': course.class_code,
-            'section_id': course.section_id,
+            'section': course.section_id,
             'section_title': course.section_title,
             'college': course.college_code,
             'department': course.department_id,
+            'department_name': course.department.name if course.department else '',
             'marked_for_tce': 'Yes' if course.marked_for_tce else 'No',
             'student_count': course.student_count,
             'course_start': course.course_start.isoformat() if course.course_start else '',
