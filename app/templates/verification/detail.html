@@ -36,7 +36,7 @@
                             </tr>
                             <tr>
                                 <td class="text-muted">Section:</td>
-                                <td>{{ course.section_id or '-' }}</td>
+                                <td>{{ course.section_number or '-' }}</td>
                             </tr>
                             <tr>
                                 <td class="text-muted">College:</td>
@@ -133,7 +133,7 @@
                                     {{ xl.class_code }}
                                 </a>
                             </td>
-                            <td>{{ xl.section_id }}</td>
+                            <td>{{ xl.section_number }}</td>
                             <td>{{ xl.section_title[:40] }}...</td>
                             <td>{{ xl.student_count }}</td>
                         </tr>
