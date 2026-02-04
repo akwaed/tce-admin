@@ -35,8 +35,8 @@
                                 <td><strong>{{ course.class_code }}</strong></td>
                             </tr>
                             <tr>
-                                <td class="text-muted">Section ID:</td>
-                                <td>{{ course.section_id }}</td>
+                                <td class="text-muted">Section:</td>
+                                <td>{{ course.section_id or '-' }}</td>
                             </tr>
                             <tr>
                                 <td class="text-muted">College:</td>
@@ -44,7 +44,7 @@
                             </tr>
                             <tr>
                                 <td class="text-muted">Department:</td>
-                                <td>{{ course.department_id }}</td>
+                                <td>{{ course.department.name if course.department else course.department_id }}</td>
                             </tr>
                             <tr>
                                 <td class="text-muted">Academic Term:</td>
