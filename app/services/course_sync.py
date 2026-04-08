@@ -130,6 +130,18 @@ class CourseSyncService:
             db.session.delete(instructor)
             self.stats['instructors_removed'] += 1
         db.session.commit()
+
+    def _prefetch_by_primary_key(self, model, key_column, values):
+        """Load existing rows keyed by primary/business key in manageable chunks."""
+        existing = {}
+        if not values:
+            return existing
+
+        for chunk in self._iter_chunks(values):
+            rows = model.query.filter(key_column.in_(chunk)).all()
+            for row in rows:
+                existing[getattr(row, key_column.key)] = row
+        return existing
     
     def sync_all(self):
         """Run full sync of all data"""
@@ -219,11 +231,32 @@ class CourseSyncService:
             return
 
         with open(filepath, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            processed_rows = 0
-            last_reported = 0
+            rows = list(csv.DictReader(f))
 
-            for row in reader:
+        section_keys = set()
+        dept_ids = set()
+        for row in rows:
+            section_key = row.get('SECTION_KEY', '').strip()
+            if section_key:
+                section_keys.add(section_key)
+                self._csv_section_keys.add(section_key)
+
+            term_code = row.get('ACADEMIC_TERM', '').strip()
+            if term_code:
+                self._csv_terms.add(term_code)
+
+            dept_id = row.get('CLASS_DEPARTMENT_ID', '').strip()
+            if dept_id:
+                dept_ids.add(dept_id)
+
+        colleges = {college.code: college for college in College.query.all()}
+        departments = self._prefetch_by_primary_key(Department, Department.id, dept_ids)
+        courses = self._prefetch_by_primary_key(Course, Course.section_key, section_keys)
+
+        processed_rows = 0
+        last_reported = 0
+        with db.session.no_autoflush:
+            for row in rows:
                 processed_rows += 1
                 if processed_rows % PROGRESS_UPDATE_INTERVAL == 0:
                     last_reported = self._flush_progress(
@@ -237,28 +270,18 @@ class CourseSyncService:
                     if not section_key:
                         continue
 
-                    # Track every section_key/term we see so the orphan
-                    # cleanup pass below knows the scope of this sync.
-                    self._csv_section_keys.add(section_key)
-                    term_code = row.get('ACADEMIC_TERM', '').strip()
-                    if term_code:
-                        self._csv_terms.add(term_code)
-                    
-                    # Ensure college exists
                     college_code = row.get('CLASS_COLLEGE_SHORT', '').strip()
                     college_name = row.get('CLASS_COLLEGE', '').strip()
-                    if college_code:
-                        college = College.query.get(college_code)
-                        if not college:
-                            college = College(code=college_code, name=college_name or college_code)
-                            db.session.add(college)
-                            self.stats['colleges_added'] += 1
-                    
-                    # Ensure department exists and is up-to-date
+                    if college_code and college_code not in colleges:
+                        college = College(code=college_code, name=college_name or college_code)
+                        db.session.add(college)
+                        colleges[college_code] = college
+                        self.stats['colleges_added'] += 1
+
                     dept_id = row.get('CLASS_DEPARTMENT_ID', '').strip()
                     dept_name = row.get('CLASS_DEPARTMENT', '').strip()
                     if dept_id:
-                        dept = Department.query.get(dept_id)
+                        dept = departments.get(dept_id)
                         if not dept:
                             dept = Department(
                                 id=dept_id,
@@ -266,22 +289,21 @@ class CourseSyncService:
                                 college_code=college_code
                             )
                             db.session.add(dept)
+                            departments[dept_id] = dept
                             self.stats['departments_added'] += 1
                         else:
-                            # Update existing department name and college if changed
                             if dept_name and dept.name != dept_name:
                                 dept.name = dept_name
                             if college_code and dept.college_code != college_code:
                                 dept.college_code = college_code
-                    
-                    # Create or update course
-                    course = Course.query.get(section_key)
+
+                    course = courses.get(section_key)
                     is_new = course is None
-                    
                     if is_new:
                         course = Course(section_key=section_key)
-                    
-                    # Update course fields
+                        db.session.add(course)
+                        courses[section_key] = course
+
                     course.class_id = row.get('CLASS_ID', '').strip()
                     course.class_code = row.get('CLASS', '').strip()
                     course.section_id = row.get('SECTION_ID', '').strip()
@@ -290,30 +312,28 @@ class CourseSyncService:
                     course.college_code = college_code
                     course.department_id = dept_id
                     course.crosslisted_id = row.get('CROSSLISTED_ID', '').strip() or None
-                    
-                    # Parse dates if present (use actual CSV column names)
                     course.course_start = self._parse_date(row.get('SECTION_BEGIN_DATE'))
                     course.course_end = self._parse_date(row.get('SECTION_END_DATE'))
                     course.tce_start = self._parse_date(row.get('TCE_INVITE'))
                     course.tce_end = self._parse_date(row.get('TCE_END_DATE'))
                     course.tce_reminder = self._parse_date(row.get('TCE_R2'))
-                    
                     course.term_code = row.get('ACADEMIC_TERM', '').strip()
-                    
                     course.last_synced = datetime.utcnow()
-                    course.marked_for_tce = False  # Will be set by instructor sync
-                    
+                    course.marked_for_tce = False
+
                     if is_new:
-                        db.session.add(course)
                         self.stats['courses_added'] += 1
                     else:
                         self.stats['courses_updated'] += 1
-                        
+
+                    if processed_rows % DB_BATCH_SIZE == 0:
+                        db.session.flush()
                 except Exception as e:
                     self.errors.append(f"Course {row.get('SECTION_KEY', 'unknown')}: {str(e)}")
 
-            self._flush_progress('Loading courses from CSV...', 1, processed_rows, last_reported)
-            db.session.commit()
+        self._flush_progress('Loading courses from CSV...', 1, processed_rows, last_reported)
+        _update_progress('Saving course changes...', 1)
+        db.session.commit()
 
         # ----- Orphan removal -----
         # Delete DB courses whose term_code is in the current sync window but
@@ -387,11 +407,27 @@ class CourseSyncService:
         csv_instructor_pairs = set()
 
         with open(filepath, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            processed_rows = 0
-            last_reported = 0
+            rows = list(csv.DictReader(f))
 
-            for row in reader:
+        relevant_section_keys = {
+            row.get('SECTION_KEY', '').strip()
+            for row in rows
+            if row.get('SECTION_KEY', '').strip()
+        }
+        existing_course_keys = {
+            section_key
+            for chunk in self._iter_chunks(relevant_section_keys)
+            for (section_key,) in db.session.query(Course.section_key).filter(Course.section_key.in_(chunk)).all()
+        }
+        existing_instructors = {}
+        for chunk in self._iter_chunks(relevant_section_keys):
+            for inst in Instructor.query.filter(Instructor.section_key.in_(chunk)).all():
+                existing_instructors[(inst.section_key, inst.user_id)] = inst
+
+        processed_rows = 0
+        last_reported = 0
+        with db.session.no_autoflush:
+            for row in rows:
                 processed_rows += 1
                 if processed_rows % PROGRESS_UPDATE_INTERVAL == 0:
                     last_reported = self._flush_progress(
@@ -409,22 +445,13 @@ class CourseSyncService:
 
                     csv_instructor_pairs.add((section_key, user_id))
 
-                    # Check if course exists
-                    course = Course.query.get(section_key)
-                    if not course:
-                        # Course not in our system yet - skip
+                    if section_key not in existing_course_keys:
                         continue
 
                     courses_with_instructors.add(section_key)
-
-                    # Check if instructor already exists for this course
-                    existing = Instructor.query.filter_by(
-                        section_key=section_key,
-                        user_id=user_id
-                    ).first()
+                    existing = existing_instructors.get((section_key, user_id))
 
                     if not existing:
-                        # Look up user data from Users.csv
                         user_info = users_data.get(user_id, {})
 
                         instructor = Instructor(
@@ -437,9 +464,9 @@ class CourseSyncService:
                             last_synced=datetime.utcnow()
                         )
                         db.session.add(instructor)
+                        existing_instructors[(section_key, user_id)] = instructor
                         self.stats['instructors_added'] += 1
                     else:
-                        # Update existing instructor with user info if available
                         user_info = users_data.get(user_id, {})
                         if user_info:
                             existing.first_name = user_info.get('first_name', existing.first_name)
@@ -447,10 +474,13 @@ class CourseSyncService:
                             existing.email = user_info.get('email', existing.email)
                             existing.last_synced = datetime.utcnow()
 
+                    if processed_rows % DB_BATCH_SIZE == 0:
+                        db.session.flush()
                 except Exception as e:
                     self.errors.append(f"Instructor {row.get('USER_ID', 'unknown')}: {str(e)}")
 
         self._flush_progress('Loading instructors from CSV...', 2, processed_rows, last_reported)
+        _update_progress('Saving instructor changes...', 2)
 
         # ----- Orphan removal: instructors -----
         # For every course in the current sync window, drop any DB instructor
