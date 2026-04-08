@@ -19,6 +19,7 @@ import subprocess
 import sys
 
 settings_bp = Blueprint('settings', __name__)
+PROCESS_STARTED_AT = datetime.utcnow()
 
 
 def super_admin_required(f):
@@ -36,6 +37,39 @@ def super_admin_required(f):
 def _get_project_root():
     """Return the repository root for stable script execution paths."""
     return os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+
+
+def _mark_stale_running_logs():
+    """
+    Mark orphaned running logs as failed after an app restart.
+
+    Sync work runs in background threads inside this process. If the web app is
+    restarted, those threads disappear but their ``data_sync_logs`` rows remain
+    in ``running`` state. Any running log started before this process booted is
+    stale and should not keep the UI stuck in a fake running state.
+    """
+    stale_logs = DataSyncLog.query.filter(
+        DataSyncLog.status == DataSyncLog.STATUS_RUNNING,
+        DataSyncLog.started_at < PROCESS_STARTED_AT
+    ).all()
+
+    if not stale_logs:
+        return
+
+    for log in stale_logs:
+        summary = log.summary
+        summary['pipeline_phase'] = 'failed'
+        summary['pipeline_message'] = 'Sync interrupted by application restart.'
+        log.summary = summary
+        log.status = DataSyncLog.STATUS_FAILED
+        if not log.completed_at:
+            log.completed_at = PROCESS_STARTED_AT
+        errors = log.errors
+        if 'Sync interrupted by application restart.' not in errors:
+            errors.append('Sync interrupted by application restart.')
+        log.errors = errors[:50]
+
+    db.session.commit()
 
 
 def _run_hana_sync_script():
@@ -252,6 +286,8 @@ def api_validate_key():
 @super_admin_required
 def sync_logs():
     """View unified sync logs with filtering."""
+    _mark_stale_running_logs()
+
     # Get filter parameters
     sync_type = request.args.get('type', '')
     status_filter = request.args.get('status', '')
@@ -315,6 +351,7 @@ def sync_logs():
 @super_admin_required
 def sync_log_detail(log_id):
     """View detailed sync log information."""
+    _mark_stale_running_logs()
     log = DataSyncLog.query.get_or_404(log_id)
     return render_template('settings/sync_log_detail.html', log=log)
 
@@ -713,6 +750,7 @@ def api_sync_progress():
 @super_admin_required
 def api_sync_logs():
     """API: Get sync logs as JSON."""
+    _mark_stale_running_logs()
     limit = request.args.get('limit', 10, type=int)
     logs = DataSyncLog.query.order_by(
         DataSyncLog.started_at.desc()
