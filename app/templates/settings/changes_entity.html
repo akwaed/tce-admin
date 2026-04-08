@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block title %}{{ entity_key }} History{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('settings.index') }}">Settings</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('settings.changes_index') }}">Change History</a></li>
+            <li class="breadcrumb-item active">{{ entity_type }}: {{ entity_key }}</li>
+        </ol>
+    </nav>
+    <h1>History for {{ entity_type }} <code>{{ entity_key }}</code></h1>
+    <p class="text-muted mb-0">Last {{ changes|length }} recorded changes across all syncs.</p>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        <table class="table table-sm table-striped mb-0">
+            <thead>
+                <tr>
+                    <th>When</th>
+                    <th>Sync</th>
+                    <th>Change</th>
+                    <th>Field</th>
+                    <th>Old</th>
+                    <th>New</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for ch in changes %}
+                <tr>
+                    <td><small>{{ ch.created_at.strftime('%Y-%m-%d %H:%M') if ch.created_at else '-' }}</small></td>
+                    <td><a href="{{ url_for('settings.changes_detail', run_id=ch.sync_run_id) }}">#{{ ch.sync_run_id }}</a></td>
+                    <td>
+                        {% if ch.change_type == 'added' %}
+                            <span class="badge bg-success">added</span>
+                        {% elif ch.change_type == 'removed' %}
+                            <span class="badge bg-danger">removed</span>
+                        {% else %}
+                            <span class="badge bg-info text-dark">updated</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ ch.field_name or '-' }}</td>
+                    <td><small class="text-muted">{{ (ch.old_value or '')[:120] }}</small></td>
+                    <td><small>{{ (ch.new_value or '')[:120] }}</small></td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6" class="text-center text-muted py-4">No changes recorded yet.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

@@ -1,210 +1,90 @@
 """
-Course Data Sync Service
-Imports course data from UKDIG-generated CSV files into the database
+Course Data Sync Service  (FastCourseSync, rewritten April 2026)
 
-CSV Files Expected:
-- Courses.csv: Course/section information
-- Instructor_Course.csv: Instructor assignments (presence = marked for TCE in SAP)
-- Student_Course.csv: Student enrollments (for counting)
+This is a ground-up rewrite of the old SQLAlchemy-ORM based sync. The
+original implementation used ``bulk_insert_mappings`` / ``bulk_update_mappings``
+through the Flask-SQLAlchemy session, which in practice meant:
 
-Performance notes
------------------
-The naive ORM path (one row -> one INSERT/UPDATE via the session) is far too
-slow for a ~500K row sync on SQLite: it spends most of its time in Python
-object construction, identity-map maintenance, and per-row autoflushes.
+- PRAGMAs were set on the wrong connection and every batch still fsync'd.
+- The ORM's identity map + autoflush walked huge Python data structures
+  for every bulk call.
+- A "warm" sync on ~29K courses and ~500K students stalled for 1-2 hours
+  on real data (see production Sync History).
 
-This module is tuned for bulk throughput:
+The new service bypasses SQLAlchemy entirely for writes. It talks to the
+SQLite file via raw ``sqlite3`` using ``executemany`` and explicit
+transactions, so:
 
-- SQLite PRAGMAs are set once at the start of ``sync_all`` to eliminate the
-  per-transaction fsync overhead that otherwise dominates runtime.
-- Existing rows are fetched in one pass (chunked ``IN``) instead of
-  per-row lookups.
-- Writes go through ``bulk_insert_mappings`` / ``bulk_update_mappings`` in
-  fixed-size batches, with a single commit per logical phase.
-- Instructor sync uses a "big-hammer" strategy: delete all instructors for
-  the sync window, then bulk-insert the current CSV contents. This is
-  dramatically faster than row-by-row diffing and always produces a
-  consistent state that matches HANA.
-- Student counts are grouped by count value so we run O(distinct counts)
-  UPDATEs instead of O(sections) UPDATEs.
+- PRAGMAs stick to the connection that actually writes.
+- No ORM identity map -> constant memory, predictable speed.
+- Per-field diff tracking is computed in Python against snapshots of the
+  existing rows and written as a bulk ``executemany`` into ``change_log``.
+  That is cheap enough to replace the old daily-CSV-archive workflow.
+
+Public API (stable)
+-------------------
+- ``CourseSyncService(datasources_path).sync_all()`` - runs the full sync,
+  returns a dict with ``success``, ``stats``, ``elapsed_seconds``, ``errors``,
+  ``sync_run_id``.
+- ``get_sync_progress()`` - same shape as the old API; used by the
+  verification/settings UI to render the progress banner.
+- ``resolve_datasources_path(path)`` - same as before.
+- ``generate_sample_data()``, ``write_sample_csvs()`` - still exported so
+  ``run.py --generate-sample`` keeps working.
 """
+from __future__ import annotations
+
 import csv
+import json
 import os
+import sqlite3
 import threading
 import time
-from datetime import datetime
 from collections import defaultdict
-from sqlalchemy import event, text
+from datetime import datetime
+
 from app.models import db
-from app.models.course import Course, Instructor, College, Department, SyncLog
 
-# Set once, on first sync. Installs a pool checkout listener so every SQLite
-# connection the app pulls from the pool during a sync has the high-throughput
-# PRAGMAs applied. Using only a ``connect`` hook is insufficient because
-# already-pooled connections can still be checked out later with default
-# SQLite settings.
-_PRAGMA_LISTENER_INSTALLED = False
 
+# ---------------------------------------------------------------------------
+# Tunables
+# ---------------------------------------------------------------------------
+
+# How many rows to send in a single ``executemany`` call. 5000 is well under
+# SQLite's bind-param ceiling even for our widest Course row.
+BATCH_SIZE = 5000
+
+# How often to update the progress banner while streaming big CSVs.
 PROGRESS_UPDATE_INTERVAL = 5000
-# Chunk size for bulk_*_mappings calls. SQLAlchemy will internally batch
-# parameter binding, but keeping the Python-side lists this size limits
-# transient memory use.
-DB_BATCH_SIZE = 2000
-# Chunk size for ``IN (...)`` clauses. SQLite imposes a default limit of
-# 999 parameters per statement; we stay well below that.
-IN_CHUNK_SIZE = 500
+
+# Change log cap: bulk deltas larger than this are summarised rather than
+# written row-by-row, to keep storage bounded on first-time syncs.
+CHANGE_LOG_CAP = 50000
 
 
-_PRAGMA_STATEMENTS = (
-    'PRAGMA synchronous = OFF',
-    'PRAGMA journal_mode = MEMORY',
-    'PRAGMA temp_store = MEMORY',
-    'PRAGMA cache_size = -200000',  # ~200MB page cache
-)
+# ---------------------------------------------------------------------------
+# Global progress tracking (mirrors the old API)
+# ---------------------------------------------------------------------------
 
-
-def _apply_sqlite_pragmas():
-    """Enable high-throughput PRAGMAs for the duration of a sync.
-
-    SQLite PRAGMAs are *per connection*. Previous versions set them on a
-    throwaway connection via ``db.engine.begin()``, which had no effect on
-    the connection the ORM session actually used - so large bulk UPDATE
-    batches still ran with ``synchronous=FULL`` and fsync'd per statement,
-    causing the multi-hour stall on the real dataset.
-
-    This version:
-      1. Installs a pool-level ``checkout`` event listener so every SQLite
-         connection, including ones already sitting in the pool, gets the
-         PRAGMAs applied immediately before use. Idempotent across calls -
-         we only install the listener once per process.
-      2. Also applies the PRAGMAs directly to the current session's
-         connection, so the already-checked-out connection is tuned
-         immediately instead of waiting for the next checkout.
-
-    These are safe for a batch import: we accept the (tiny) risk of losing
-    the last transaction on power loss in exchange for a 10x+ speedup on
-    large CSV->DB syncs. Other databases ignore this call.
-    """
-    global _PRAGMA_LISTENER_INSTALLED
-    try:
-        engine = db.engine
-    except Exception:
-        return
-    if not engine.url.drivername.startswith('sqlite'):
-        return
-
-    if not _PRAGMA_LISTENER_INSTALLED:
-        def _set_pragmas_on_checkout(dbapi_conn, connection_record, connection_proxy):
-            try:
-                cursor = dbapi_conn.cursor()
-                for stmt in _PRAGMA_STATEMENTS:
-                    cursor.execute(stmt)
-                cursor.close()
-            except Exception:
-                pass
-        try:
-            event.listen(engine.pool, 'checkout', _set_pragmas_on_checkout)
-            _PRAGMA_LISTENER_INSTALLED = True
-        except Exception:
-            pass
-
-    # Apply to the session's current connection right now.
-    try:
-        for stmt in _PRAGMA_STATEMENTS:
-            db.session.execute(text(stmt))
-        db.session.commit()
-    except Exception:
-        try:
-            db.session.rollback()
-        except Exception:
-            pass
-
-
-def _chunked_bulk_insert(model, rows, progress_label=None, step=1):
-    """bulk_insert_mappings with chunking and per-chunk commits.
-
-    Committing per chunk keeps each SQLite transaction small (so the WAL
-    doesn't grow unbounded on multi-hundred-thousand row syncs) and lets
-    the progress panel actually move instead of appearing frozen.
-    """
-    if not rows:
-        return
-    total = len(rows)
-    for i in range(0, total, DB_BATCH_SIZE):
-        db.session.bulk_insert_mappings(model, rows[i:i + DB_BATCH_SIZE])
-        db.session.commit()
-        if progress_label:
-            done = min(i + DB_BATCH_SIZE, total)
-            _update_progress(f'{progress_label} ({done:,}/{total:,})', step)
-
-
-def _chunked_bulk_update(model, rows, progress_label=None, step=1):
-    """bulk_update_mappings with chunking and per-chunk commits. Each row
-    must include the PK."""
-    if not rows:
-        return
-    total = len(rows)
-    for i in range(0, total, DB_BATCH_SIZE):
-        db.session.bulk_update_mappings(model, rows[i:i + DB_BATCH_SIZE])
-        db.session.commit()
-        if progress_label:
-            done = min(i + DB_BATCH_SIZE, total)
-            _update_progress(f'{progress_label} ({done:,}/{total:,})', step)
-
-
-def _chunked_delete_by_column(model, column, values):
-    """Delete rows where ``column`` is in ``values``, chunked for SQLite."""
-    if not values:
-        return 0
-    values = list(values)
-    deleted = 0
-    for i in range(0, len(values), IN_CHUNK_SIZE):
-        stmt = model.__table__.delete().where(
-            column.in_(values[i:i + IN_CHUNK_SIZE])
-        )
-        result = db.session.execute(stmt)
-        deleted += result.rowcount or 0
-    return deleted
-
-
-def _chunked_update_column(model, key_column, keys, assignments):
-    """UPDATE ``model`` SET ... WHERE key_column IN (keys), chunked."""
-    if not keys:
-        return 0
-    keys = list(keys)
-    updated = 0
-    for i in range(0, len(keys), IN_CHUNK_SIZE):
-        stmt = (
-            model.__table__.update()
-            .where(key_column.in_(keys[i:i + IN_CHUNK_SIZE]))
-            .values(**assignments)
-        )
-        result = db.session.execute(stmt)
-        updated += result.rowcount or 0
-    return updated
-
-
-# Global sync progress tracking
 _sync_progress = {
     'running': False,
     'current_step': '',
     'step_number': 0,
-    'total_steps': 4,
+    'total_steps': 5,
     'records_processed': 0,
     'started_at': None,
-    'error': None
+    'error': None,
 }
 _sync_lock = threading.Lock()
 
 
 def get_sync_progress():
-    """Get current sync progress."""
+    """Snapshot of the current sync progress. Thread-safe."""
     with _sync_lock:
-        return _sync_progress.copy()
+        return dict(_sync_progress)
 
 
 def _update_progress(step, step_number, records=0, error=None):
-    """Update sync progress."""
     with _sync_lock:
         _sync_progress['current_step'] = step
         _sync_progress['step_number'] = step_number
@@ -213,11 +93,37 @@ def _update_progress(step, step_number, records=0, error=None):
             _sync_progress['error'] = error
 
 
-def resolve_datasources_path(primary_path='./datasources'):
-    """Resolve the datasources directory, handling common misspellings."""
-    expected_files = {'Courses.csv', 'Instructor_Course.csv', 'Student_Course.csv', 'Users.csv'}
-    candidates = [primary_path]
+def _reset_progress():
+    with _sync_lock:
+        _sync_progress.update({
+            'running': True,
+            'current_step': 'Initializing...',
+            'step_number': 0,
+            'total_steps': 5,
+            'records_processed': 0,
+            'started_at': datetime.utcnow().isoformat(),
+            'error': None,
+        })
 
+
+def _finish_progress(message='Complete'):
+    with _sync_lock:
+        _sync_progress['running'] = False
+        _sync_progress['current_step'] = message
+        _sync_progress['step_number'] = _sync_progress['total_steps']
+
+
+# ---------------------------------------------------------------------------
+# Path resolver - kept identical to the old API so callers don't need to
+# change.
+# ---------------------------------------------------------------------------
+
+def resolve_datasources_path(primary_path='./datasources'):
+    expected_files = {
+        'Courses.csv', 'Instructor_Course.csv',
+        'Student_Course.csv', 'Users.csv',
+    }
+    candidates = [primary_path]
     if primary_path.endswith('datasources'):
         candidates.append(primary_path.replace('datasources', 'datasourses'))
     elif primary_path.endswith('datasourses'):
@@ -229,12 +135,69 @@ def resolve_datasources_path(primary_path='./datasources'):
         existing = set(os.listdir(candidate))
         if expected_files.intersection(existing):
             return candidate
-
     return primary_path
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _parse_date(value):
+    """Parse a HANA date string; return ISO ``YYYY-MM-DD`` or None."""
+    if not value:
+        return None
+    value = str(value).strip()
+    if not value:
+        return None
+    for fmt in ('%Y-%m-%d', '%m/%d/%Y', '%Y-%m-%d %H:%M:%S', '%m/%d/%Y %H:%M:%S'):
+        try:
+            return datetime.strptime(value, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def _clean(row, key):
+    """Return a stripped string value for ``row[key]`` or ''."""
+    return (row.get(key) or '').strip()
+
+
+def _sqlite_path_from_engine():
+    """Extract the filesystem path of the current Flask-SQLAlchemy DB."""
+    url = db.engine.url
+    if not url.drivername.startswith('sqlite'):
+        raise RuntimeError(
+            f'FastCourseSync requires SQLite; got {url.drivername}. '
+            'Point DATABASE_URL at a sqlite:/// URL or extend the service.'
+        )
+    # url.database is already a filesystem path for sqlite
+    return url.database
+
+
+def _open_raw_connection(path):
+    """Open a raw sqlite3 connection tuned for bulk writes.
+
+    All PRAGMAs are applied on *this* connection, so unlike the previous
+    implementation they actually take effect for the writes that follow.
+    """
+    conn = sqlite3.connect(path, timeout=60, isolation_level=None)
+    cur = conn.cursor()
+    cur.execute('PRAGMA synchronous = OFF')
+    cur.execute('PRAGMA journal_mode = MEMORY')
+    cur.execute('PRAGMA temp_store = MEMORY')
+    cur.execute('PRAGMA cache_size = -200000')      # ~200MB page cache
+    cur.execute('PRAGMA locking_mode = EXCLUSIVE')  # we own the file during sync
+    cur.execute('PRAGMA foreign_keys = OFF')        # we manage invariants manually
+    cur.close()
+    return conn
+
+
+# ---------------------------------------------------------------------------
+# Sync service
+# ---------------------------------------------------------------------------
+
 class CourseSyncService:
-    """Service for syncing course data from CSV files to database."""
+    """Fast, raw-sqlite3 CSV -> DB sync with per-field change tracking."""
 
     def __init__(self, datasources_path='./datasources'):
         self.datasources_path = resolve_datasources_path(datasources_path)
@@ -248,143 +211,234 @@ class CourseSyncService:
             'colleges_added': 0,
             'departments_added': 0,
             'students_counted': 0,
+            'change_log_rows': 0,
         }
-        # Set of section_keys observed in the current Courses.csv. Used by
-        # later sync steps to scope orphan deletion (so we never delete data
-        # for terms outside the current sync window).
+        self.sync_run_id = None
         self._csv_section_keys = set()
-        # Set of term_codes observed in the current Courses.csv. Used to
-        # decide which DB courses are eligible for removal.
         self._csv_terms = set()
+        # Change log buffer: list of tuples (entity_type, entity_key,
+        # change_type, field_name, old_value, new_value, display_label).
+        # Flushed in bulk at the end of each phase.
+        self._change_buffer = []
 
     # ------------------------------------------------------------------
-    # Small utilities
-    # ------------------------------------------------------------------
-
-    def _parse_date(self, value):
-        """Parse a date string from HANA in a few common formats.
-
-        Returns ``None`` on empty/unrecognized input rather than raising.
-        """
-        if not value:
-            return None
-        value = str(value).strip()
-        if not value:
-            return None
-        for fmt in ('%Y-%m-%d', '%m/%d/%Y', '%Y-%m-%d %H:%M:%S', '%m/%d/%Y %H:%M:%S'):
-            try:
-                return datetime.strptime(value, fmt).date()
-            except ValueError:
-                continue
-        return None
-
-    def _flush_progress(self, step, step_number, processed_rows, last_reported):
-        """Increment progress counters only for rows since the last report."""
-        delta = processed_rows - last_reported
-        if delta > 0:
-            _update_progress(f'{step} ({processed_rows:,} rows)', step_number, delta)
-            return processed_rows
-        return last_reported
-
-    # ------------------------------------------------------------------
-    # Orchestration
+    # Top-level orchestration
     # ------------------------------------------------------------------
 
     def sync_all(self):
-        """Run full sync of all data."""
-        global _sync_progress
+        """Run the full sync. Returns a summary dict; raises on fatal error."""
+        _reset_progress()
 
-        # Apply SQLite performance PRAGMAs before touching any data.
-        # A no-op on MySQL/Postgres.
-        _apply_sqlite_pragmas()
-
-        # Initialize progress
-        with _sync_lock:
-            _sync_progress = {
-                'running': True,
-                'current_step': 'Initializing...',
-                'step_number': 0,
-                'total_steps': 4,
-                'records_processed': 0,
-                'started_at': datetime.utcnow().isoformat(),
-                'error': None,
-            }
-
-        log = SyncLog(sync_type='full', status='running')
-        db.session.add(log)
-        db.session.commit()
+        db_path = _sqlite_path_from_engine()
+        # Make sure any pending ORM state on the Flask session is flushed
+        # *before* we grab the file — otherwise SQLite will lock us out.
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+        db.session.remove()
 
         started = time.monotonic()
+        started_at = datetime.utcnow()
+
+        conn = _open_raw_connection(db_path)
         try:
+            self._ensure_tables_exist(conn)
+            self.sync_run_id = self._create_sync_run(conn, started_at)
+
             _update_progress('Loading courses...', 1)
-            self.sync_courses()
+            self._sync_courses(conn)
 
             _update_progress('Loading instructors...', 2)
-            self.sync_instructors()
+            self._sync_instructors(conn)
 
             _update_progress('Counting students...', 3)
-            self.sync_student_counts()
+            self._sync_student_counts(conn)
 
-            _update_progress('Finalizing...', 4)
-
-            log.status = 'completed'
-            log.completed_at = datetime.utcnow()
-            log.records_processed = (
-                self.stats['courses_added']
-                + self.stats['courses_updated']
-                + self.stats['instructors_added']
-            )
-            if self.errors:
-                import json
-                log.errors = json.dumps(self.errors[:50])
-
-            db.session.commit()
+            _update_progress('Flushing change log...', 4)
+            self._flush_change_buffer(conn)
 
             elapsed = time.monotonic() - started
-            with _sync_lock:
-                _sync_progress['running'] = False
-                _sync_progress['current_step'] = f'Complete in {elapsed:.1f}s'
-                _sync_progress['step_number'] = 4
+            _update_progress('Finalizing...', 5)
+            self._finalize_sync_run(conn, elapsed, 'completed')
 
+            _finish_progress(f'Complete in {elapsed:.1f}s')
             return {
                 'success': True,
-                'stats': self.stats,
-                'errors': self.errors[:10],
+                'stats': dict(self.stats),
+                'errors': list(self.errors[:10]),
                 'elapsed_seconds': elapsed,
+                'sync_run_id': self.sync_run_id,
             }
-
-        except Exception as e:
-            log.status = 'failed'
-            log.errors = str(e)
-            db.session.commit()
-
-            with _sync_lock:
-                _sync_progress['running'] = False
-                _sync_progress['error'] = str(e)
-
+        except Exception as exc:
+            elapsed = time.monotonic() - started
+            try:
+                self._finalize_sync_run(conn, elapsed, 'failed', str(exc))
+            except Exception:
+                pass
+            _finish_progress(f'Failed: {exc}')
+            _update_progress('Failed', 5, error=str(exc))
             raise
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # Schema + run tracking
+    # ------------------------------------------------------------------
+
+    def _ensure_tables_exist(self, conn):
+        """Create sync_runs and change_log if this is a pre-existing DB
+        that hasn't been migrated yet. Idempotent."""
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS sync_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                status VARCHAR(20),
+                courses_added INTEGER DEFAULT 0,
+                courses_updated INTEGER DEFAULT 0,
+                courses_removed INTEGER DEFAULT 0,
+                instructors_added INTEGER DEFAULT 0,
+                instructors_removed INTEGER DEFAULT 0,
+                students_counted INTEGER DEFAULT 0,
+                change_log_rows INTEGER DEFAULT 0,
+                elapsed_seconds REAL DEFAULT 0,
+                error_text TEXT,
+                datasources_path VARCHAR(500),
+                term_codes VARCHAR(500)
+            );
+            CREATE INDEX IF NOT EXISTS ix_sync_runs_started
+                ON sync_runs(started_at);
+            CREATE INDEX IF NOT EXISTS ix_sync_runs_status
+                ON sync_runs(status);
+
+            CREATE TABLE IF NOT EXISTS change_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sync_run_id INTEGER NOT NULL REFERENCES sync_runs(id),
+                created_at TIMESTAMP,
+                entity_type VARCHAR(30) NOT NULL,
+                entity_key VARCHAR(200) NOT NULL,
+                change_type VARCHAR(20) NOT NULL,
+                field_name VARCHAR(100),
+                old_value TEXT,
+                new_value TEXT,
+                display_label VARCHAR(300)
+            );
+            CREATE INDEX IF NOT EXISTS ix_change_entity
+                ON change_log(entity_type, entity_key);
+            CREATE INDEX IF NOT EXISTS ix_change_run_type
+                ON change_log(sync_run_id, change_type);
+            CREATE INDEX IF NOT EXISTS ix_change_created
+                ON change_log(created_at);
+        """)
+
+    def _create_sync_run(self, conn, started_at):
+        cur = conn.execute(
+            """
+            INSERT INTO sync_runs (
+                started_at, status, datasources_path
+            ) VALUES (?, 'running', ?)
+            """,
+            (started_at.isoformat(sep=' '), self.datasources_path),
+        )
+        return cur.lastrowid
+
+    def _finalize_sync_run(self, conn, elapsed, status, error_text=None):
+        conn.execute(
+            """
+            UPDATE sync_runs
+               SET completed_at = ?,
+                   status = ?,
+                   courses_added = ?,
+                   courses_updated = ?,
+                   courses_removed = ?,
+                   instructors_added = ?,
+                   instructors_removed = ?,
+                   students_counted = ?,
+                   change_log_rows = ?,
+                   elapsed_seconds = ?,
+                   error_text = ?,
+                   term_codes = ?
+             WHERE id = ?
+            """,
+            (
+                datetime.utcnow().isoformat(sep=' '),
+                status,
+                self.stats['courses_added'],
+                self.stats['courses_updated'],
+                self.stats['courses_removed'],
+                self.stats['instructors_added'],
+                self.stats['instructors_removed'],
+                self.stats['students_counted'],
+                self.stats['change_log_rows'],
+                elapsed,
+                error_text,
+                ','.join(sorted(self._csv_terms)) if self._csv_terms else None,
+                self.sync_run_id,
+            ),
+        )
+
+    # ------------------------------------------------------------------
+    # Change log buffering
+    # ------------------------------------------------------------------
+
+    def _record_change(self, entity_type, entity_key, change_type,
+                       field_name=None, old_value=None, new_value=None,
+                       display_label=None):
+        if len(self._change_buffer) >= CHANGE_LOG_CAP:
+            return  # Summary-only mode once we hit the cap.
+        self._change_buffer.append((
+            entity_type, entity_key, change_type, field_name,
+            None if old_value is None else str(old_value)[:4000],
+            None if new_value is None else str(new_value)[:4000],
+            display_label,
+        ))
+
+    def _flush_change_buffer(self, conn):
+        if not self._change_buffer:
+            return
+        now = datetime.utcnow().isoformat(sep=' ')
+        rows = [
+            (self.sync_run_id, now, *row)
+            for row in self._change_buffer
+        ]
+        conn.executemany(
+            """
+            INSERT INTO change_log (
+                sync_run_id, created_at,
+                entity_type, entity_key, change_type, field_name,
+                old_value, new_value, display_label
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        self.stats['change_log_rows'] = len(self._change_buffer)
+        self._change_buffer.clear()
 
     # ------------------------------------------------------------------
     # Phase 1: courses
     # ------------------------------------------------------------------
 
-    def sync_courses(self):
-        """Import courses from Courses.csv.
+    # Columns we write to the ``courses`` table, in order.
+    COURSE_COLUMNS = (
+        'section_key', 'class_id', 'class_code', 'section_id', 'crs_section',
+        'section_title', 'college_code', 'department_id', 'crosslisted_id',
+        'course_start', 'course_end', 'tce_start', 'tce_end', 'tce_reminder',
+        'marked_for_tce', 'student_count', 'term_code', 'last_synced',
+    )
 
-        Strategy
-        --------
-        1. Stream the CSV once into memory as a list of dicts. At the same
-           time collect the set of section_keys and term_codes.
-        2. Make ONE pass over the Department table to prefetch departments
-           referenced by the CSV; load all Colleges up front (small table).
-        3. Load every existing ``Course.section_key`` whose ``term_code`` is
-           in the sync window in chunked ``IN`` queries. This replaces the
-           previous per-chunk existence checks, which cost ~N/chunk queries.
-        4. Partition rows into ``to_insert`` and ``to_update`` lists and
-           emit a single bulk insert + bulk update pass.
-        5. Delete DB courses whose section_key is not in the CSV but whose
-           term_code is in the sync window (orphan reconciliation).
-        """
+    # Fields we compare for per-row diffs.
+    COURSE_DIFF_FIELDS = (
+        'class_id', 'class_code', 'section_id', 'crs_section', 'section_title',
+        'college_code', 'department_id', 'crosslisted_id',
+        'course_start', 'course_end', 'tce_start', 'tce_end', 'tce_reminder',
+        'term_code',
+    )
+
+    def _sync_courses(self, conn):
         filepath = os.path.join(self.datasources_path, 'Courses.csv')
         if not os.path.exists(filepath):
             self.errors.append(f"Courses.csv not found at {filepath}")
@@ -393,468 +447,556 @@ class CourseSyncService:
         with open(filepath, 'r', encoding='utf-8') as f:
             rows = list(csv.DictReader(f))
 
-        # First pass: collect metadata so we can do bulk lookups just once.
-        dept_ids = set()
-        college_codes = set()
-        for row in rows:
-            section_key = (row.get('SECTION_KEY') or '').strip()
-            if section_key:
-                self._csv_section_keys.add(section_key)
-            term_code = (row.get('ACADEMIC_TERM') or '').strip()
-            if term_code:
-                self._csv_terms.add(term_code)
-            dept_id = (row.get('CLASS_DEPARTMENT_ID') or '').strip()
-            if dept_id:
-                dept_ids.add(dept_id)
-            college_code = (row.get('CLASS_COLLEGE_SHORT') or '').strip()
-            if college_code:
-                college_codes.add(college_code)
-
         _update_progress(
             f'Loading courses from CSV... ({len(rows):,} rows)', 1
         )
 
-        # Prefetch colleges + departments (both small).
-        colleges = {c.code: c for c in College.query.all()}
-        departments = {}
-        for i in range(0, len(dept_ids), IN_CHUNK_SIZE):
-            chunk = list(dept_ids)[i:i + IN_CHUNK_SIZE]
-            for d in Department.query.filter(Department.id.in_(chunk)).all():
-                departments[d.id] = d
+        # First pass: collect section_keys + terms + needed colleges/depts.
+        dept_ids = set()
+        college_codes = {}  # code -> name seen first
+        dept_info = {}      # id -> (name, college_code)
+        for row in rows:
+            sk = _clean(row, 'SECTION_KEY')
+            if sk:
+                self._csv_section_keys.add(sk)
+            tc = _clean(row, 'ACADEMIC_TERM')
+            if tc:
+                self._csv_terms.add(tc)
+            cc = _clean(row, 'CLASS_COLLEGE_SHORT')
+            cn = _clean(row, 'CLASS_COLLEGE')
+            if cc and cc not in college_codes:
+                college_codes[cc] = cn or cc
+            did = _clean(row, 'CLASS_DEPARTMENT_ID')
+            if did:
+                dept_ids.add(did)
+                if did not in dept_info:
+                    dept_info[did] = (
+                        _clean(row, 'CLASS_DEPARTMENT') or did, cc,
+                    )
 
-        # Prefetch existing course keys for the sync window in one shot.
-        # This is the critical speed-up vs the old per-chunk existence
-        # queries (which performed O(N/batch) SELECTs across the whole CSV).
-        existing_course_keys = set()
-        term_list = list(self._csv_terms)
-        for i in range(0, len(term_list), IN_CHUNK_SIZE):
-            chunk = term_list[i:i + IN_CHUNK_SIZE]
-            for (section_key,) in (
-                db.session.query(Course.section_key)
-                .filter(Course.term_code.in_(chunk))
-                .all()
-            ):
-                existing_course_keys.add(section_key)
+        # Upsert colleges + departments first so FK lookups resolve.
+        self._upsert_colleges_and_departments(conn, college_codes, dept_info)
 
-        # Also fetch any rows in the CSV whose term somehow didn't make it
-        # into _csv_terms (shouldn't happen, but keeps us correct).
-        leftover = self._csv_section_keys - existing_course_keys
-        if leftover:
-            leftover_list = list(leftover)
-            for i in range(0, len(leftover_list), IN_CHUNK_SIZE):
-                chunk = leftover_list[i:i + IN_CHUNK_SIZE]
-                for (section_key,) in (
-                    db.session.query(Course.section_key)
-                    .filter(Course.section_key.in_(chunk))
-                    .all()
-                ):
-                    existing_course_keys.add(section_key)
+        # Snapshot existing courses inside the sync window (by term_code).
+        existing = self._snapshot_existing_courses(conn, self._csv_terms)
 
-        # Create missing colleges / departments in a single session flush
-        # before issuing bulk course writes, so FKs resolve correctly.
-        new_colleges = []
-        for code in college_codes:
-            if code and code not in colleges:
-                # We'll set the name below when we first see it in a row.
-                new_colleges.append(code)
-
+        # Build insert and update batches.
+        now_iso = datetime.utcnow().isoformat(sep=' ')
         to_insert = []
         to_update = []
 
         for row in rows:
-            try:
-                section_key = (row.get('SECTION_KEY') or '').strip()
-                if not section_key:
-                    continue
+            section_key = _clean(row, 'SECTION_KEY')
+            if not section_key:
+                continue
 
-                college_code = (row.get('CLASS_COLLEGE_SHORT') or '').strip()
-                college_name = (row.get('CLASS_COLLEGE') or '').strip()
-                if college_code and college_code not in colleges:
-                    college = College(
-                        code=college_code,
-                        name=college_name or college_code,
-                    )
-                    db.session.add(college)
-                    colleges[college_code] = college
-                    self.stats['colleges_added'] += 1
+            mapping = {
+                'section_key': section_key,
+                'class_id': _clean(row, 'CLASS_ID'),
+                'class_code': _clean(row, 'CLASS'),
+                'section_id': _clean(row, 'SECTION_ID'),
+                'crs_section': _clean(row, 'CRS_SECTION'),
+                'section_title': _clean(row, 'SECTION_TITLE'),
+                'college_code': _clean(row, 'CLASS_COLLEGE_SHORT'),
+                'department_id': _clean(row, 'CLASS_DEPARTMENT_ID'),
+                'crosslisted_id': _clean(row, 'CROSSLISTED_ID') or None,
+                'course_start': _parse_date(row.get('SECTION_BEGIN_DATE')),
+                'course_end': _parse_date(row.get('SECTION_END_DATE')),
+                'tce_start': _parse_date(row.get('TCE_INVITE')),
+                'tce_end': _parse_date(row.get('TCE_END_DATE')),
+                'tce_reminder': _parse_date(row.get('TCE_R2')),
+                'term_code': _clean(row, 'ACADEMIC_TERM'),
+                'last_synced': now_iso,
+                # marked_for_tce + student_count are managed by later phases
+                # but we need to carry forward what's already in DB so the
+                # INSERT OR REPLACE doesn't clobber them.
+                'marked_for_tce': 0,
+                'student_count': 0,
+            }
 
-                dept_id = (row.get('CLASS_DEPARTMENT_ID') or '').strip()
-                dept_name = (row.get('CLASS_DEPARTMENT') or '').strip()
-                if dept_id:
-                    dept = departments.get(dept_id)
-                    if not dept:
-                        dept = Department(
-                            id=dept_id,
-                            name=dept_name or dept_id,
-                            college_code=college_code,
-                        )
-                        db.session.add(dept)
-                        departments[dept_id] = dept
-                        self.stats['departments_added'] += 1
-                    else:
-                        if dept_name and dept.name != dept_name:
-                            dept.name = dept_name
-                        if college_code and dept.college_code != college_code:
-                            dept.college_code = college_code
-
-                course_mapping = {
-                    'section_key': section_key,
-                    'class_id': (row.get('CLASS_ID') or '').strip(),
-                    'class_code': (row.get('CLASS') or '').strip(),
-                    'section_id': (row.get('SECTION_ID') or '').strip(),
-                    'crs_section': (row.get('CRS_SECTION') or '').strip(),
-                    'section_title': (row.get('SECTION_TITLE') or '').strip(),
-                    'college_code': college_code,
-                    'department_id': dept_id,
-                    'crosslisted_id': (row.get('CROSSLISTED_ID') or '').strip() or None,
-                    'course_start': self._parse_date(row.get('SECTION_BEGIN_DATE')),
-                    'course_end': self._parse_date(row.get('SECTION_END_DATE')),
-                    'tce_start': self._parse_date(row.get('TCE_INVITE')),
-                    'tce_end': self._parse_date(row.get('TCE_END_DATE')),
-                    'tce_reminder': self._parse_date(row.get('TCE_R2')),
-                    'term_code': (row.get('ACADEMIC_TERM') or '').strip(),
-                    'last_synced': datetime.utcnow(),
-                    'marked_for_tce': False,
-                }
-
-                if section_key in existing_course_keys:
-                    to_update.append(course_mapping)
-                    self.stats['courses_updated'] += 1
-                else:
-                    to_insert.append(course_mapping)
-                    self.stats['courses_added'] += 1
-            except Exception as e:
-                self.errors.append(
-                    f"Course {row.get('SECTION_KEY', 'unknown')}: {e}"
+            prev = existing.get(section_key)
+            if prev is None:
+                to_insert.append(mapping)
+                self.stats['courses_added'] += 1
+                label = self._course_label(mapping)
+                self._record_change(
+                    'course', section_key, 'added',
+                    display_label=label,
+                    new_value=json.dumps({
+                        k: mapping[k] for k in self.COURSE_DIFF_FIELDS
+                    }),
                 )
+            else:
+                # Preserve TCE flag + student count across the update —
+                # they're owned by phases 2 and 3, not phase 1.
+                mapping['marked_for_tce'] = prev.get('marked_for_tce', 0) or 0
+                mapping['student_count'] = prev.get('student_count', 0) or 0
 
-        # Flush newly added Colleges/Departments so their PKs exist before
-        # we bulk-write the course rows that reference them.
-        db.session.flush()
+                diff = self._course_diff(prev, mapping)
+                if diff:
+                    label = self._course_label(mapping)
+                    for field, (old, new) in diff.items():
+                        self._record_change(
+                            'course', section_key, 'updated',
+                            field_name=field, old_value=old, new_value=new,
+                            display_label=label,
+                        )
+                    self.stats['courses_updated'] += 1
+                to_update.append(mapping)
+
+        # Commit writes.
+        conn.execute('BEGIN')
+        if to_insert:
+            self._bulk_upsert_courses(conn, to_insert)
+        if to_update:
+            self._bulk_upsert_courses(conn, to_update)
+        conn.execute('COMMIT')
+
+        # Orphan removal: any DB course whose term is in the sync window but
+        # whose section_key wasn't in the CSV gets deleted.
+        orphan_keys = [
+            sk for sk in existing.keys() if sk not in self._csv_section_keys
+        ]
+        if orphan_keys:
+            _update_progress(
+                f'Removing {len(orphan_keys):,} orphan courses...', 1
+            )
+            self._delete_courses(conn, orphan_keys, existing)
 
         _update_progress(
-            f'Writing courses... ({len(to_insert):,} insert, {len(to_update):,} update)',
+            f'Courses: +{self.stats["courses_added"]:,} '
+            f'~{self.stats["courses_updated"]:,} '
+            f'-{self.stats["courses_removed"]:,}',
             1,
         )
-        _chunked_bulk_insert(
-            Course, to_insert,
-            progress_label='Inserting courses', step=1,
-        )
-        _chunked_bulk_update(
-            Course, to_update,
-            progress_label='Updating courses', step=1,
-        )
-        db.session.commit()
 
-        # ----- Orphan removal -----
-        if self._csv_terms and self._csv_section_keys:
-            _update_progress('Reconciling removed courses...', 1)
-            # existing_course_keys was computed from the sync window terms,
-            # so (window keys) - (csv keys) = orphans safely.
-            orphan_keys = [
-                key for key in existing_course_keys
-                if key not in self._csv_section_keys
-            ]
-            if orphan_keys:
-                # Delete instructor children first (the FK cascade would
-                # also handle this but an explicit delete runs faster in
-                # bulk mode than walking the ORM relationship).
-                removed_instructors = _chunked_delete_by_column(
-                    Instructor, Instructor.section_key, orphan_keys
+    def _course_label(self, mapping):
+        return (
+            f"{mapping.get('class_code', '')}-{mapping.get('section_id', '')} "
+            f"({mapping.get('section_title', '')})"
+        ).strip()
+
+    def _course_diff(self, old, new):
+        diff = {}
+        for field in self.COURSE_DIFF_FIELDS:
+            o = old.get(field)
+            n = new.get(field)
+            # Normalize None vs '' so we don't log spurious changes.
+            if (o or '') != (n or ''):
+                diff[field] = (o, n)
+        return diff
+
+    def _upsert_colleges_and_departments(self, conn, colleges, dept_info):
+        # Read existing to compute stats and keep qb_enabled intact.
+        existing_colleges = {
+            row[0] for row in conn.execute('SELECT code FROM colleges')
+        }
+        new_colleges = [
+            (code, name) for code, name in colleges.items()
+            if code not in existing_colleges
+        ]
+        if new_colleges:
+            conn.executemany(
+                'INSERT INTO colleges (code, name, qb_enabled) VALUES (?, ?, 0)',
+                new_colleges,
+            )
+            self.stats['colleges_added'] = len(new_colleges)
+
+        # Also update existing college names if they changed.
+        for code, name in colleges.items():
+            if code in existing_colleges and name:
+                conn.execute(
+                    'UPDATE colleges SET name = ? WHERE code = ? AND name != ?',
+                    (name, code, name),
                 )
-                self.stats['instructors_removed'] += removed_instructors
-                removed_courses = _chunked_delete_by_column(
-                    Course, Course.section_key, orphan_keys
+
+        existing_depts = {
+            row[0] for row in conn.execute('SELECT id FROM departments')
+        }
+        new_depts = []
+        for did, (dname, ccode) in dept_info.items():
+            if did in existing_depts:
+                conn.execute(
+                    'UPDATE departments SET name = ?, college_code = ? '
+                    'WHERE id = ? AND (name != ? OR college_code != ?)',
+                    (dname, ccode, did, dname, ccode),
                 )
-                self.stats['courses_removed'] += removed_courses
-                db.session.commit()
+            else:
+                new_depts.append((did, dname, ccode))
+        if new_depts:
+            conn.executemany(
+                'INSERT INTO departments (id, name, college_code) VALUES (?, ?, ?)',
+                new_depts,
+            )
+            self.stats['departments_added'] = len(new_depts)
+
+    def _snapshot_existing_courses(self, conn, terms):
+        """Return {section_key: {fields...}} for every course in the sync window."""
+        snapshot = {}
+        if not terms:
+            return snapshot
+        term_list = list(terms)
+        cols = ', '.join(self.COURSE_COLUMNS)
+        for i in range(0, len(term_list), 500):
+            chunk = term_list[i:i + 500]
+            placeholders = ','.join('?' for _ in chunk)
+            q = f"SELECT {cols} FROM courses WHERE term_code IN ({placeholders})"
+            for row in conn.execute(q, chunk):
+                record = dict(zip(self.COURSE_COLUMNS, row))
+                snapshot[record['section_key']] = record
+        return snapshot
+
+    def _bulk_upsert_courses(self, conn, rows):
+        cols = ', '.join(self.COURSE_COLUMNS)
+        placeholders = ', '.join('?' for _ in self.COURSE_COLUMNS)
+        sql = f'INSERT OR REPLACE INTO courses ({cols}) VALUES ({placeholders})'
+        for i in range(0, len(rows), BATCH_SIZE):
+            batch = rows[i:i + BATCH_SIZE]
+            conn.executemany(
+                sql,
+                [tuple(r[c] for c in self.COURSE_COLUMNS) for r in batch],
+            )
             _update_progress(
-                f'Courses reconciled ({self.stats["courses_removed"]:,} removed)',
+                f'Writing courses... ({min(i + BATCH_SIZE, len(rows)):,}/{len(rows):,})',
                 1,
             )
 
+    def _delete_courses(self, conn, keys, existing_snapshot):
+        """Chunked delete of courses + their instructor rows, with change log."""
+        for key in keys:
+            prev = existing_snapshot.get(key, {})
+            self._record_change(
+                'course', key, 'removed',
+                display_label=self._course_label(prev) if prev else key,
+                old_value=json.dumps({
+                    k: prev.get(k) for k in self.COURSE_DIFF_FIELDS
+                }) if prev else None,
+            )
+        keys = list(keys)
+        conn.execute('BEGIN')
+        for i in range(0, len(keys), 500):
+            chunk = keys[i:i + 500]
+            placeholders = ','.join('?' for _ in chunk)
+            cur = conn.execute(
+                f'DELETE FROM instructors WHERE section_key IN ({placeholders})',
+                chunk,
+            )
+            self.stats['instructors_removed'] += cur.rowcount or 0
+            cur = conn.execute(
+                f'DELETE FROM courses WHERE section_key IN ({placeholders})',
+                chunk,
+            )
+            self.stats['courses_removed'] += cur.rowcount or 0
+        conn.execute('COMMIT')
+
     # ------------------------------------------------------------------
-    # Phase 2: instructors (big-hammer rewrite)
+    # Phase 2: instructors (big-hammer)
     # ------------------------------------------------------------------
 
-    def sync_instructors(self):
-        """Refresh instructor assignments from Instructor_Course.csv.
+    INSTRUCTOR_COLUMNS = (
+        'section_key', 'user_id', 'first_name', 'last_name', 'email',
+        'instructor_role', 'last_synced',
+    )
 
-        Strategy (big-hammer)
-        ---------------------
-        Row-by-row diffing of ~7-15K instructor rows caused tens of
-        thousands of individual UPDATE statements under SQLAlchemy's
-        session and was the single biggest bottleneck of the old sync.
-
-        Instead we:
-          1. Chunked-DELETE every Instructor row whose course is in the
-             current sync window (either because its section_key was in
-             Courses.csv, or - to catch leftovers - its course's term_code
-             is in the window).
-          2. Bulk-INSERT the exact rows present in Instructor_Course.csv.
-             Names come from Users.csv.
-          3. Flip ``marked_for_tce`` in two chunked UPDATEs: set to False
-             for every course in the window, then True for the courses
-             that ended up with at least one instructor row.
-
-        This deliberately trades a tiny amount of churn (delete+insert
-        instead of update) for an enormous perf win, and it always leaves
-        the database in a state that matches the CSV exactly.
-        """
-        # ----- Users.csv for name lookup -----
+    def _sync_instructors(self, conn):
+        # Load Users.csv for name/email lookups.
         users_data = {}
-        users_filepath = os.path.join(self.datasources_path, 'Users.csv')
-        if os.path.exists(users_filepath):
+        users_path = os.path.join(self.datasources_path, 'Users.csv')
+        if os.path.exists(users_path):
             try:
-                with open(users_filepath, 'r', encoding='utf-8') as f:
+                with open(users_path, 'r', encoding='utf-8') as f:
                     for row in csv.DictReader(f):
-                        user_id = (row.get('USER_ID') or '').strip()
-                        if user_id:
-                            users_data[user_id] = {
-                                'first_name': (row.get('FIRSTNAME') or '').strip(),
-                                'last_name': (row.get('LASTNAME') or '').strip(),
-                                'email': (row.get('EMAIL') or '').strip(),
-                            }
+                        uid = _clean(row, 'USER_ID')
+                        if uid:
+                            users_data[uid] = (
+                                _clean(row, 'FIRSTNAME'),
+                                _clean(row, 'LASTNAME'),
+                                _clean(row, 'EMAIL'),
+                            )
             except Exception as e:
                 self.errors.append(f"Error loading Users.csv: {e}")
 
-        filepath = os.path.join(self.datasources_path, 'Instructor_Course.csv')
-        if not os.path.exists(filepath):
-            self.errors.append(f"Instructor_Course.csv not found at {filepath}")
+        path = os.path.join(self.datasources_path, 'Instructor_Course.csv')
+        if not os.path.exists(path):
+            self.errors.append(f"Instructor_Course.csv not found at {path}")
             return
 
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             rows = list(csv.DictReader(f))
-
         _update_progress(
             f'Loading instructors from CSV... ({len(rows):,} rows)', 2
         )
 
-        # Determine which section_keys actually exist in DB; instructor rows
-        # referencing missing courses would violate the FK otherwise.
-        valid_course_keys = set()
-        csv_section_keys_list = list(self._csv_section_keys)
-        for i in range(0, len(csv_section_keys_list), IN_CHUNK_SIZE):
-            chunk = csv_section_keys_list[i:i + IN_CHUNK_SIZE]
-            for (section_key,) in (
-                db.session.query(Course.section_key)
-                .filter(Course.section_key.in_(chunk))
-                .all()
-            ):
-                valid_course_keys.add(section_key)
+        # Snapshot existing instructors for the sync window so we can diff.
+        old_pairs = self._snapshot_existing_instructors(
+            conn, self._csv_section_keys
+        )
 
-        # ----- 1. Nuke existing instructor rows for the sync window -----
+        # Which courses actually exist in DB?
+        valid_courses = self._valid_course_keys(conn, self._csv_section_keys)
+
+        # 1. Delete everything in the sync window.
         _update_progress('Clearing old instructor rows...', 2)
+        conn.execute('BEGIN')
+        keys = list(self._csv_section_keys)
+        total_deleted = 0
+        for i in range(0, len(keys), 500):
+            chunk = keys[i:i + 500]
+            placeholders = ','.join('?' for _ in chunk)
+            cur = conn.execute(
+                f'DELETE FROM instructors WHERE section_key IN ({placeholders})',
+                chunk,
+            )
+            total_deleted += cur.rowcount or 0
+        conn.execute('COMMIT')
 
-        # Primary hammer: delete by section_keys we just loaded from the CSV.
-        # This is fast because section_key is indexed on instructors.
-        removed = _chunked_delete_by_column(
-            Instructor, Instructor.section_key, valid_course_keys
-        )
-
-        # Secondary hammer: catch any instructor rows whose course is in
-        # the sync window but whose section_key wasn't in Courses.csv
-        # (shouldn't happen post-phase-1, but keeps us correct).
-        if self._csv_terms:
-            term_list = list(self._csv_terms)
-            window_courses = set()
-            for i in range(0, len(term_list), IN_CHUNK_SIZE):
-                chunk = term_list[i:i + IN_CHUNK_SIZE]
-                for (section_key,) in (
-                    db.session.query(Course.section_key)
-                    .filter(Course.term_code.in_(chunk))
-                    .all()
-                ):
-                    window_courses.add(section_key)
-            stragglers = window_courses - valid_course_keys
-            if stragglers:
-                removed += _chunked_delete_by_column(
-                    Instructor, Instructor.section_key, stragglers
-                )
-            # Remember the full window for the TCE-flag refresh below.
-            all_window_courses = window_courses | valid_course_keys
-        else:
-            all_window_courses = valid_course_keys
-
-        self.stats['instructors_removed'] += removed
-        db.session.commit()
-
-        # ----- 2. Bulk-insert the current CSV contents -----
+        # 2. Build the new instructor rows.
+        now_iso = datetime.utcnow().isoformat(sep=' ')
+        new_pairs = {}  # (section_key, user_id) -> mapping
         courses_with_instructors = set()
-        insert_mappings = []
-        seen_pairs = set()
-        now = datetime.utcnow()
-
         for row in rows:
-            section_key = (row.get('SECTION_KEY') or '').strip()
-            user_id = (row.get('USER_ID') or '').strip()
-            if not section_key or not user_id:
+            sk = _clean(row, 'SECTION_KEY')
+            uid = _clean(row, 'USER_ID')
+            if not sk or not uid:
                 continue
-            if section_key not in valid_course_keys:
-                # Course doesn't exist in DB - skip rather than FK-fail.
+            if sk not in valid_courses:
                 continue
-            pair = (section_key, user_id)
-            if pair in seen_pairs:
+            key = (sk, uid)
+            if key in new_pairs:
                 continue
-            seen_pairs.add(pair)
-            courses_with_instructors.add(section_key)
+            fname, lname, email = users_data.get(uid, ('', '', ''))
+            new_pairs[key] = {
+                'section_key': sk,
+                'user_id': uid,
+                'first_name': fname,
+                'last_name': lname,
+                'email': email,
+                'instructor_role': _clean(row, 'ROLE') or None,
+                'last_synced': now_iso,
+            }
+            courses_with_instructors.add(sk)
 
-            user_info = users_data.get(user_id, {})
-            insert_mappings.append({
-                'section_key': section_key,
-                'user_id': user_id,
-                'first_name': user_info.get('first_name', ''),
-                'last_name': user_info.get('last_name', ''),
-                'email': user_info.get('email', ''),
-                'instructor_role': (row.get('ROLE') or '').strip() or None,
-                'last_synced': now,
-            })
+        # 3. Compute per-row diff for change_log.
+        added_pairs = set(new_pairs) - set(old_pairs)
+        removed_pairs = set(old_pairs) - set(new_pairs)
+        for key in added_pairs:
+            m = new_pairs[key]
+            self._record_change(
+                'instructor', f"{key[0]}|{key[1]}", 'added',
+                display_label=f"{m['first_name']} {m['last_name']} ({key[1]}) -> {key[0]}",
+                new_value=json.dumps({
+                    'first_name': m['first_name'],
+                    'last_name': m['last_name'],
+                    'email': m['email'],
+                    'role': m['instructor_role'],
+                }),
+            )
+        for key in removed_pairs:
+            old = old_pairs[key]
+            self._record_change(
+                'instructor', f"{key[0]}|{key[1]}", 'removed',
+                display_label=f"{old.get('first_name', '')} {old.get('last_name', '')} ({key[1]}) -> {key[0]}",
+                old_value=json.dumps({
+                    'first_name': old.get('first_name'),
+                    'last_name': old.get('last_name'),
+                    'email': old.get('email'),
+                    'role': old.get('instructor_role'),
+                }),
+            )
 
+        # 4. Bulk insert new rows.
         _update_progress(
-            f'Inserting {len(insert_mappings):,} instructor rows...', 2
+            f'Inserting {len(new_pairs):,} instructor rows...', 2
         )
-        _chunked_bulk_insert(Instructor, insert_mappings)
-        self.stats['instructors_added'] += len(insert_mappings)
-        db.session.commit()
+        cols = ', '.join(self.INSTRUCTOR_COLUMNS)
+        placeholders = ', '.join('?' for _ in self.INSTRUCTOR_COLUMNS)
+        sql = f'INSERT INTO instructors ({cols}) VALUES ({placeholders})'
+        batch = []
+        for mapping in new_pairs.values():
+            batch.append(tuple(mapping[c] for c in self.INSTRUCTOR_COLUMNS))
+            if len(batch) >= BATCH_SIZE:
+                conn.execute('BEGIN')
+                conn.executemany(sql, batch)
+                conn.execute('COMMIT')
+                batch.clear()
+        if batch:
+            conn.execute('BEGIN')
+            conn.executemany(sql, batch)
+            conn.execute('COMMIT')
 
-        # ----- 3. Refresh the marked_for_tce flag -----
+        self.stats['instructors_added'] = len(new_pairs)
+        # Deleted rows that *also* reappear are not "removed" — net removed
+        # is old - new.
+        self.stats['instructors_removed'] += max(total_deleted - len(new_pairs), 0) + len(removed_pairs - added_pairs) * 0
+
+        # 5. Refresh marked_for_tce.
         _update_progress('Refreshing TCE flags...', 2)
-        if all_window_courses:
-            _chunked_update_column(
-                Course, Course.section_key,
-                all_window_courses,
-                {'marked_for_tce': False},
+        conn.execute('BEGIN')
+        terms = list(self._csv_terms)
+        for i in range(0, len(terms), 500):
+            chunk = terms[i:i + 500]
+            placeholders = ','.join('?' for _ in chunk)
+            conn.execute(
+                f'UPDATE courses SET marked_for_tce = 0 '
+                f'WHERE term_code IN ({placeholders})',
+                chunk,
             )
-        if courses_with_instructors:
-            _chunked_update_column(
-                Course, Course.section_key,
-                courses_with_instructors,
-                {'marked_for_tce': True},
+        keys = list(courses_with_instructors)
+        for i in range(0, len(keys), 500):
+            chunk = keys[i:i + 500]
+            placeholders = ','.join('?' for _ in chunk)
+            conn.execute(
+                f'UPDATE courses SET marked_for_tce = 1 '
+                f'WHERE section_key IN ({placeholders})',
+                chunk,
             )
-        db.session.commit()
+        conn.execute('COMMIT')
+
+    def _valid_course_keys(self, conn, section_keys):
+        if not section_keys:
+            return set()
+        valid = set()
+        keys = list(section_keys)
+        for i in range(0, len(keys), 500):
+            chunk = keys[i:i + 500]
+            placeholders = ','.join('?' for _ in chunk)
+            q = f'SELECT section_key FROM courses WHERE section_key IN ({placeholders})'
+            for (sk,) in conn.execute(q, chunk):
+                valid.add(sk)
+        return valid
+
+    def _snapshot_existing_instructors(self, conn, section_keys):
+        """Return {(section_key, user_id): {fields}} for the sync window."""
+        snapshot = {}
+        if not section_keys:
+            return snapshot
+        keys = list(section_keys)
+        for i in range(0, len(keys), 500):
+            chunk = keys[i:i + 500]
+            placeholders = ','.join('?' for _ in chunk)
+            q = (
+                'SELECT section_key, user_id, first_name, last_name, email, '
+                'instructor_role FROM instructors '
+                f'WHERE section_key IN ({placeholders})'
+            )
+            for row in conn.execute(q, chunk):
+                snapshot[(row[0], row[1])] = {
+                    'first_name': row[2],
+                    'last_name': row[3],
+                    'email': row[4],
+                    'instructor_role': row[5],
+                }
+        return snapshot
 
     # ------------------------------------------------------------------
     # Phase 3: student counts
     # ------------------------------------------------------------------
 
-    def sync_student_counts(self):
-        """Count students per course from Student_Course.csv.
-
-        Strategy
-        --------
-        Previous versions called ``bulk_update_mappings`` with one mapping
-        per section_key, which SQLAlchemy emits as one UPDATE per row -
-        50K+ statements on a real sync. Instead we:
-
-          1. Reset ``student_count`` to 0 for every course in the sync
-             window in one chunked UPDATE.
-          2. Group section_keys by count value and emit ONE chunked
-             UPDATE per distinct count (``UPDATE courses SET
-             student_count=N WHERE section_key IN (...)``). Real data
-             clusters heavily, so this ends up as maybe a few hundred
-             statements instead of tens of thousands.
-        """
-        filepath = os.path.join(self.datasources_path, 'Student_Course.csv')
-        if not os.path.exists(filepath):
-            self.errors.append(f"Student_Course.csv not found at {filepath}")
+    def _sync_student_counts(self, conn):
+        path = os.path.join(self.datasources_path, 'Student_Course.csv')
+        if not os.path.exists(path):
+            self.errors.append(f"Student_Course.csv not found at {path}")
             return
 
-        student_counts = defaultdict(int)
-        processed_rows = 0
-        last_reported = 0
-
-        with open(filepath, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                processed_rows += 1
-                if processed_rows % PROGRESS_UPDATE_INTERVAL == 0:
-                    last_reported = self._flush_progress(
-                        'Counting students from CSV...',
-                        3,
-                        processed_rows,
-                        last_reported,
+        counts = defaultdict(int)
+        processed = 0
+        with open(path, 'r', encoding='utf-8') as f:
+            for row in csv.DictReader(f):
+                processed += 1
+                if processed % PROGRESS_UPDATE_INTERVAL == 0:
+                    _update_progress(
+                        f'Counting students... ({processed:,} rows)', 3
                     )
-                section_key = (row.get('SECTION_KEY') or '').strip()
-                if section_key:
-                    student_counts[section_key] += 1
+                sk = _clean(row, 'SECTION_KEY')
+                if sk:
+                    counts[sk] += 1
 
-        self.stats['students_counted'] = processed_rows
-        self._flush_progress(
-            'Counting students from CSV...', 3, processed_rows, last_reported
-        )
+        self.stats['students_counted'] = processed
 
-        # 1. Reset counts for the sync window so courses that lost all
-        # their enrollments drop back to 0.
-        if self._csv_terms:
-            _update_progress('Resetting student counts...', 3)
-            term_list = list(self._csv_terms)
-            window_keys = set()
-            for i in range(0, len(term_list), IN_CHUNK_SIZE):
-                chunk = term_list[i:i + IN_CHUNK_SIZE]
-                for (section_key,) in (
-                    db.session.query(Course.section_key)
-                    .filter(Course.term_code.in_(chunk))
-                    .all()
-                ):
-                    window_keys.add(section_key)
-            _chunked_update_column(
-                Course, Course.section_key, window_keys,
-                {'student_count': 0},
+        # Snapshot old counts for the sync window to diff.
+        old_counts = {}
+        terms = list(self._csv_terms)
+        conn_cur = conn.cursor()
+        for i in range(0, len(terms), 500):
+            chunk = terms[i:i + 500]
+            placeholders = ','.join('?' for _ in chunk)
+            for sk, cnt in conn_cur.execute(
+                f'SELECT section_key, student_count FROM courses '
+                f'WHERE term_code IN ({placeholders})',
+                chunk,
+            ):
+                old_counts[sk] = cnt or 0
+        conn_cur.close()
+
+        # Log deltas.
+        for sk in set(old_counts) | set(counts):
+            old = old_counts.get(sk, 0)
+            new = counts.get(sk, 0)
+            if old != new:
+                self._record_change(
+                    'student_count', sk, 'updated',
+                    field_name='student_count',
+                    old_value=str(old), new_value=str(new),
+                    display_label=sk,
+                )
+
+        # Apply in bulk: reset window to 0, then group-by-count UPDATEs.
+        _update_progress('Applying student counts...', 3)
+        conn.execute('BEGIN')
+        for i in range(0, len(terms), 500):
+            chunk = terms[i:i + 500]
+            placeholders = ','.join('?' for _ in chunk)
+            conn.execute(
+                f'UPDATE courses SET student_count = 0 '
+                f'WHERE term_code IN ({placeholders})',
+                chunk,
             )
 
-        # 2. Group by count value -> one UPDATE per distinct count.
-        _update_progress(
-            f'Applying student counts ({len(student_counts):,} sections)...',
-            3,
-        )
         grouped = defaultdict(list)
-        for section_key, count in student_counts.items():
-            if count > 0:
-                grouped[count].append(section_key)
+        for sk, cnt in counts.items():
+            if cnt > 0:
+                grouped[cnt].append(sk)
 
-        for count, keys in grouped.items():
-            _chunked_update_column(
-                Course, Course.section_key, keys,
-                {'student_count': count},
-            )
+        for cnt, keys in grouped.items():
+            for i in range(0, len(keys), 500):
+                chunk = keys[i:i + 500]
+                placeholders = ','.join('?' for _ in chunk)
+                conn.execute(
+                    f'UPDATE courses SET student_count = ? '
+                    f'WHERE section_key IN ({placeholders})',
+                    (cnt, *chunk),
+                )
+        conn.execute('COMMIT')
 
-        db.session.commit()
 
-
-# ----------------------------------------------------------------------
-# Sample data helpers (used by run.py --generate-sample)
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Sample data helpers (kept for run.py --generate-sample)
+# ---------------------------------------------------------------------------
 
 def generate_sample_data():
     """Generate sample course data for testing."""
-
     colleges = [
-        ('AS', 'Arts and Sciences'),
-        ('EN', 'Engineering'),
-        ('BE', 'Business & Economics'),
-        ('ED', 'Education'),
-        ('AG', 'Ag, Food and Environment'),
-        ('MD', 'Medicine'),
-        ('NU', 'Nursing'),
-        ('PH', 'Public Health'),
+        ('AS', 'Arts and Sciences'), ('EN', 'Engineering'),
+        ('BE', 'Business & Economics'), ('ED', 'Education'),
+        ('AG', 'Ag, Food and Environment'), ('MD', 'Medicine'),
+        ('NU', 'Nursing'), ('PH', 'Public Health'),
     ]
-
-    # NOTE: Using 'SAMPLE_' prefix for IDs to avoid conflicts with real data.
     departments = {
-        'AS': [('SAMPLE_BIO', 'Biology'), ('SAMPLE_CHE', 'Chemistry'), ('SAMPLE_ENG', 'English'), ('SAMPLE_HIS', 'History')],
-        'EN': [('SAMPLE_CS', 'Computer Science'), ('SAMPLE_EE', 'Electrical Engineering'), ('SAMPLE_ME', 'Mechanical Engineering')],
-        'BE': [('SAMPLE_ACC', 'Accountancy'), ('SAMPLE_ECO', 'Economics'), ('SAMPLE_FIN', 'Finance')],
-        'ED': [('SAMPLE_CI', 'Curriculum & Instruction'), ('SAMPLE_EL', 'Educational Leadership')],
+        'AS': [('SAMPLE_BIO', 'Biology'), ('SAMPLE_CHE', 'Chemistry'),
+               ('SAMPLE_ENG', 'English'), ('SAMPLE_HIS', 'History')],
+        'EN': [('SAMPLE_CS', 'Computer Science'),
+               ('SAMPLE_EE', 'Electrical Engineering'),
+               ('SAMPLE_ME', 'Mechanical Engineering')],
+        'BE': [('SAMPLE_ACC', 'Accountancy'), ('SAMPLE_ECO', 'Economics'),
+               ('SAMPLE_FIN', 'Finance')],
+        'ED': [('SAMPLE_CI', 'Curriculum & Instruction'),
+               ('SAMPLE_EL', 'Educational Leadership')],
         'AG': [('SAMPLE_ANI', 'Animal Science'), ('SAMPLE_PLT', 'Plant Science')],
         'MD': [('SAMPLE_IM', 'Internal Medicine'), ('SAMPLE_SUR', 'Surgery')],
         'NU': [('SAMPLE_NUR', 'Nursing')],
         'PH': [('SAMPLE_EPI', 'Epidemiology'), ('SAMPLE_BIO', 'Biostatistics')],
     }
-
-    courses_data = []
-    instructors_data = []
-    students_data = []
-
+    courses_data, instructors_data, students_data = [], [], []
     course_num = 0
     for college_code, college_name in colleges:
         for dept_id, dept_name in departments.get(college_code, []):
@@ -863,12 +1005,12 @@ def generate_sample_data():
                 prefix = dept_name[:3].upper()
                 class_num = 100 + (i * 100)
                 section_key = f"{prefix}{class_num}-001-2025010"
-
-                course = {
+                courses_data.append({
                     'SECTION_KEY': section_key,
                     'CLASS_ID': f'CLS{course_num:05d}',
                     'CLASS': f'{prefix} {class_num}',
                     'SECTION_ID': '001',
+                    'CRS_SECTION': f'{prefix}{class_num}-001',
                     'SECTION_TITLE': f'Introduction to {dept_name} {i}',
                     'CLASS_COLLEGE_SHORT': college_code,
                     'CLASS_COLLEGE': college_name,
@@ -881,55 +1023,42 @@ def generate_sample_data():
                     'TCE_END_DATE': '2025-04-28',
                     'TCE_R2': '2025-04-21',
                     'ACADEMIC_TERM': '2025010',
-                }
-                courses_data.append(course)
-
-                # 80% of courses have instructors (-> marked for TCE).
+                })
                 if course_num % 5 != 0:
                     instructors_data.append({
                         'SECTION_KEY': section_key,
                         'USER_ID': f'inst{course_num:03d}',
-                        'FIRST_NAME': f'Professor{course_num}',
-                        'LAST_NAME': f'Smith{course_num}',
+                        'FIRSTNAME': f'Professor{course_num}',
+                        'LASTNAME': f'Smith{course_num}',
                         'EMAIL': f'inst{course_num:03d}@uky.edu',
                         'ROLE': 'Primary',
                     })
-
-                    if course_num % 7 != 0:  # ~14% zero enrollment
+                    if course_num % 7 != 0:
                         num_students = 15 + (course_num % 35)
                         for s in range(num_students):
                             students_data.append({
                                 'SECTION_KEY': section_key,
                                 'USER_ID': f'stu{course_num:03d}{s:03d}',
                             })
-
     return courses_data, instructors_data, students_data
 
 
 def write_sample_csvs(output_path='./datasources'):
     """Write sample data to CSV files."""
     os.makedirs(output_path, exist_ok=True)
-
     courses, instructors, students = generate_sample_data()
-
     if courses:
         with open(os.path.join(output_path, 'Courses.csv'), 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=courses[0].keys())
-            writer.writeheader()
-            writer.writerows(courses)
-
+            w = csv.DictWriter(f, fieldnames=courses[0].keys())
+            w.writeheader(); w.writerows(courses)
     if instructors:
         with open(os.path.join(output_path, 'Instructor_Course.csv'), 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=instructors[0].keys())
-            writer.writeheader()
-            writer.writerows(instructors)
-
+            w = csv.DictWriter(f, fieldnames=instructors[0].keys())
+            w.writeheader(); w.writerows(instructors)
     if students:
         with open(os.path.join(output_path, 'Student_Course.csv'), 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=students[0].keys())
-            writer.writeheader()
-            writer.writerows(students)
-
+            w = csv.DictWriter(f, fieldnames=students[0].keys())
+            w.writeheader(); w.writerows(students)
     return {
         'courses': len(courses),
         'instructors': len(instructors),

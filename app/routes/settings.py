@@ -7,6 +7,7 @@ from flask import Blueprint, render_template, redirect, url_for, flash, request,
 from flask_login import login_required, current_user
 from app.models import db
 from app.models.settings import SystemSetting, DataSyncLog
+from app.models.sync_history import SyncRun, ChangeLog
 from app.services.blue_sync import get_blue_sync_service, get_blue_sync_progress
 from app.services.course_sync import CourseSyncService, get_sync_progress
 from functools import wraps
@@ -636,13 +637,8 @@ def trigger_full_sync():
                     'output_path': (json_result or {}).get('output_path'),
                     'table_stats': (json_result or {}).get('stats'),
                 }
-                summary['pipeline_phase'] = 'hana_pull'
-                summary['pipeline_step'] = 1
-                summary['pipeline_total_steps'] = 3
-                summary['pipeline_message'] = 'Fetched HANA data. Preparing database sync...'
+                log.summary = summary
 
-                # Persist HANA-step row counts and diffs onto the full-sync log
-                # so the unified log shows what changed in the file pull.
                 if json_result:
                     log.records_processed = json_result.get('records_processed', 0) or 0
                     log.records_added = json_result.get('records_added', 0) or 0
@@ -659,101 +655,172 @@ def trigger_full_sync():
                     }
 
                 if result.returncode != 0:
-                    errors.append(f'HANA sync failed: {result.stderr[:1000] or result.stdout[:1000]}')
                     log.status = DataSyncLog.STATUS_FAILED
+                    errors.append(result.stderr[:1000] or result.stdout[:1000] or 'HANA sync failed')
                     log.errors = errors
+                    summary['pipeline_phase'] = 'failed'
+                    summary['pipeline_message'] = 'HANA sync step failed.'
+                    log.summary = summary
                     log.completed_at = datetime.utcnow()
                     db.session.commit()
                     return
 
-                # Step 2: Datasource to database
+                # Step 2: CSV -> database via FastCourseSync.
                 summary['pipeline_phase'] = 'database_sync'
                 summary['pipeline_step'] = 2
-                summary['pipeline_total_steps'] = 3
                 summary['pipeline_message'] = 'Syncing datasource CSV files into the application database...'
                 log.summary = summary
                 db.session.commit()
 
-                sync_service = CourseSyncService()
-                result = sync_service.sync_all()
-                summary['database_sync'] = result
-                log.records_added = (log.records_added or 0) + (
-                    result.get('stats', {}).get('courses_added', 0)
-                    + result.get('stats', {}).get('instructors_added', 0)
+                project_root = _get_project_root()
+                from app.services.course_sync import (
+                    CourseSyncService, resolve_datasources_path,
                 )
-                log.records_updated = (log.records_updated or 0) + result.get(
-                    'stats', {}
-                ).get('courses_updated', 0)
-                log.records_processed = (log.records_processed or 0) + result.get(
-                    'stats', {}
-                ).get('students_counted', 0)
+                ds_path = resolve_datasources_path(
+                    os.path.join(project_root, 'datasources')
+                )
+                course_sync = CourseSyncService(ds_path)
+                db_result = course_sync.sync_all()
 
-                # Step 3: Datasource to Blue
-                from app.models.admin import Admin
-                admin = Admin.query.get(log.triggered_by_id) if log.triggered_by_id else None
+                summary['database_sync'] = {
+                    'success': db_result.get('success', False),
+                    'stats': db_result.get('stats', {}),
+                    'errors': db_result.get('errors', [])[:10],
+                    'elapsed_seconds': db_result.get('elapsed_seconds'),
+                    'sync_run_id': db_result.get('sync_run_id'),
+                }
+                log.summary = summary
 
-                summary['pipeline_phase'] = 'blue_sync'
+                ds_stats = db_result.get('stats') or {}
+                log.records_added = (log.records_added or 0) + (
+                    ds_stats.get('courses_added', 0)
+                    + ds_stats.get('instructors_added', 0)
+                )
+                log.records_updated = (log.records_updated or 0) + ds_stats.get(
+                    'courses_updated', 0
+                )
+                log.records_processed = (log.records_processed or 0) + (
+                    ds_stats.get('students_counted', 0)
+                )
+
+                # Step 3: Push to Blue.
+                summary['pipeline_phase'] = 'blue_push'
                 summary['pipeline_step'] = 3
-                summary['pipeline_total_steps'] = 3
-                summary['pipeline_message'] = 'Pushing datasource files to Explorance Blue...'
+                summary['pipeline_message'] = 'Pushing datasources to Explorance Blue...'
                 log.summary = summary
                 db.session.commit()
 
-                blue_service = get_blue_sync_service()
-                blue_result = blue_service.push_all(
-                    triggered_by=admin,
-                    trigger_type='manual'
-                )
-
-                summary['blue_sync'] = blue_result
-                errors.extend(blue_result.get('errors', []))
-
-                if blue_result.get('success'):
-                    log.status = DataSyncLog.STATUS_COMPLETED
+                try:
+                    from app.models.admin import Admin
+                    admin = Admin.query.get(log.triggered_by_id) if log.triggered_by_id else None
+                    blue_service = get_blue_sync_service()
+                    blue_service.push_all(triggered_by=admin, trigger_type='manual')
                     summary['pipeline_phase'] = 'complete'
-                    summary['pipeline_message'] = 'Full sync completed.'
-                else:
+                    summary['pipeline_message'] = 'Full pipeline completed successfully.'
+                    log.status = DataSyncLog.STATUS_COMPLETED
+                except Exception as blue_exc:
+                    errors.append(f'Blue push failed: {blue_exc}')
+                    summary['pipeline_phase'] = 'failed'
+                    summary['pipeline_message'] = f'Blue push failed: {blue_exc}'
                     log.status = DataSyncLog.STATUS_FAILED
 
-            except Exception as e:
-                errors.append(str(e))
+                log.summary = summary
+                log.errors = errors
+
+            except subprocess.TimeoutExpired:
                 log.status = DataSyncLog.STATUS_FAILED
+                errors.append('HANA sync timed out after 10 minutes')
+                log.errors = errors
+                summary['pipeline_phase'] = 'failed'
+                summary['pipeline_message'] = 'HANA sync timed out after 10 minutes.'
+                log.summary = summary
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                log.status = DataSyncLog.STATUS_FAILED
+                errors.append(str(e))
+                log.errors = errors
                 summary['pipeline_phase'] = 'failed'
                 summary['pipeline_message'] = str(e)
+                log.summary = summary
 
-            log.summary = summary
-            log.errors = errors[:50]
             log.completed_at = datetime.utcnow()
             db.session.commit()
 
     thread = threading.Thread(target=run_full_sync, args=(sync_log.id,))
     thread.start()
 
-    flash('Full sync started (HANA -> Datasource -> Blue). Check back for results.', 'info')
+    flash('Full sync started. Check back for results.', 'info')
     return redirect(url_for('settings.sync_logs'))
 
+# ============================================================================
+# CHANGE LOG VIEWER (new — replaces the old daily-CSV-archive workflow)
+# ============================================================================
 
-@settings_bp.route('/api/sync/progress')
+@settings_bp.route('/changes')
 @super_admin_required
-def api_sync_progress():
-    """API: Get current sync progress for both HANA and Blue."""
-    hana_progress = get_sync_progress()
-    blue_progress = get_blue_sync_progress()
-
-    return jsonify({
-        'hana': hana_progress,
-        'blue': blue_progress
-    })
+def changes_index():
+    """List recent SyncRuns with change counts."""
+    page = request.args.get('page', 1, type=int)
+    runs = SyncRun.query.order_by(SyncRun.started_at.desc()).paginate(
+        page=page, per_page=25, error_out=False,
+    )
+    return render_template('settings/changes_index.html', runs=runs)
 
 
-@settings_bp.route('/api/sync-logs')
+@settings_bp.route('/changes/<int:run_id>')
 @super_admin_required
-def api_sync_logs():
-    """API: Get sync logs as JSON."""
-    _mark_stale_running_logs()
-    limit = request.args.get('limit', 10, type=int)
-    logs = DataSyncLog.query.order_by(
-        DataSyncLog.started_at.desc()
-    ).limit(limit).all()
+def changes_detail(run_id):
+    """Show per-field changes for a specific SyncRun."""
+    run = SyncRun.query.get_or_404(run_id)
+    entity_type = request.args.get('entity', '')
+    change_type = request.args.get('change', '')
+    page = request.args.get('page', 1, type=int)
 
-    return jsonify([log.to_dict() for log in logs])
+    q = ChangeLog.query.filter_by(sync_run_id=run_id)
+    if entity_type:
+        q = q.filter_by(entity_type=entity_type)
+    if change_type:
+        q = q.filter_by(change_type=change_type)
+    q = q.order_by(ChangeLog.entity_type, ChangeLog.change_type, ChangeLog.entity_key)
+    pagination = q.paginate(page=page, per_page=100, error_out=False)
+
+    counts_by_type = dict(
+        db.session.query(ChangeLog.change_type, db.func.count(ChangeLog.id))
+        .filter_by(sync_run_id=run_id)
+        .group_by(ChangeLog.change_type).all()
+    )
+    counts_by_entity = dict(
+        db.session.query(ChangeLog.entity_type, db.func.count(ChangeLog.id))
+        .filter_by(sync_run_id=run_id)
+        .group_by(ChangeLog.entity_type).all()
+    )
+
+    return render_template(
+        'settings/changes_detail.html',
+        run=run,
+        changes=pagination.items,
+        pagination=pagination,
+        counts_by_type=counts_by_type,
+        counts_by_entity=counts_by_entity,
+        filters={'entity': entity_type, 'change': change_type},
+    )
+
+
+@settings_bp.route('/changes/entity/<entity_type>/<path:entity_key>')
+@super_admin_required
+def changes_entity_history(entity_type, entity_key):
+    """Full change history for a single course or instructor across all syncs."""
+    changes = (
+        ChangeLog.query
+        .filter_by(entity_type=entity_type, entity_key=entity_key)
+        .order_by(ChangeLog.created_at.desc())
+        .limit(500)
+        .all()
+    )
+    return render_template(
+        'settings/changes_entity.html',
+        entity_type=entity_type,
+        entity_key=entity_key,
+        changes=changes,
+    )
