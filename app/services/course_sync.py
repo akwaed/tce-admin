@@ -34,9 +34,16 @@ import threading
 import time
 from datetime import datetime
 from collections import defaultdict
-from sqlalchemy import text
+from sqlalchemy import event, text
 from app.models import db
 from app.models.course import Course, Instructor, College, Department, SyncLog
+
+# Set once, on first sync. Installs a connection-level event listener so
+# every SQLite connection the app pulls from the pool during a sync has the
+# high-throughput PRAGMAs applied. Without this, ``db.engine.begin()`` sets
+# PRAGMAs on a connection that gets released immediately and ``db.session``
+# picks up a different connection that still runs with synchronous=FULL.
+_PRAGMA_LISTENER_INSTALLED = False
 
 PROGRESS_UPDATE_INTERVAL = 5000
 # Chunk size for bulk_*_mappings calls. SQLAlchemy will internally batch
@@ -48,47 +55,100 @@ DB_BATCH_SIZE = 2000
 IN_CHUNK_SIZE = 500
 
 
+_PRAGMA_STATEMENTS = (
+    'PRAGMA synchronous = OFF',
+    'PRAGMA journal_mode = MEMORY',
+    'PRAGMA temp_store = MEMORY',
+    'PRAGMA cache_size = -200000',  # ~200MB page cache
+)
+
+
 def _apply_sqlite_pragmas():
     """Enable high-throughput PRAGMAs for the duration of a sync.
+
+    SQLite PRAGMAs are *per connection*. Previous versions set them on a
+    throwaway connection via ``db.engine.begin()``, which had no effect on
+    the connection the ORM session actually used - so large bulk UPDATE
+    batches still ran with ``synchronous=FULL`` and fsync'd per statement,
+    causing the multi-hour stall on the real dataset.
+
+    This version:
+      1. Installs a pool-level ``connect`` event listener so every new
+         SQLite connection gets the PRAGMAs applied at checkout. Idempotent
+         across calls - we only install the listener once per process.
+      2. Also applies the PRAGMAs directly to the current session's
+         connection, so the already-checked-out connection is tuned
+         immediately instead of waiting for the next checkout.
 
     These are safe for a batch import: we accept the (tiny) risk of losing
     the last transaction on power loss in exchange for a 10x+ speedup on
     large CSV->DB syncs. Other databases ignore this call.
     """
+    global _PRAGMA_LISTENER_INSTALLED
     try:
-        url = db.engine.url
+        engine = db.engine
     except Exception:
         return
-    if not url.drivername.startswith('sqlite'):
+    if not engine.url.drivername.startswith('sqlite'):
         return
+
+    if not _PRAGMA_LISTENER_INSTALLED:
+        def _set_pragmas_on_connect(dbapi_conn, connection_record):
+            try:
+                cursor = dbapi_conn.cursor()
+                for stmt in _PRAGMA_STATEMENTS:
+                    cursor.execute(stmt)
+                cursor.close()
+            except Exception:
+                pass
+        try:
+            event.listen(engine, 'connect', _set_pragmas_on_connect)
+            _PRAGMA_LISTENER_INSTALLED = True
+        except Exception:
+            pass
+
+    # Apply to the session's current connection right now.
     try:
-        with db.engine.begin() as conn:
-            for pragma in (
-                'PRAGMA synchronous = OFF',
-                'PRAGMA journal_mode = MEMORY',
-                'PRAGMA temp_store = MEMORY',
-                'PRAGMA cache_size = -200000',  # ~200MB page cache
-            ):
-                conn.execute(text(pragma))
+        for stmt in _PRAGMA_STATEMENTS:
+            db.session.execute(text(stmt))
+        db.session.commit()
     except Exception:
-        # Tuning failures should never fail the sync itself.
-        pass
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
 
 
-def _chunked_bulk_insert(model, rows):
-    """bulk_insert_mappings with chunking to keep memory bounded."""
+def _chunked_bulk_insert(model, rows, progress_label=None, step=1):
+    """bulk_insert_mappings with chunking and per-chunk commits.
+
+    Committing per chunk keeps each SQLite transaction small (so the WAL
+    doesn't grow unbounded on multi-hundred-thousand row syncs) and lets
+    the progress panel actually move instead of appearing frozen.
+    """
     if not rows:
         return
-    for i in range(0, len(rows), DB_BATCH_SIZE):
+    total = len(rows)
+    for i in range(0, total, DB_BATCH_SIZE):
         db.session.bulk_insert_mappings(model, rows[i:i + DB_BATCH_SIZE])
+        db.session.commit()
+        if progress_label:
+            done = min(i + DB_BATCH_SIZE, total)
+            _update_progress(f'{progress_label} ({done:,}/{total:,})', step)
 
 
-def _chunked_bulk_update(model, rows):
-    """bulk_update_mappings with chunking. Each row must include the PK."""
+def _chunked_bulk_update(model, rows, progress_label=None, step=1):
+    """bulk_update_mappings with chunking and per-chunk commits. Each row
+    must include the PK."""
     if not rows:
         return
-    for i in range(0, len(rows), DB_BATCH_SIZE):
+    total = len(rows)
+    for i in range(0, total, DB_BATCH_SIZE):
         db.session.bulk_update_mappings(model, rows[i:i + DB_BATCH_SIZE])
+        db.session.commit()
+        if progress_label:
+            done = min(i + DB_BATCH_SIZE, total)
+            _update_progress(f'{progress_label} ({done:,}/{total:,})', step)
 
 
 def _chunked_delete_by_column(model, column, values):
@@ -475,8 +535,14 @@ class CourseSyncService:
             f'Writing courses... ({len(to_insert):,} insert, {len(to_update):,} update)',
             1,
         )
-        _chunked_bulk_insert(Course, to_insert)
-        _chunked_bulk_update(Course, to_update)
+        _chunked_bulk_insert(
+            Course, to_insert,
+            progress_label='Inserting courses', step=1,
+        )
+        _chunked_bulk_update(
+            Course, to_update,
+            progress_label='Updating courses', step=1,
+        )
         db.session.commit()
 
         # ----- Orphan removal -----
