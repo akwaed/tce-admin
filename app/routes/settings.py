@@ -11,7 +11,12 @@ from app.services.blue_sync import get_blue_sync_service, get_blue_sync_progress
 from app.services.course_sync import CourseSyncService, get_sync_progress
 from functools import wraps
 from datetime import datetime
+import json
+import tempfile
 import threading
+import os
+import subprocess
+import sys
 
 settings_bp = Blueprint('settings', __name__)
 
@@ -26,6 +31,62 @@ def super_admin_required(f):
             return redirect(url_for('main.dashboard'))
         return f(*args, **kwargs)
     return decorated_function
+
+
+def _get_project_root():
+    """Return the repository root for stable script execution paths."""
+    return os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+
+
+def _run_hana_sync_script():
+    """
+    Run the HANA sync script with the same interpreter as the Flask app.
+
+    This avoids mismatches between the web app environment and a manually
+    activated virtualenv shell session.
+
+    Returns a tuple ``(completed_process, json_result_or_None)``. ``json_result``
+    is the parsed contents of the script's --json-output payload, which
+    contains per-file row counts and diffs. It is ``None`` if the script
+    failed to write the file (e.g. crashed before reaching that step).
+    """
+    project_root = _get_project_root()
+    script_path = os.path.join(project_root, 'scripts', 'hana_sync.py')
+    datasources_path = os.path.join(project_root, 'datasources')
+
+    if not os.path.exists(script_path):
+        raise FileNotFoundError(f'HANA sync script not found: {script_path}')
+
+    # Have the script write its structured result to a temp file we read back.
+    json_fd, json_path = tempfile.mkstemp(prefix='hana_sync_', suffix='.json')
+    os.close(json_fd)
+
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable, script_path,
+                '--output', datasources_path,
+                '--json-output', json_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600,
+            cwd=project_root
+        )
+
+        json_result = None
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                json_result = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+
+        return completed, json_result
+    finally:
+        try:
+            os.remove(json_path)
+        except OSError:
+            pass
 
 
 # ============================================================================
@@ -286,34 +347,48 @@ def trigger_hana_sync():
         with app.app_context():
             log = DataSyncLog.query.get(log_id)
             try:
-                # Import and run HANA sync script
-                import subprocess
-                import os
+                result, json_result = _run_hana_sync_script()
 
-                script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                                           'scripts', 'hana_sync.py')
+                log.summary = {
+                    'stdout': result.stdout[:2000],
+                    'stderr': result.stderr[:1000],
+                    'command': f'{sys.executable} scripts/hana_sync.py --output datasources',
+                    'output_path': (json_result or {}).get('output_path'),
+                    'table_stats': (json_result or {}).get('stats'),
+                }
 
-                if os.path.exists(script_path):
-                    result = subprocess.run(
-                        ['python3', script_path],
-                        capture_output=True,
-                        text=True,
-                        timeout=600  # 10 minute timeout
-                    )
+                # Populate row counts and per-file diffs from the script's
+                # JSON result so the sync log accurately reflects what the
+                # script actually did instead of always showing 0 records.
+                if json_result:
+                    log.records_processed = json_result.get('records_processed', 0) or 0
+                    log.records_added = json_result.get('records_added', 0) or 0
+                    log.records_updated = json_result.get('records_updated', 0) or 0
+                    log.file_stats = json_result.get('file_stats') or {}
+                    # Field-level changes index: per-file changed-key buckets,
+                    # used by the sync detail page to show what moved.
+                    log.field_changes = {
+                        fname: {
+                            'added': fs.get('added_keys', []),
+                            'updated': fs.get('updated_keys', []),
+                            'removed': fs.get('removed_keys', []),
+                            'diff_key_columns': fs.get('diff_key_columns', []),
+                        }
+                        for fname, fs in (json_result.get('file_stats') or {}).items()
+                    }
 
-                    if result.returncode == 0:
-                        log.status = DataSyncLog.STATUS_COMPLETED
-                        log.summary = {'output': result.stdout[:1000]}
-                    else:
-                        log.status = DataSyncLog.STATUS_FAILED
-                        log.errors = [result.stderr[:500]]
+                if result.returncode == 0:
+                    log.status = DataSyncLog.STATUS_COMPLETED
                 else:
                     log.status = DataSyncLog.STATUS_FAILED
-                    log.errors = [f'HANA sync script not found: {script_path}']
+                    log.errors = [result.stderr[:1000] or result.stdout[:1000] or 'HANA sync failed with no output']
 
             except subprocess.TimeoutExpired:
                 log.status = DataSyncLog.STATUS_FAILED
                 log.errors = ['HANA sync timed out after 10 minutes']
+            except FileNotFoundError as e:
+                log.status = DataSyncLog.STATUS_FAILED
+                log.errors = [str(e)]
             except Exception as e:
                 log.status = DataSyncLog.STATUS_FAILED
                 log.errors = [str(e)]
@@ -415,32 +490,40 @@ def trigger_full_sync():
 
             try:
                 # Step 1: HANA to datasource
-                import subprocess
-                import os
+                result, json_result = _run_hana_sync_script()
 
-                script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                                           'scripts', 'hana_sync.py')
+                summary['hana_sync'] = {
+                    'success': result.returncode == 0,
+                    'stdout': result.stdout[:2000],
+                    'stderr': result.stderr[:1000],
+                    'output_path': (json_result or {}).get('output_path'),
+                    'table_stats': (json_result or {}).get('stats'),
+                }
 
-                if os.path.exists(script_path):
-                    result = subprocess.run(
-                        ['python3', script_path],
-                        capture_output=True,
-                        text=True,
-                        timeout=600
-                    )
+                # Persist HANA-step row counts and diffs onto the full-sync log
+                # so the unified log shows what changed in the file pull.
+                if json_result:
+                    log.records_processed = json_result.get('records_processed', 0) or 0
+                    log.records_added = json_result.get('records_added', 0) or 0
+                    log.records_updated = json_result.get('records_updated', 0) or 0
+                    log.file_stats = json_result.get('file_stats') or {}
+                    log.field_changes = {
+                        fname: {
+                            'added': fs.get('added_keys', []),
+                            'updated': fs.get('updated_keys', []),
+                            'removed': fs.get('removed_keys', []),
+                            'diff_key_columns': fs.get('diff_key_columns', []),
+                        }
+                        for fname, fs in (json_result.get('file_stats') or {}).items()
+                    }
 
-                    if result.returncode != 0:
-                        errors.append(f'HANA sync failed: {result.stderr[:500]}')
-                        log.status = DataSyncLog.STATUS_FAILED
-                        log.errors = errors
-                        log.completed_at = datetime.utcnow()
-                        db.session.commit()
-                        return
-
-                    summary['hana_sync'] = 'SUCCESS'
-                else:
-                    errors.append(f'HANA sync script not found')
-                    summary['hana_sync'] = 'SKIPPED'
+                if result.returncode != 0:
+                    errors.append(f'HANA sync failed: {result.stderr[:1000] or result.stdout[:1000]}')
+                    log.status = DataSyncLog.STATUS_FAILED
+                    log.errors = errors
+                    log.completed_at = datetime.utcnow()
+                    db.session.commit()
+                    return
 
                 # Step 2: Datasource to database
                 sync_service = CourseSyncService()

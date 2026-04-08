@@ -19,13 +19,20 @@ Output Files (in ./datasources/):
     - Users.csv
 """
 import csv
+import json
 import os
 import sys
 from datetime import datetime
 from pathlib import Path
 
+# Repository root and default datasource directory.
+# Computed from this file's location so the script always writes to the
+# project's canonical ./datasources folder regardless of the caller's CWD.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_OUTPUT_PATH = PROJECT_ROOT / 'datasources'
+
 # Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
     from hdbcli import dbapi
@@ -43,37 +50,55 @@ except ImportError:
 class HANADatasourceSync:
     """Syncs course data from HANA database to CSV files."""
 
-    # Tables to sync with their configurations
+    # Tables to sync with their configurations.
+    #   key       - column used for de-duplication during sync (single column)
+    #   diff_keys - columns that form the natural primary key used for diffing
+    #               an existing CSV against a new sync. Composite keys are
+    #               joined with '|' to form a stable identity string.
     TABLES = {
         'COURSES': {
             'filename': 'Courses',
             'order': 'SECTION_KEY, SECTION_ID',
-            'key': 'SECTION_KEY'
+            'key': 'SECTION_KEY',
+            'diff_keys': ['SECTION_KEY']
         },
         'INSTRUCTOR_COURSE': {
             'filename': 'Instructor_Course',
-            'order': 'SECTION_KEY, USER_ID'
+            'order': 'SECTION_KEY, USER_ID',
+            'diff_keys': ['SECTION_KEY', 'USER_ID']
         },
         'STUDENT_COURSE': {
             'filename': 'Student_Course',
-            'order': 'SECTION_KEY, USER_ID'
+            'order': 'SECTION_KEY, USER_ID',
+            'diff_keys': ['SECTION_KEY', 'USER_ID']
         },
         'USERS': {
             'filename': 'Users',
             'order': 'USER_ID',
-            'key': 'USER_ID'
+            'key': 'USER_ID',
+            'diff_keys': ['USER_ID']
         }
     }
 
     # Columns that are allowed to be empty
     OPTIONAL_COLUMNS = ['CROSSLISTED_ID', 'SPEC_TYPE', 'STU_OBJ_ID', 'SECTION_LENGTH_DAYS']
 
-    def __init__(self, output_path='./datasources'):
-        self.output_path = Path(output_path)
+    def __init__(self, output_path=None):
+        # Always resolve to an absolute path. If no output_path is supplied,
+        # fall back to <project_root>/datasources so that running this script
+        # from any working directory writes to the canonical location instead
+        # of creating a stray ./datasources next to the caller.
+        self.output_path = Path(output_path).resolve() if output_path else DEFAULT_OUTPUT_PATH
         self.output_path.mkdir(parents=True, exist_ok=True)
         self.conn = None
         self.errors = []
         self.stats = {table: 0 for table in self.TABLES}
+        # Per-file diff results, populated by _sync_table().
+        # Shape: { 'Courses.csv': { 'added': int, 'updated': int,
+        #                           'removed': int, 'unchanged': int,
+        #                           'added_keys': [...], 'updated_keys': [...],
+        #                           'removed_keys': [...] } }
+        self.file_stats = {}
 
     def connect(self, host=None, port=None, user=None, password=None):
         """Connect to HANA database."""
@@ -141,11 +166,12 @@ class HANADatasourceSync:
         return {
             'success': len(self.errors) == 0,
             'stats': self.stats,
+            'file_stats': self.file_stats,
             'errors': self.errors
         }
 
     def _sync_table(self, cursor, table, config, from_term, up_to_term):
-        """Sync a single table to CSV."""
+        """Sync a single table to CSV, computing a diff against the prior file."""
         sql = f"SELECT * FROM EXPLORANCE.{table} ORDER BY {config['order']}"
 
         try:
@@ -166,8 +192,13 @@ class HANADatasourceSync:
         email_index = column_names.index('EMAIL') if 'EMAIL' in column_names else -1
         user_id_index = column_names.index('USER_ID') if 'USER_ID' in column_names else -1
 
+        # Diff key indices (composite primary key for change tracking).
+        diff_key_cols = config.get('diff_keys') or ([config['key']] if 'key' in config else [])
+        diff_key_indices = [column_names.index(c) for c in diff_key_cols if c in column_names]
+
         result = [column_names]
         last_key = None
+        new_rows_by_diff_key = {}
 
         for row in rows:
             rowdata = list(row)
@@ -198,12 +229,112 @@ class HANADatasourceSync:
                 if email and "'" in email:
                     rowdata[email_index] = f"{rowdata[user_id_index]}@uky.edu"
 
+            # Track for diff: stringified column-name -> value dict so the
+            # comparison is independent of column ordering on disk.
+            if diff_key_indices:
+                string_row = {
+                    col: ('' if rowdata[i] is None else str(rowdata[i]))
+                    for i, col in enumerate(column_names)
+                }
+                diff_key = '|'.join(string_row[c] for c in diff_key_cols)
+                new_rows_by_diff_key[diff_key] = string_row
+
             result.append(rowdata)
             self.stats[table] += 1
 
+        # Compute the diff against the existing CSV (if any) before overwriting.
+        filename = f"{config['filename']}.csv"
+        self.file_stats[filename] = self._compute_diff(
+            filename, diff_key_cols, diff_key_indices,
+            column_names, new_rows_by_diff_key
+        )
+
         # Write to CSV
         self._write_csv(config['filename'], result)
-        print(f"  Wrote {self.stats[table]} rows to {config['filename']}.csv")
+        diff = self.file_stats[filename]
+        print(f"  Wrote {self.stats[table]} rows to {filename} "
+              f"(+{diff['added']} ~{diff['updated']} -{diff['removed']})")
+
+    def _compute_diff(self, filename, diff_key_cols, diff_key_indices,
+                      column_names, new_rows_by_diff_key):
+        """Compare the new in-memory rows against the existing CSV on disk.
+
+        Returns a dict with added/updated/removed/unchanged counts plus the
+        list of keys in each bucket. Keys for composite-key tables are
+        joined with '|'.
+        """
+        empty = {
+            'added': 0, 'updated': 0, 'removed': 0, 'unchanged': 0,
+            'added_keys': [], 'updated_keys': [], 'removed_keys': [],
+            'diff_key_columns': diff_key_cols,
+        }
+
+        if not diff_key_indices:
+            # No primary key configured for this table - skip diff tracking.
+            return empty
+
+        existing_path = self.output_path / filename
+        existing_by_key = {}
+        common_cols = None
+        if existing_path.exists():
+            try:
+                with open(existing_path, 'r', newline='', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    if reader.fieldnames is None:
+                        return empty
+                    if not all(c in reader.fieldnames for c in diff_key_cols):
+                        return empty  # diff key column missing - can't diff
+                    # Only compare columns that exist in BOTH files - this
+                    # avoids false "updated" diffs when the schema changes.
+                    common_cols = [c for c in reader.fieldnames if c in column_names]
+                    for row in reader:
+                        key = '|'.join(row.get(c, '') for c in diff_key_cols)
+                        existing_by_key[key] = row
+            except Exception as e:
+                self.errors.append(f"Could not read existing {filename} for diff: {e}")
+                return empty
+        else:
+            # First-ever sync of this file - everything is "added".
+            return {
+                'added': len(new_rows_by_diff_key),
+                'updated': 0, 'removed': 0, 'unchanged': 0,
+                'added_keys': sorted(new_rows_by_diff_key.keys()),
+                'updated_keys': [], 'removed_keys': [],
+                'diff_key_columns': diff_key_cols,
+            }
+
+        if common_cols is None:
+            common_cols = list(column_names)
+
+        added_keys, updated_keys, unchanged = [], [], 0
+        for key, new_row in new_rows_by_diff_key.items():
+            old_row = existing_by_key.get(key)
+            if old_row is None:
+                added_keys.append(key)
+                continue
+            # Compare only on shared columns.
+            changed = False
+            for col in common_cols:
+                if (old_row.get(col, '') or '') != (new_row.get(col, '') or ''):
+                    changed = True
+                    break
+            if changed:
+                updated_keys.append(key)
+            else:
+                unchanged += 1
+
+        removed_keys = [k for k in existing_by_key if k not in new_rows_by_diff_key]
+
+        return {
+            'added': len(added_keys),
+            'updated': len(updated_keys),
+            'removed': len(removed_keys),
+            'unchanged': unchanged,
+            'added_keys': sorted(added_keys),
+            'updated_keys': sorted(updated_keys),
+            'removed_keys': sorted(removed_keys),
+            'diff_key_columns': diff_key_cols,
+        }
 
     def _is_missing_data(self, table, column_names, data, key_index):
         """Check if row is missing required data."""
@@ -230,8 +361,13 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description='Sync HANA datasources to CSV files')
-    parser.add_argument('--output', '-o', default='./datasources',
-                        help='Output directory for CSV files')
+    parser.add_argument('--output', '-o', default=str(DEFAULT_OUTPUT_PATH),
+                        help='Output directory for CSV files '
+                             '(default: <project_root>/datasources)')
+    parser.add_argument('--json-output',
+                        help='Optional path to write a JSON file with the '
+                             'sync result (per-file row counts and diff). '
+                             'Used by the web UI to populate sync logs.')
     parser.add_argument('--host', help='HANA host (or set HANA_HOST env var)')
     parser.add_argument('--port', type=int, help='HANA port (or set HANA_PORT env var)')
     parser.add_argument('--user', '-u', help='HANA user (or set HANA_USER env var)')
@@ -261,6 +397,32 @@ def main():
                 print(f"  - {err}")
             if len(result['errors']) > 20:
                 print(f"  ... and {len(result['errors']) - 20} more")
+
+        # Optionally emit a machine-readable result so the web UI can
+        # populate the sync log with row counts and diffs.
+        if args.json_output:
+            payload = {
+                'success': result['success'],
+                'output_path': str(sync.output_path),
+                'stats': result['stats'],
+                'file_stats': result['file_stats'],
+                'errors': result['errors'],
+                'records_processed': sum(result['stats'].values()),
+                'records_added': sum(
+                    fs.get('added', 0) for fs in result['file_stats'].values()
+                ),
+                'records_updated': sum(
+                    fs.get('updated', 0) for fs in result['file_stats'].values()
+                ),
+                'records_removed': sum(
+                    fs.get('removed', 0) for fs in result['file_stats'].values()
+                ),
+            }
+            try:
+                with open(args.json_output, 'w', encoding='utf-8') as f:
+                    json.dump(payload, f, default=str)
+            except Exception as e:
+                print(f"WARNING: failed to write --json-output file: {e}")
 
         return 0 if result['success'] else 1
 
