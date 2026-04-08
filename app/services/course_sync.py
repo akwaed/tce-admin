@@ -16,6 +16,9 @@ from collections import defaultdict
 from app.models import db
 from app.models.course import Course, Instructor, College, Department, SyncLog
 
+PROGRESS_UPDATE_INTERVAL = 5000
+DB_BATCH_SIZE = 1000
+
 # Global sync progress tracking
 _sync_progress = {
     'running': False,
@@ -88,6 +91,45 @@ class CourseSyncService:
         # Set of term_codes observed in the current Courses.csv. Used to
         # decide which DB courses are eligible for removal.
         self._csv_terms = set()
+
+    def _iter_chunks(self, items, size=DB_BATCH_SIZE):
+        """Yield fixed-size chunks from an iterable."""
+        batch = []
+        for item in items:
+            batch.append(item)
+            if len(batch) >= size:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
+
+    def _flush_progress(self, step, step_number, processed_rows, last_reported):
+        """Increment progress counters only for the rows since the last report."""
+        delta = processed_rows - last_reported
+        if delta > 0:
+            _update_progress(f'{step} ({processed_rows:,} rows)', step_number, delta)
+            return processed_rows
+        return last_reported
+
+    def _delete_courses_by_keys(self, section_keys):
+        """Delete courses in small batches so large sync windows stay tractable."""
+        if not section_keys:
+            return
+
+        for course in Course.query.filter(Course.section_key.in_(section_keys)).all():
+            db.session.delete(course)
+            self.stats['courses_removed'] += 1
+        db.session.commit()
+
+    def _delete_instructors_by_ids(self, instructor_ids):
+        """Delete instructors in small batches."""
+        if not instructor_ids:
+            return
+
+        for instructor in Instructor.query.filter(Instructor.id.in_(instructor_ids)).all():
+            db.session.delete(instructor)
+            self.stats['instructors_removed'] += 1
+        db.session.commit()
     
     def sync_all(self):
         """Run full sync of all data"""
@@ -113,17 +155,14 @@ class CourseSyncService:
             # 1. Load courses first (creates colleges/departments)
             _update_progress('Loading courses...', 1)
             self.sync_courses()
-            _update_progress('Loading courses...', 1, self.stats['courses_added'] + self.stats['courses_updated'])
 
             # 2. Load instructor assignments (determines TCE marking)
             _update_progress('Loading instructors...', 2)
             self.sync_instructors()
-            _update_progress('Loading instructors...', 2, self.stats['instructors_added'])
 
             # 3. Count students per course
             _update_progress('Counting students...', 3)
             self.sync_student_counts()
-            _update_progress('Counting students...', 3, self.stats['students_counted'])
 
             # 4. Finalize
             _update_progress('Finalizing...', 4)
@@ -181,8 +220,18 @@ class CourseSyncService:
 
         with open(filepath, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
+            processed_rows = 0
+            last_reported = 0
 
             for row in reader:
+                processed_rows += 1
+                if processed_rows % PROGRESS_UPDATE_INTERVAL == 0:
+                    last_reported = self._flush_progress(
+                        'Loading courses from CSV...',
+                        1,
+                        processed_rows,
+                        last_reported
+                    )
                 try:
                     section_key = row.get('SECTION_KEY', '').strip()
                     if not section_key:
@@ -263,6 +312,7 @@ class CourseSyncService:
                 except Exception as e:
                     self.errors.append(f"Course {row.get('SECTION_KEY', 'unknown')}: {str(e)}")
 
+            self._flush_progress('Loading courses from CSV...', 1, processed_rows, last_reported)
             db.session.commit()
 
         # ----- Orphan removal -----
@@ -271,15 +321,33 @@ class CourseSyncService:
         # the terms present in the CSV so we never touch courses from older
         # archived terms that this sync isn't responsible for.
         if self._csv_terms and self._csv_section_keys:
-            orphaned = Course.query.filter(
-                Course.term_code.in_(self._csv_terms),
-                ~Course.section_key.in_(self._csv_section_keys),
-            ).all()
-            for orphan in orphaned:
-                db.session.delete(orphan)
-                self.stats['courses_removed'] += 1
-            if orphaned:
-                db.session.commit()
+            _update_progress('Reconciling removed courses...', 1)
+            term_list = list(self._csv_terms)
+            orphan_keys = []
+            checked_rows = 0
+
+            course_key_query = (
+                db.session.query(Course.section_key)
+                .filter(Course.term_code.in_(term_list))
+                .yield_per(DB_BATCH_SIZE)
+            )
+            for (section_key,) in course_key_query:
+                checked_rows += 1
+                if checked_rows % PROGRESS_UPDATE_INTERVAL == 0:
+                    _update_progress(
+                        f'Reconciling removed courses... ({checked_rows:,} scanned)',
+                        1
+                    )
+                if section_key not in self._csv_section_keys:
+                    orphan_keys.append(section_key)
+
+            for chunk in self._iter_chunks(orphan_keys):
+                self._delete_courses_by_keys(chunk)
+
+            _update_progress(
+                f'Reconciling removed courses... ({checked_rows:,} scanned, {self.stats["courses_removed"]:,} removed)',
+                1
+            )
 
     def sync_instructors(self):
         """
@@ -320,8 +388,18 @@ class CourseSyncService:
 
         with open(filepath, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
+            processed_rows = 0
+            last_reported = 0
 
             for row in reader:
+                processed_rows += 1
+                if processed_rows % PROGRESS_UPDATE_INTERVAL == 0:
+                    last_reported = self._flush_progress(
+                        'Loading instructors from CSV...',
+                        2,
+                        processed_rows,
+                        last_reported
+                    )
                 try:
                     section_key = row.get('SECTION_KEY', '').strip()
                     user_id = row.get('USER_ID', '').strip()
@@ -372,30 +450,53 @@ class CourseSyncService:
                 except Exception as e:
                     self.errors.append(f"Instructor {row.get('USER_ID', 'unknown')}: {str(e)}")
 
+        self._flush_progress('Loading instructors from CSV...', 2, processed_rows, last_reported)
+
         # ----- Orphan removal: instructors -----
         # For every course in the current sync window, drop any DB instructor
         # row whose (section_key, user_id) is no longer in Instructor_Course.csv.
         # Scoped to courses we just processed so we don't disturb older terms.
-        if self._csv_section_keys:
+        if self._csv_terms:
+            _update_progress('Reconciling removed instructors...', 2)
+            instructor_ids_to_delete = []
+            checked_rows = 0
             existing_instructors = (
-                Instructor.query
-                .filter(Instructor.section_key.in_(self._csv_section_keys))
-                .all()
+                db.session.query(Instructor.id, Instructor.section_key, Instructor.user_id)
+                .join(Course, Instructor.section_key == Course.section_key)
+                .filter(Course.term_code.in_(list(self._csv_terms)))
+                .yield_per(DB_BATCH_SIZE)
             )
-            for inst in existing_instructors:
-                if (inst.section_key, inst.user_id) not in csv_instructor_pairs:
-                    db.session.delete(inst)
-                    self.stats['instructors_removed'] += 1
+            for instructor_id, section_key, user_id in existing_instructors:
+                checked_rows += 1
+                if checked_rows % PROGRESS_UPDATE_INTERVAL == 0:
+                    _update_progress(
+                        f'Reconciling removed instructors... ({checked_rows:,} scanned)',
+                        2
+                    )
+                if (section_key, user_id) not in csv_instructor_pairs:
+                    instructor_ids_to_delete.append(instructor_id)
+
+            for chunk in self._iter_chunks(instructor_ids_to_delete):
+                self._delete_instructors_by_ids(chunk)
 
         # Mark courses with instructors as "marked for TCE", and unmark
         # courses in this sync window that ended up with no instructors at
         # all (otherwise stale TCE flags persist after HANA removals).
-        if self._csv_section_keys:
-            window_courses = Course.query.filter(
-                Course.section_key.in_(self._csv_section_keys)
-            ).all()
-            for course in window_courses:
-                course.marked_for_tce = course.section_key in courses_with_instructors
+        if self._csv_terms:
+            _update_progress('Refreshing TCE flags...', 2)
+            Course.query.filter(
+                Course.term_code.in_(list(self._csv_terms))
+            ).update(
+                {Course.marked_for_tce: False},
+                synchronize_session=False
+            )
+            for chunk in self._iter_chunks(courses_with_instructors):
+                Course.query.filter(
+                    Course.section_key.in_(chunk)
+                ).update(
+                    {Course.marked_for_tce: True},
+                    synchronize_session=False
+                )
 
         db.session.commit()
     
@@ -418,20 +519,56 @@ class CourseSyncService:
 
         with open(filepath, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
+            processed_rows = 0
+            last_reported = 0
 
             for row in reader:
+                processed_rows += 1
+                if processed_rows % PROGRESS_UPDATE_INTERVAL == 0:
+                    last_reported = self._flush_progress(
+                        'Counting students from CSV...',
+                        3,
+                        processed_rows,
+                        last_reported
+                    )
                 section_key = row.get('SECTION_KEY', '').strip()
                 if section_key:
                     student_counts[section_key] += 1
                     self.stats['students_counted'] += 1
 
+        self._flush_progress('Counting students from CSV...', 3, processed_rows, last_reported)
+
         # Authoritative reset for every course in the current sync window.
-        if self._csv_section_keys:
-            window_courses = Course.query.filter(
-                Course.section_key.in_(self._csv_section_keys)
-            ).all()
-            for course in window_courses:
-                course.student_count = student_counts.get(course.section_key, 0)
+        if self._csv_terms:
+            _update_progress('Resetting enrollment counts...', 3)
+            Course.query.filter(
+                Course.term_code.in_(list(self._csv_terms))
+            ).update(
+                {Course.student_count: 0},
+                synchronize_session=False
+            )
+            db.session.commit()
+
+            updated_sections = 0
+            for chunk in self._iter_chunks(student_counts.items()):
+                db.session.bulk_update_mappings(
+                    Course,
+                    [
+                        {'section_key': section_key, 'student_count': count}
+                        for section_key, count in chunk
+                    ]
+                )
+                db.session.commit()
+                updated_sections += len(chunk)
+                if updated_sections % PROGRESS_UPDATE_INTERVAL == 0:
+                    _update_progress(
+                        f'Writing enrollment counts... ({updated_sections:,} sections updated)',
+                        3
+                    )
+            _update_progress(
+                f'Writing enrollment counts... ({len(student_counts):,} sections updated)',
+                3
+            )
         else:
             # Fallback: if we somehow have no window info, only update
             # courses that appear in the student CSV (legacy behaviour).

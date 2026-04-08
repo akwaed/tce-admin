@@ -292,12 +292,17 @@ def sync_logs():
     # Check for running syncs
     hana_progress = get_sync_progress()
     blue_progress = get_blue_sync_progress()
+    running_log = DataSyncLog.query.filter(
+        DataSyncLog.status == DataSyncLog.STATUS_RUNNING
+    ).order_by(DataSyncLog.started_at.desc()).first()
 
     return render_template('settings/sync_logs.html',
                            logs=logs,
                            pagination=pagination,
                            hana_progress=hana_progress,
                            blue_progress=blue_progress,
+                           running_log=running_log,
+                           sync_running=bool(running_log or hana_progress.get('running') or blue_progress.get('running')),
                            current_filters={
                                'type': sync_type,
                                'status': status_filter,
@@ -347,6 +352,14 @@ def trigger_hana_sync():
         with app.app_context():
             log = DataSyncLog.query.get(log_id)
             try:
+                log.summary = {
+                    'pipeline_phase': 'hana_pull',
+                    'pipeline_step': 1,
+                    'pipeline_total_steps': 2,
+                    'pipeline_message': 'Fetching data from SAP HANA and writing datasource CSV files...'
+                }
+                db.session.commit()
+
                 result, json_result = _run_hana_sync_script()
 
                 log.summary = {
@@ -355,6 +368,10 @@ def trigger_hana_sync():
                     'command': f'{sys.executable} scripts/hana_sync.py --output datasources',
                     'output_path': (json_result or {}).get('output_path'),
                     'table_stats': (json_result or {}).get('stats'),
+                    'pipeline_phase': 'hana_pull',
+                    'pipeline_step': 1,
+                    'pipeline_total_steps': 2,
+                    'pipeline_message': 'Fetched HANA data. Preparing database sync...'
                 }
 
                 # Populate row counts and per-file diffs from the script's
@@ -389,6 +406,14 @@ def trigger_hana_sync():
                     db_summary = None
                     db_error = None
                     try:
+                        summary = log.summary
+                        summary['pipeline_phase'] = 'database_sync'
+                        summary['pipeline_step'] = 2
+                        summary['pipeline_total_steps'] = 2
+                        summary['pipeline_message'] = 'Syncing datasource CSV files into the application database...'
+                        log.summary = summary
+                        db.session.commit()
+
                         project_root = _get_project_root()
                         from app.services.course_sync import (
                             CourseSyncService, resolve_datasources_path,
@@ -429,20 +454,37 @@ def trigger_hana_sync():
                         log.records_updated = (log.records_updated or 0) + ds_stats.get(
                             'courses_updated', 0
                         )
-                        log.records_failed = (log.records_failed or 0) + (
-                            ds_stats.get('courses_removed', 0)
-                            + ds_stats.get('instructors_removed', 0)
+                        log.records_processed = (log.records_processed or 0) + (
+                            ds_stats.get('students_counted', 0)
                         )
+                        summary = log.summary
+                        summary['pipeline_phase'] = 'complete'
+                        summary['pipeline_step'] = 2
+                        summary['pipeline_total_steps'] = 2
+                        summary['pipeline_message'] = 'HANA pull and database sync completed.'
+                        log.summary = summary
 
             except subprocess.TimeoutExpired:
                 log.status = DataSyncLog.STATUS_FAILED
                 log.errors = ['HANA sync timed out after 10 minutes']
+                summary = log.summary
+                summary['pipeline_phase'] = 'failed'
+                summary['pipeline_message'] = 'HANA sync timed out after 10 minutes.'
+                log.summary = summary
             except FileNotFoundError as e:
                 log.status = DataSyncLog.STATUS_FAILED
                 log.errors = [str(e)]
+                summary = log.summary
+                summary['pipeline_phase'] = 'failed'
+                summary['pipeline_message'] = str(e)
+                log.summary = summary
             except Exception as e:
                 log.status = DataSyncLog.STATUS_FAILED
                 log.errors = [str(e)]
+                summary = log.summary
+                summary['pipeline_phase'] = 'failed'
+                summary['pipeline_message'] = str(e)
+                log.summary = summary
 
             log.completed_at = datetime.utcnow()
             db.session.commit()
@@ -537,7 +579,14 @@ def trigger_full_sync():
         with app.app_context():
             log = DataSyncLog.query.get(log_id)
             errors = []
-            summary = {}
+            summary = {
+                'pipeline_phase': 'hana_pull',
+                'pipeline_step': 1,
+                'pipeline_total_steps': 3,
+                'pipeline_message': 'Fetching data from SAP HANA and writing datasource CSV files...'
+            }
+            log.summary = summary
+            db.session.commit()
 
             try:
                 # Step 1: HANA to datasource
@@ -550,6 +599,10 @@ def trigger_full_sync():
                     'output_path': (json_result or {}).get('output_path'),
                     'table_stats': (json_result or {}).get('stats'),
                 }
+                summary['pipeline_phase'] = 'hana_pull'
+                summary['pipeline_step'] = 1
+                summary['pipeline_total_steps'] = 3
+                summary['pipeline_message'] = 'Fetched HANA data. Preparing database sync...'
 
                 # Persist HANA-step row counts and diffs onto the full-sync log
                 # so the unified log shows what changed in the file pull.
@@ -577,13 +630,37 @@ def trigger_full_sync():
                     return
 
                 # Step 2: Datasource to database
+                summary['pipeline_phase'] = 'database_sync'
+                summary['pipeline_step'] = 2
+                summary['pipeline_total_steps'] = 3
+                summary['pipeline_message'] = 'Syncing datasource CSV files into the application database...'
+                log.summary = summary
+                db.session.commit()
+
                 sync_service = CourseSyncService()
                 result = sync_service.sync_all()
                 summary['database_sync'] = result
+                log.records_added = (log.records_added or 0) + (
+                    result.get('stats', {}).get('courses_added', 0)
+                    + result.get('stats', {}).get('instructors_added', 0)
+                )
+                log.records_updated = (log.records_updated or 0) + result.get(
+                    'stats', {}
+                ).get('courses_updated', 0)
+                log.records_processed = (log.records_processed or 0) + result.get(
+                    'stats', {}
+                ).get('students_counted', 0)
 
                 # Step 3: Datasource to Blue
                 from app.models.admin import Admin
                 admin = Admin.query.get(log.triggered_by_id) if log.triggered_by_id else None
+
+                summary['pipeline_phase'] = 'blue_sync'
+                summary['pipeline_step'] = 3
+                summary['pipeline_total_steps'] = 3
+                summary['pipeline_message'] = 'Pushing datasource files to Explorance Blue...'
+                log.summary = summary
+                db.session.commit()
 
                 blue_service = get_blue_sync_service()
                 blue_result = blue_service.push_all(
@@ -596,12 +673,16 @@ def trigger_full_sync():
 
                 if blue_result.get('success'):
                     log.status = DataSyncLog.STATUS_COMPLETED
+                    summary['pipeline_phase'] = 'complete'
+                    summary['pipeline_message'] = 'Full sync completed.'
                 else:
                     log.status = DataSyncLog.STATUS_FAILED
 
             except Exception as e:
                 errors.append(str(e))
                 log.status = DataSyncLog.STATUS_FAILED
+                summary['pipeline_phase'] = 'failed'
+                summary['pipeline_message'] = str(e)
 
             log.summary = summary
             log.errors = errors[:50]

@@ -14,26 +14,86 @@
     </nav>
 </div>
 
+{% set running_summary = running_log.summary if running_log else {} %}
+
 <!-- Running Sync Status -->
-{% if hana_progress.running or blue_progress.running %}
+{% if sync_running %}
 <div class="alert alert-info" id="running-sync-alert">
-    <div class="d-flex align-items-center">
-        <div class="spinner-border spinner-border-sm me-3" role="status">
+    <div class="d-flex align-items-start">
+        <div class="spinner-border spinner-border-sm me-3 mt-1" role="status">
             <span class="visually-hidden">Loading...</span>
         </div>
         <div class="flex-grow-1">
-            {% if hana_progress.running %}
-            <strong>HANA Sync Running:</strong> {{ hana_progress.current_step }}
-            (Step {{ hana_progress.step_number }}/{{ hana_progress.total_steps }})
+            <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                {% if running_log %}
+                <strong>{{ running_log.sync_type_display }} Running</strong>
+                <span class="badge bg-primary">
+                    Step {{ running_summary.get('pipeline_step', 1) }}/{{ running_summary.get('pipeline_total_steps', 1) }}
+                </span>
+                <small class="text-muted">
+                    Started {{ running_log.started_at.strftime('%Y-%m-%d %H:%M:%S') }}
+                </small>
+                {% endif %}
+            </div>
+
+            {% if running_log and running_summary.get('pipeline_message') %}
+            <div class="mb-2">
+                {{ running_summary.get('pipeline_message') }}
+            </div>
             {% endif %}
-            {% if blue_progress.running %}
-            <strong>Blue Sync Running:</strong> {{ blue_progress.current_datasource }} - {{ blue_progress.current_step }}
-            ({{ blue_progress.datasource_number }}/{{ blue_progress.total_datasources }})
+
+            {% if running_log and running_summary.get('pipeline_total_steps') %}
+            <div class="progress mb-2" style="height: 8px;">
+                <div class="progress-bar progress-bar-striped progress-bar-animated"
+                     role="progressbar"
+                     style="width: {{ ((running_summary.get('pipeline_step', 1) / running_summary.get('pipeline_total_steps', 1)) * 100)|round(0, 'floor') }}%;"></div>
+            </div>
+            {% endif %}
+
+            {% if hana_progress.running %}
+            <div>
+                <strong>Database Sync:</strong> {{ hana_progress.current_step }}
+                (Step {{ hana_progress.step_number }}/{{ hana_progress.total_steps }})
+                {% if hana_progress.records_processed %}
+                <span class="ms-2 badge bg-light text-dark">{{ "{:,}".format(hana_progress.records_processed) }} rows processed</span>
+                {% endif %}
+            </div>
+            {% elif blue_progress.running %}
+            <div>
+                <strong>Blue Sync:</strong> {{ blue_progress.current_datasource }} - {{ blue_progress.current_step }}
+                ({{ blue_progress.datasource_number }}/{{ blue_progress.total_datasources }})
+                {% if blue_progress.records_processed %}
+                <span class="ms-2 badge bg-light text-dark">{{ "{:,}".format(blue_progress.records_processed) }} rows processed</span>
+                {% endif %}
+            </div>
+            {% elif running_log %}
+            <div class="small text-muted">
+                Waiting for the next pipeline phase update...
+            </div>
+            {% endif %}
+
+            {% if hana_progress.error %}
+            <div class="text-danger small mt-2">
+                <i class="bi bi-exclamation-triangle me-1"></i>{{ hana_progress.error }}
+            </div>
+            {% endif %}
+            {% if blue_progress.error %}
+            <div class="text-danger small mt-2">
+                <i class="bi bi-exclamation-triangle me-1"></i>{{ blue_progress.error }}
+            </div>
             {% endif %}
         </div>
-        <button type="button" class="btn btn-sm btn-outline-info" onclick="location.reload()">
-            <i class="bi bi-arrow-clockwise"></i> Refresh
-        </button>
+        <div class="d-flex gap-2">
+            {% if running_log %}
+            <a href="{{ url_for('settings.sync_log_detail', log_id=running_log.id) }}"
+               class="btn btn-sm btn-outline-primary">
+                <i class="bi bi-eye"></i> Live Details
+            </a>
+            {% endif %}
+            <button type="button" class="btn btn-sm btn-outline-info" onclick="location.reload()">
+                <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+        </div>
     </div>
 </div>
 {% endif %}
@@ -48,7 +108,7 @@
             <div class="col-md-4 mb-2">
                 <form action="{{ url_for('settings.trigger_hana_sync') }}" method="post">
                     <button type="submit" class="btn btn-outline-primary w-100"
-                            {% if hana_progress.running or blue_progress.running %}disabled{% endif %}
+                            {% if sync_running %}disabled{% endif %}
                             onclick="return confirm('Start HANA to Datasource sync?\n\nThis will fetch fresh data from SAP HANA and generate CSV files.')">
                         <i class="bi bi-database-down me-1"></i>HANA to Datasource
                     </button>
@@ -57,7 +117,7 @@
             <div class="col-md-4 mb-2">
                 <form action="{{ url_for('settings.trigger_full_sync') }}" method="post">
                     <button type="submit" class="btn btn-uk-primary w-100"
-                            {% if hana_progress.running or blue_progress.running %}disabled{% endif %}
+                            {% if sync_running %}disabled{% endif %}
                             onclick="return confirm('Run full sync?\n\nThis will:\n1. Fetch from HANA\n2. Update local database\n3. Push to Explorance Blue\n\nNote: There is a 60s delay between each Blue datasource.')">
                         <i class="bi bi-arrow-repeat me-1"></i>Full Sync
                     </button>
@@ -105,7 +165,7 @@
                 </div>
                 <div class="d-flex align-items-center">
                     <button type="submit" class="btn btn-outline-primary me-2"
-                            {% if hana_progress.running or blue_progress.running %}disabled{% endif %}
+                            {% if sync_running %}disabled{% endif %}
                             id="blue-sync-btn">
                         <i class="bi bi-cloud-upload me-1"></i>Push Selected to Blue
                     </button>
@@ -323,7 +383,7 @@ function updateBlueSyncButton() {
         btn.disabled = true;
         btn.innerHTML = '<i class="bi bi-cloud-upload me-1"></i>Select at least one';
     } else {
-        btn.disabled = {% if hana_progress.running or blue_progress.running %}true{% else %}false{% endif %};
+        btn.disabled = {% if sync_running %}true{% else %}false{% endif %};
         const count = checkboxes.length;
         const label = count === 4 ? 'All' : count;
         btn.innerHTML = '<i class="bi bi-cloud-upload me-1"></i>Push ' + label + ' to Blue';
@@ -354,7 +414,7 @@ document.querySelectorAll('.ds-checkbox').forEach(cb => {
 // Initial button state
 updateBlueSyncButton();
 
-{% if hana_progress.running or blue_progress.running %}
+{% if sync_running %}
 // Auto-refresh when sync is running
 setTimeout(function() {
     location.reload();

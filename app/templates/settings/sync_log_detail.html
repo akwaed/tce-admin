@@ -31,6 +31,20 @@
         </span>
     </div>
     <div class="card-body">
+        {% if log.summary and log.summary.get('pipeline_message') %}
+        <div class="alert alert-light border mb-3">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <strong>Pipeline Status:</strong> {{ log.summary.get('pipeline_message') }}
+                </div>
+                {% if log.summary.get('pipeline_total_steps') %}
+                <span class="badge bg-primary">
+                    Step {{ log.summary.get('pipeline_step', 1) }}/{{ log.summary.get('pipeline_total_steps', 1) }}
+                </span>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
         <div class="row">
             <div class="col-md-6">
                 <table class="table table-sm">
@@ -126,32 +140,44 @@
 {% if log.field_changes %}
 <div class="card mb-4">
     <div class="card-header">
-        <i class="bi bi-list-check me-2"></i>Field Change Counts
+        <i class="bi bi-list-check me-2"></i>Change Sets
     </div>
     <div class="card-body">
-        <p class="text-muted mb-3">Number of records where each field value changed during this sync.</p>
+        <p class="text-muted mb-3">Added, updated, and removed record keys captured during the datasource diff.</p>
         <div class="row">
-            {% for file_name, fields in log.field_changes.items() %}
+            {% for file_name, changes in log.field_changes.items() %}
             <div class="col-md-6 mb-4">
                 <h6 class="border-bottom pb-2"><i class="bi bi-file-earmark-text me-2"></i>{{ file_name }}</h6>
-                <table class="table table-sm">
-                    <thead>
-                        <tr>
-                            <th>Field Name</th>
-                            <th class="text-end">Changes</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for field_name, count in fields.items() %}
-                        <tr>
-                            <td><code>{{ field_name }}</code></td>
-                            <td class="text-end">
-                                <span class="badge bg-info">{{ count }}</span>
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
+                <div class="d-flex flex-wrap gap-2 mb-3">
+                    <span class="badge bg-success">Added {{ changes.get('added', [])|length }}</span>
+                    <span class="badge bg-warning text-dark">Updated {{ changes.get('updated', [])|length }}</span>
+                    <span class="badge bg-danger">Removed {{ changes.get('removed', [])|length }}</span>
+                </div>
+                {% if changes.get('diff_key_columns') %}
+                <div class="small text-muted mb-2">
+                    Key Columns: {{ changes.get('diff_key_columns', [])|join(', ') }}
+                </div>
+                {% endif %}
+                <div class="small">
+                    {% if changes.get('added') %}
+                    <div class="mb-2">
+                        <strong>Added:</strong>
+                        <code>{{ changes.get('added', [])[:5]|join(', ') }}</code>{% if changes.get('added', [])|length > 5 %}<span class="text-muted"> and {{ changes.get('added', [])|length - 5 }} more</span>{% endif %}
+                    </div>
+                    {% endif %}
+                    {% if changes.get('updated') %}
+                    <div class="mb-2">
+                        <strong>Updated:</strong>
+                        <code>{{ changes.get('updated', [])[:5]|join(', ') }}</code>{% if changes.get('updated', [])|length > 5 %}<span class="text-muted"> and {{ changes.get('updated', [])|length - 5 }} more</span>{% endif %}
+                    </div>
+                    {% endif %}
+                    {% if changes.get('removed') %}
+                    <div>
+                        <strong>Removed:</strong>
+                        <code>{{ changes.get('removed', [])[:5]|join(', ') }}</code>{% if changes.get('removed', [])|length > 5 %}<span class="text-muted"> and {{ changes.get('removed', [])|length - 5 }} more</span>{% endif %}
+                    </div>
+                    {% endif %}
+                </div>
             </div>
             {% endfor %}
         </div>
