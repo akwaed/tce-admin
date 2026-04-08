@@ -38,11 +38,11 @@ from sqlalchemy import event, text
 from app.models import db
 from app.models.course import Course, Instructor, College, Department, SyncLog
 
-# Set once, on first sync. Installs a connection-level event listener so
-# every SQLite connection the app pulls from the pool during a sync has the
-# high-throughput PRAGMAs applied. Without this, ``db.engine.begin()`` sets
-# PRAGMAs on a connection that gets released immediately and ``db.session``
-# picks up a different connection that still runs with synchronous=FULL.
+# Set once, on first sync. Installs a pool checkout listener so every SQLite
+# connection the app pulls from the pool during a sync has the high-throughput
+# PRAGMAs applied. Using only a ``connect`` hook is insufficient because
+# already-pooled connections can still be checked out later with default
+# SQLite settings.
 _PRAGMA_LISTENER_INSTALLED = False
 
 PROGRESS_UPDATE_INTERVAL = 5000
@@ -73,9 +73,10 @@ def _apply_sqlite_pragmas():
     causing the multi-hour stall on the real dataset.
 
     This version:
-      1. Installs a pool-level ``connect`` event listener so every new
-         SQLite connection gets the PRAGMAs applied at checkout. Idempotent
-         across calls - we only install the listener once per process.
+      1. Installs a pool-level ``checkout`` event listener so every SQLite
+         connection, including ones already sitting in the pool, gets the
+         PRAGMAs applied immediately before use. Idempotent across calls -
+         we only install the listener once per process.
       2. Also applies the PRAGMAs directly to the current session's
          connection, so the already-checked-out connection is tuned
          immediately instead of waiting for the next checkout.
@@ -93,7 +94,7 @@ def _apply_sqlite_pragmas():
         return
 
     if not _PRAGMA_LISTENER_INSTALLED:
-        def _set_pragmas_on_connect(dbapi_conn, connection_record):
+        def _set_pragmas_on_checkout(dbapi_conn, connection_record, connection_proxy):
             try:
                 cursor = dbapi_conn.cursor()
                 for stmt in _PRAGMA_STATEMENTS:
@@ -102,7 +103,7 @@ def _apply_sqlite_pragmas():
             except Exception:
                 pass
         try:
-            event.listen(engine, 'connect', _set_pragmas_on_connect)
+            event.listen(engine.pool, 'checkout', _set_pragmas_on_checkout)
             _PRAGMA_LISTENER_INSTALLED = True
         except Exception:
             pass
