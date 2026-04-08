@@ -377,11 +377,62 @@ def trigger_hana_sync():
                         for fname, fs in (json_result.get('file_stats') or {}).items()
                     }
 
-                if result.returncode == 0:
-                    log.status = DataSyncLog.STATUS_COMPLETED
-                else:
+                if result.returncode != 0:
                     log.status = DataSyncLog.STATUS_FAILED
                     log.errors = [result.stderr[:1000] or result.stdout[:1000] or 'HANA sync failed with no output']
+                else:
+                    # Step 2: chain CSV -> Database so the verification page
+                    # actually reflects what was just pulled from HANA.
+                    # Without this the CSVs change but the DB (which the
+                    # verification UI reads from) stays stale until the
+                    # nightly cron runs.
+                    db_summary = None
+                    db_error = None
+                    try:
+                        project_root = _get_project_root()
+                        from app.services.course_sync import (
+                            CourseSyncService, resolve_datasources_path,
+                        )
+                        ds_path = resolve_datasources_path(
+                            os.path.join(project_root, 'datasources')
+                        )
+                        course_sync = CourseSyncService(ds_path)
+                        db_result = course_sync.sync_all()
+                        db_summary = {
+                            'success': db_result.get('success', False),
+                            'stats': db_result.get('stats', {}),
+                            'errors': db_result.get('errors', [])[:10],
+                        }
+                    except Exception as db_e:
+                        import traceback
+                        db_error = str(db_e)
+                        traceback.print_exc()
+
+                    summary = log.summary
+                    summary['database_sync'] = db_summary or {'error': db_error}
+                    log.summary = summary
+
+                    if db_error:
+                        log.status = DataSyncLog.STATUS_FAILED
+                        existing_errors = log.errors or []
+                        existing_errors.append(f'CSV->DB sync failed: {db_error}')
+                        log.errors = existing_errors
+                    else:
+                        log.status = DataSyncLog.STATUS_COMPLETED
+                        # Roll the DB-side counts into the unified log so
+                        # the records column reflects the full pipeline.
+                        ds_stats = (db_summary or {}).get('stats') or {}
+                        log.records_added = (log.records_added or 0) + (
+                            ds_stats.get('courses_added', 0)
+                            + ds_stats.get('instructors_added', 0)
+                        )
+                        log.records_updated = (log.records_updated or 0) + ds_stats.get(
+                            'courses_updated', 0
+                        )
+                        log.records_failed = (log.records_failed or 0) + (
+                            ds_stats.get('courses_removed', 0)
+                            + ds_stats.get('instructors_removed', 0)
+                        )
 
             except subprocess.TimeoutExpired:
                 log.status = DataSyncLog.STATUS_FAILED

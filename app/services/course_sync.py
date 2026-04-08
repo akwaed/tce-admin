@@ -74,11 +74,20 @@ class CourseSyncService:
         self.stats = {
             'courses_added': 0,
             'courses_updated': 0,
+            'courses_removed': 0,
             'instructors_added': 0,
+            'instructors_removed': 0,
             'colleges_added': 0,
             'departments_added': 0,
             'students_counted': 0
         }
+        # Set of section_keys observed in the current Courses.csv. Used by
+        # later sync steps to scope orphan deletion (so we never delete data
+        # for terms outside the current sync window).
+        self._csv_section_keys = set()
+        # Set of term_codes observed in the current Courses.csv. Used to
+        # decide which DB courses are eligible for removal.
+        self._csv_terms = set()
     
     def sync_all(self):
         """Run full sync of all data"""
@@ -157,21 +166,34 @@ class CourseSyncService:
             raise
     
     def sync_courses(self):
-        """Import courses from Courses.csv"""
+        """Import courses from Courses.csv.
+
+        Also removes courses from the database whose ``term_code`` is in the
+        current sync window but whose ``section_key`` no longer appears in
+        the CSV. The Course/Instructor relationship cascades on delete, so
+        orphaned instructor rows are cleaned up automatically.
+        """
         filepath = os.path.join(self.datasources_path, 'Courses.csv')
-        
+
         if not os.path.exists(filepath):
             self.errors.append(f"Courses.csv not found at {filepath}")
             return
-        
+
         with open(filepath, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
-            
+
             for row in reader:
                 try:
                     section_key = row.get('SECTION_KEY', '').strip()
                     if not section_key:
                         continue
+
+                    # Track every section_key/term we see so the orphan
+                    # cleanup pass below knows the scope of this sync.
+                    self._csv_section_keys.add(section_key)
+                    term_code = row.get('ACADEMIC_TERM', '').strip()
+                    if term_code:
+                        self._csv_terms.add(term_code)
                     
                     # Ensure college exists
                     college_code = row.get('CLASS_COLLEGE_SHORT', '').strip()
@@ -240,9 +262,25 @@ class CourseSyncService:
                         
                 except Exception as e:
                     self.errors.append(f"Course {row.get('SECTION_KEY', 'unknown')}: {str(e)}")
-            
+
             db.session.commit()
-    
+
+        # ----- Orphan removal -----
+        # Delete DB courses whose term_code is in the current sync window but
+        # whose section_key wasn't in the CSV. We deliberately scope this to
+        # the terms present in the CSV so we never touch courses from older
+        # archived terms that this sync isn't responsible for.
+        if self._csv_terms and self._csv_section_keys:
+            orphaned = Course.query.filter(
+                Course.term_code.in_(self._csv_terms),
+                ~Course.section_key.in_(self._csv_section_keys),
+            ).all()
+            for orphan in orphaned:
+                db.session.delete(orphan)
+                self.stats['courses_removed'] += 1
+            if orphaned:
+                db.session.commit()
+
     def sync_instructors(self):
         """
         Import instructor assignments from Instructor_Course.csv
@@ -273,8 +311,12 @@ class CourseSyncService:
             self.errors.append(f"Instructor_Course.csv not found at {filepath}")
             return
 
-        # Track which courses have instructors
+        # Track which courses have instructors and the exact (section_key,
+        # user_id) pairs present in the CSV. Pairs are used below to remove
+        # DB instructor rows that no longer appear in HANA - this is what
+        # makes "instructor X removed in HANA" actually propagate to the UI.
         courses_with_instructors = set()
+        csv_instructor_pairs = set()
 
         with open(filepath, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
@@ -286,6 +328,8 @@ class CourseSyncService:
 
                     if not section_key or not user_id:
                         continue
+
+                    csv_instructor_pairs.add((section_key, user_id))
 
                     # Check if course exists
                     course = Course.query.get(section_key)
@@ -328,40 +372,74 @@ class CourseSyncService:
                 except Exception as e:
                     self.errors.append(f"Instructor {row.get('USER_ID', 'unknown')}: {str(e)}")
 
-        # Mark courses with instructors as "marked for TCE"
-        for section_key in courses_with_instructors:
-            course = Course.query.get(section_key)
-            if course:
-                course.marked_for_tce = True
+        # ----- Orphan removal: instructors -----
+        # For every course in the current sync window, drop any DB instructor
+        # row whose (section_key, user_id) is no longer in Instructor_Course.csv.
+        # Scoped to courses we just processed so we don't disturb older terms.
+        if self._csv_section_keys:
+            existing_instructors = (
+                Instructor.query
+                .filter(Instructor.section_key.in_(self._csv_section_keys))
+                .all()
+            )
+            for inst in existing_instructors:
+                if (inst.section_key, inst.user_id) not in csv_instructor_pairs:
+                    db.session.delete(inst)
+                    self.stats['instructors_removed'] += 1
+
+        # Mark courses with instructors as "marked for TCE", and unmark
+        # courses in this sync window that ended up with no instructors at
+        # all (otherwise stale TCE flags persist after HANA removals).
+        if self._csv_section_keys:
+            window_courses = Course.query.filter(
+                Course.section_key.in_(self._csv_section_keys)
+            ).all()
+            for course in window_courses:
+                course.marked_for_tce = course.section_key in courses_with_instructors
 
         db.session.commit()
     
     def sync_student_counts(self):
-        """Count students per course from Student_Course.csv"""
+        """Count students per course from Student_Course.csv.
+
+        For every course in the current sync window the count is reset to
+        the value derived from the CSV (defaulting to 0). Without this reset,
+        a course that loses all its enrollments in HANA would forever keep
+        its old non-zero count in the DB.
+        """
         filepath = os.path.join(self.datasources_path, 'Student_Course.csv')
-        
+
         if not os.path.exists(filepath):
             self.errors.append(f"Student_Course.csv not found at {filepath}")
             return
-        
+
         # Count students per section
         student_counts = defaultdict(int)
-        
+
         with open(filepath, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
-            
+
             for row in reader:
                 section_key = row.get('SECTION_KEY', '').strip()
                 if section_key:
                     student_counts[section_key] += 1
                     self.stats['students_counted'] += 1
-        
-        # Update course student counts
-        for section_key, count in student_counts.items():
-            course = Course.query.get(section_key)
-            if course:
-                course.student_count = count
-        
+
+        # Authoritative reset for every course in the current sync window.
+        if self._csv_section_keys:
+            window_courses = Course.query.filter(
+                Course.section_key.in_(self._csv_section_keys)
+            ).all()
+            for course in window_courses:
+                course.student_count = student_counts.get(course.section_key, 0)
+        else:
+            # Fallback: if we somehow have no window info, only update
+            # courses that appear in the student CSV (legacy behaviour).
+            for section_key, count in student_counts.items():
+                course = Course.query.get(section_key)
+                if course:
+                    course.student_count = count
+
         db.session.commit()
     
     def _parse_date(self, date_str):
