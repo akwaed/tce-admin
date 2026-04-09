@@ -580,19 +580,21 @@ def trigger_hana_sync():
                         log.errors = existing_errors
                     else:
                         log.status = DataSyncLog.STATUS_COMPLETED
-                        # Roll the DB-side counts into the unified log so
-                        # the records column reflects the full pipeline.
+                        # Use DB-side counts as the authoritative record figures.
+                        # records_processed = total unique DB rows touched (courses + instructors + students counted)
+                        # records_added / records_updated = net changes to courses and instructors only.
                         ds_stats = (db_summary or {}).get('stats') or {}
-                        log.records_added = (log.records_added or 0) + (
+                        log.records_processed = (
+                            ds_stats.get('courses_added', 0)
+                            + ds_stats.get('courses_updated', 0)
+                            + ds_stats.get('instructors_added', 0)
+                            + ds_stats.get('students_counted', 0)
+                        )
+                        log.records_added = (
                             ds_stats.get('courses_added', 0)
                             + ds_stats.get('instructors_added', 0)
                         )
-                        log.records_updated = (log.records_updated or 0) + ds_stats.get(
-                            'courses_updated', 0
-                        )
-                        log.records_processed = (log.records_processed or 0) + (
-                            ds_stats.get('students_counted', 0)
-                        )
+                        log.records_updated = ds_stats.get('courses_updated', 0)
                         summary = log.summary
                         summary['pipeline_phase'] = 'complete'
                         summary['pipeline_step'] = 2
