@@ -665,7 +665,7 @@ def trigger_full_sync():
                     db.session.commit()
                     return
 
-                # Step 2: CSV -> database via FastCourseSync.
+                # Step 2: CSV -> database via CourseSyncService (PostgreSQL-native).
                 summary['pipeline_phase'] = 'database_sync'
                 summary['pipeline_step'] = 2
                 summary['pipeline_message'] = 'Syncing datasource CSV files into the application database...'

@@ -6,6 +6,7 @@ from flask import Blueprint, render_template, request, Response, flash, redirect
 from flask_login import login_required, current_user
 from app.models import db
 from app.models.course import Course, College, Department, Instructor, SyncLog
+from app.models.sync_history import SyncRun
 from app.models.admin import Admin
 from sqlalchemy import func, case, asc, desc
 import csv
@@ -194,8 +195,15 @@ def list_courses():
     term_codes = [t[0] for t in term_query.order_by(Course.term_code.desc()).all() if t[0]]
     terms = [{'code': tc, 'name': tc} for tc in term_codes]
 
-    # Get last sync time
-    last_sync = SyncLog.query.filter_by(status='completed').order_by(SyncLog.completed_at.desc()).first()
+    # Get last sync time — prefer the newer SyncRun table, fall back to legacy SyncLog
+    last_sync = (
+        SyncRun.query.filter_by(status='completed')
+        .order_by(SyncRun.completed_at.desc())
+        .first()
+        or SyncLog.query.filter_by(status='completed')
+        .order_by(SyncLog.completed_at.desc())
+        .first()
+    )
 
     return render_template('verification/list.html',
                          courses=courses,
@@ -434,9 +442,16 @@ def sync_data():
 
         return redirect(url_for('verification.list_courses'))
 
-    # GET - show sync form
-    last_sync = SyncLog.query.filter_by(status='completed').order_by(SyncLog.completed_at.desc()).first()
-    sync_logs = SyncLog.query.order_by(SyncLog.started_at.desc()).limit(10).all()
+    # GET - show sync form. Use SyncRun (new) + fall back to legacy SyncLog for history.
+    last_sync = (
+        SyncRun.query.filter_by(status='completed')
+        .order_by(SyncRun.completed_at.desc())
+        .first()
+        or SyncLog.query.filter_by(status='completed')
+        .order_by(SyncLog.completed_at.desc())
+        .first()
+    )
+    sync_logs = SyncRun.query.order_by(SyncRun.started_at.desc()).limit(10).all()
 
     return render_template('verification/sync.html', last_sync=last_sync, sync_logs=sync_logs)
 

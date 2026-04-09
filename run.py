@@ -13,6 +13,16 @@ Usage:
 import os
 import sys
 import argparse
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+if not os.environ.get('SECRET_KEY') and os.environ.get('FLASK_SECRET_KEY'):
+    os.environ['SECRET_KEY'] = os.environ['FLASK_SECRET_KEY']
+
 from app import create_app, db
 from app.models.admin import Admin
 

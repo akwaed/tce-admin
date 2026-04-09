@@ -9,6 +9,7 @@ Werkzeug==3.0.1
 
 # Database
 SQLAlchemy==2.0.23
+psycopg2-binary>=2.9.9   # PostgreSQL driver (binary build, no libpq compile needed)
 
 # For future Azure AD integration
 # msal==1.25.0
