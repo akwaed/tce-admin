@@ -119,6 +119,7 @@ _blue_sync_progress = {
     'total_batches': 0,
     'records_processed': 0,
     'started_at': None,
+    'updated_at': None,
     'error': None,
     'results': {}
 }
@@ -127,6 +128,12 @@ _blue_sync_lock = threading.Lock()
 
 def get_blue_sync_progress():
     """Get current Blue sync progress."""
+    with _blue_sync_lock:
+        return _blue_sync_progress.copy()
+
+
+def _snapshot_blue_progress():
+    """Return a copy of the current Blue sync progress."""
     with _blue_sync_lock:
         return _blue_sync_progress.copy()
 
@@ -151,6 +158,7 @@ def _update_blue_progress(datasource='', step='', ds_num=0, batch=0, total_batch
             _blue_sync_progress['error'] = error
         if result:
             _blue_sync_progress['results'][datasource] = result
+        _blue_sync_progress['updated_at'] = datetime.utcnow().isoformat()
 
 
 # ============================================================================
@@ -406,6 +414,72 @@ class BlueSyncService:
         except Exception as e:
             return False, f"Error: {str(e)}"
 
+    def _build_progress_summary(self, dry_run: bool = False) -> Dict[str, Any]:
+        """Project in-memory Blue progress into a DataSyncLog summary."""
+        progress = _snapshot_blue_progress()
+        datasource_key = progress.get('current_datasource') or ''
+        datasource_name = DATASOURCES.get(datasource_key, {}).get('name')
+        if not datasource_name and datasource_key:
+            datasource_name = datasource_key.replace('_', ' ').title()
+
+        current_step = progress.get('current_step') or 'Running...'
+        pipeline_message = current_step
+        if datasource_name:
+            pipeline_message = f'{datasource_name}: {current_step}'
+
+        total_datasources = progress.get('total_datasources') or 1
+        datasource_number = progress.get('datasource_number') or 0
+
+        return {
+            'pipeline_phase': 'blue_push',
+            'pipeline_step': datasource_number,
+            'pipeline_total_steps': total_datasources,
+            'pipeline_message': pipeline_message,
+            'current_datasource': datasource_key,
+            'current_datasource_name': datasource_name,
+            'current_step': current_step,
+            'datasource_number': datasource_number,
+            'total_datasources': total_datasources,
+            'batch_number': progress.get('batch_number') or 0,
+            'total_batches': progress.get('total_batches') or 0,
+            'records_processed': progress.get('records_processed') or 0,
+            'results': progress.get('results') or {},
+            'dry_run': dry_run,
+            'started_at': progress.get('started_at'),
+            'updated_at': progress.get('updated_at'),
+            'error': progress.get('error'),
+        }
+
+    def _persist_sync_log_progress(self, sync_log_id: int, dry_run: bool = False,
+                                   extra_summary: Optional[Dict[str, Any]] = None) -> None:
+        """Persist Blue progress so the UI can poll it across workers."""
+        from app.models import db
+        from app.models.settings import DataSyncLog
+
+        try:
+            sync_log = DataSyncLog.query.get(sync_log_id)
+            if not sync_log:
+                return
+
+            summary = self._build_progress_summary(dry_run=dry_run)
+            if extra_summary:
+                summary.update(extra_summary)
+
+            sync_log.summary = summary
+            sync_log.records_processed = max(
+                sync_log.records_processed or 0,
+                summary.get('records_processed', 0),
+            )
+            if self.errors:
+                sync_log.errors = self.errors[:50]
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            current_app.logger.exception(
+                'Failed to persist Blue sync progress for log %s',
+                sync_log_id,
+            )
+
     def push_all(self, datasources: List[str] = None, dry_run: bool = False,
                  triggered_by=None, trigger_type: str = 'manual') -> Dict[str, Any]:
         """
@@ -442,6 +516,7 @@ class BlueSyncService:
 
         # Initialize progress
         with _blue_sync_lock:
+            started_at = datetime.utcnow().isoformat()
             _blue_sync_progress = {
                 'running': True,
                 'current_datasource': '',
@@ -451,7 +526,8 @@ class BlueSyncService:
                 'batch_number': 0,
                 'total_batches': 0,
                 'records_processed': 0,
-                'started_at': datetime.utcnow().isoformat(),
+                'started_at': started_at,
+                'updated_at': started_at,
                 'error': None,
                 'results': {}
             }
@@ -465,6 +541,7 @@ class BlueSyncService:
         )
         db.session.add(sync_log)
         db.session.commit()
+        self._persist_sync_log_progress(sync_log.id, dry_run=dry_run)
 
         self.errors = []
         self.results = {}
@@ -481,9 +558,14 @@ class BlueSyncService:
                     step='Starting...',
                     ds_num=idx
                 )
+                self._persist_sync_log_progress(sync_log.id, dry_run=dry_run)
 
                 try:
-                    success = self._import_datasource(ds_key, dry_run=dry_run)
+                    success = self._import_datasource(
+                        ds_key,
+                        dry_run=dry_run,
+                        sync_log_id=sync_log.id,
+                    )
                     self.results[ds_key] = 'SUCCESS' if success else 'FAILED'
                     if success:
                         self.stats['datasources_success'] += 1
@@ -494,6 +576,7 @@ class BlueSyncService:
                         datasource=ds_key,
                         result='SUCCESS' if success else 'FAILED'
                     )
+                    self._persist_sync_log_progress(sync_log.id, dry_run=dry_run)
 
                     # Add delay between datasources to prevent timeouts
                     # Skip delay after the last datasource
@@ -501,6 +584,7 @@ class BlueSyncService:
                         _update_blue_progress(
                             step=f'Waiting {IMPORT_DELAY_SECONDS}s before next datasource...'
                         )
+                        self._persist_sync_log_progress(sync_log.id, dry_run=dry_run)
                         time.sleep(IMPORT_DELAY_SECONDS)
 
                 except Exception as e:
@@ -512,6 +596,7 @@ class BlueSyncService:
                         error=str(e),
                         result='ERROR'
                     )
+                    self._persist_sync_log_progress(sync_log.id, dry_run=dry_run)
 
                     # Also add delay after errors to give server time to recover
                     if idx < len(to_push):
@@ -524,17 +609,26 @@ class BlueSyncService:
             sync_log.blue_results = self.results
             sync_log.records_processed = self.stats['total_records']
             sync_log.errors = self.errors[:50]
-            sync_log.summary = {
+            summary = self._build_progress_summary(dry_run=dry_run)
+            summary.update({
+                'pipeline_phase': 'complete' if all_success else 'failed',
+                'pipeline_message': (
+                    'Datasource to Blue sync completed successfully.'
+                    if all_success else
+                    'Datasource to Blue sync finished with errors.'
+                ),
                 'datasources_success': self.stats['datasources_success'],
                 'datasources_failed': self.stats['datasources_failed'],
-                'dry_run': dry_run
-            }
+                'results': self.results,
+            })
+            sync_log.summary = summary
             db.session.commit()
 
             # Mark as complete
             with _blue_sync_lock:
                 _blue_sync_progress['running'] = False
                 _blue_sync_progress['current_step'] = 'Complete'
+                _blue_sync_progress['updated_at'] = datetime.utcnow().isoformat()
 
             return {
                 'success': all_success,
@@ -546,19 +640,29 @@ class BlueSyncService:
 
         except Exception as e:
             sync_log.fail(str(e))
+            summary = self._build_progress_summary(dry_run=dry_run)
+            summary.update({
+                'pipeline_phase': 'failed',
+                'pipeline_message': f'Datasource to Blue sync failed: {e}',
+            })
+            sync_log.summary = summary
             db.session.commit()
 
             with _blue_sync_lock:
                 _blue_sync_progress['running'] = False
                 _blue_sync_progress['error'] = str(e)
+                _blue_sync_progress['updated_at'] = datetime.utcnow().isoformat()
 
             raise
 
-    def _import_datasource(self, datasource_key: str, dry_run: bool = False) -> bool:
+    def _import_datasource(self, datasource_key: str, dry_run: bool = False,
+                           sync_log_id: Optional[int] = None) -> bool:
         """Import a single datasource to Blue."""
         ds = DATASOURCES[datasource_key]
 
         _update_blue_progress(step='Discovering schema...')
+        if sync_log_id:
+            self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
 
         # Discover block name if not configured
         block_name = ds.get('block_name')
@@ -572,6 +676,8 @@ class BlueSyncService:
 
         # Load CSV
         _update_blue_progress(step='Loading CSV...')
+        if sync_log_id:
+            self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
         csv_columns, rows = self._load_csv(ds['csv_file'], columns)
 
         if not rows:
@@ -584,10 +690,14 @@ class BlueSyncService:
         # Dry run - stop here
         if dry_run:
             _update_blue_progress(step=f'Dry run: {len(rows)} rows validated')
+            if sync_log_id:
+                self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
             return True
 
         # Register import
         _update_blue_progress(step='Registering import...')
+        if sync_log_id:
+            self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
         payload = soap_register_import(self.api_key, ds['id'])
         response = call_soap(self.ws_url, payload, "RegisterImport")
 
@@ -604,6 +714,8 @@ class BlueSyncService:
         # Push data in batches
         total_batches = (len(rows) + BATCH_SIZE - 1) // BATCH_SIZE
         _update_blue_progress(step='Pushing data...', total_batches=total_batches)
+        if sync_log_id:
+            self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
 
         try:
             for i in range(0, len(rows), BATCH_SIZE):
@@ -615,6 +727,8 @@ class BlueSyncService:
                     batch=batch_num,
                     records=len(batch)
                 )
+                if sync_log_id:
+                    self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
 
                 payload = soap_push_data(self.api_key, transaction_id, block_name, columns, batch)
                 response = call_soap(self.ws_url, payload, "PushObjectDataV2")
@@ -627,6 +741,8 @@ class BlueSyncService:
 
             # Prepare for finalization
             _update_blue_progress(step='Validating...')
+            if sync_log_id:
+                self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
             payload = soap_prepare_finalize(self.api_key, transaction_id)
             response = call_soap(self.ws_url, payload, "PrepareDataToFinzalizeImportV2")
 
@@ -638,6 +754,8 @@ class BlueSyncService:
 
             # Finalize
             _update_blue_progress(step='Finalizing...')
+            if sync_log_id:
+                self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
             payload = soap_finalize_import(self.api_key, transaction_id)
             response = call_soap(self.ws_url, payload, "FinalizeImport")
 
@@ -647,6 +765,8 @@ class BlueSyncService:
                 return False
 
             _update_blue_progress(step=f'Complete: {len(rows)} rows imported')
+            if sync_log_id:
+                self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
             return True
 
         except KeyboardInterrupt:

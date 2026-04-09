@@ -73,6 +73,77 @@ def _mark_stale_running_logs():
     db.session.commit()
 
 
+def _get_latest_running_sync_log():
+    """Return the newest non-stale running sync log, if any."""
+    _mark_stale_running_logs()
+    return DataSyncLog.query.filter(
+        DataSyncLog.status == DataSyncLog.STATUS_RUNNING
+    ).order_by(DataSyncLog.started_at.desc()).first()
+
+
+def _format_elapsed(seconds):
+    """Human-readable duration for live sync status."""
+    if seconds is None:
+        return None
+    total_seconds = max(int(seconds), 0)
+    if total_seconds < 60:
+        return f'{total_seconds}s'
+    minutes, rem_seconds = divmod(total_seconds, 60)
+    if minutes < 60:
+        return f'{minutes}m {rem_seconds:02d}s'
+    hours, rem_minutes = divmod(minutes, 60)
+    return f'{hours}h {rem_minutes:02d}m'
+
+
+def _build_sync_status_payload(running_log):
+    """Serialize a running sync log for the polling UI."""
+    summary = running_log.summary or {}
+    elapsed_seconds = None
+    if running_log.started_at:
+        elapsed_seconds = (datetime.utcnow() - running_log.started_at).total_seconds()
+
+    detail_message = ''
+    datasource_name = summary.get('current_datasource_name')
+    datasource_number = summary.get('datasource_number')
+    total_datasources = summary.get('total_datasources')
+    batch_number = summary.get('batch_number')
+    total_batches = summary.get('total_batches')
+
+    if datasource_name:
+        detail_message = datasource_name
+        if datasource_number and total_datasources:
+            detail_message = f'Datasource {datasource_number}/{total_datasources}: {datasource_name}'
+        if batch_number and total_batches:
+            detail_message = f'{detail_message} | Batch {batch_number}/{total_batches}'
+    elif summary.get('pipeline_phase') == 'database_sync':
+        detail_message = 'Database sync in progress...'
+    elif summary.get('pipeline_phase') == 'hana_pull':
+        detail_message = 'Fetching data from SAP HANA...'
+
+    return {
+        'running': True,
+        'log_id': running_log.id,
+        'sync_type': running_log.sync_type,
+        'sync_type_display': running_log.sync_type_display,
+        'started_at': running_log.started_at.strftime('%Y-%m-%d %H:%M:%S') if running_log.started_at else None,
+        'pipeline_phase': summary.get('pipeline_phase', ''),
+        'pipeline_step': summary.get('pipeline_step', 0),
+        'pipeline_total_steps': summary.get('pipeline_total_steps', 1),
+        'pipeline_message': summary.get('pipeline_message', 'Running...'),
+        'detail_message': detail_message,
+        'elapsed_seconds': elapsed_seconds,
+        'elapsed_display': _format_elapsed(elapsed_seconds),
+        'records_processed': summary.get('records_processed', running_log.records_processed or 0),
+        'current_datasource': summary.get('current_datasource'),
+        'current_datasource_name': datasource_name,
+        'datasource_number': datasource_number,
+        'total_datasources': total_datasources,
+        'batch_number': batch_number,
+        'total_batches': total_batches,
+        'error': summary.get('pipeline_message', '') if summary.get('pipeline_phase') == 'failed' else None,
+    }
+
+
 def _run_hana_sync_script():
     """
     Run the HANA sync script with the same interpreter as the Flask app.
@@ -275,25 +346,12 @@ def api_sync_status():
     in-memory _sync_progress dict, which is not visible across threads that
     spin up their own app context.
     """
-    running_log = DataSyncLog.query.filter(
-        DataSyncLog.status == DataSyncLog.STATUS_RUNNING
-    ).order_by(DataSyncLog.started_at.desc()).first()
+    running_log = _get_latest_running_sync_log()
 
     if not running_log:
         return jsonify({'running': False})
 
-    summary = running_log.summary or {}
-    return jsonify({
-        'running': True,
-        'log_id': running_log.id,
-        'sync_type': running_log.sync_type,
-        'started_at': running_log.started_at.strftime('%Y-%m-%d %H:%M:%S') if running_log.started_at else None,
-        'pipeline_phase': summary.get('pipeline_phase', ''),
-        'pipeline_step': summary.get('pipeline_step', 1),
-        'pipeline_total_steps': summary.get('pipeline_total_steps', 2),
-        'pipeline_message': summary.get('pipeline_message', 'Running...'),
-        'error': summary.get('pipeline_message', '') if summary.get('pipeline_phase') == 'failed' else None,
-    })
+    return jsonify(_build_sync_status_payload(running_log))
 
 
 @settings_bp.route('/api/validate-key', methods=['POST'])
@@ -359,9 +417,7 @@ def sync_logs():
     # Check for running syncs
     hana_progress = get_sync_progress()
     blue_progress = get_blue_sync_progress()
-    running_log = DataSyncLog.query.filter(
-        DataSyncLog.status == DataSyncLog.STATUS_RUNNING
-    ).order_by(DataSyncLog.started_at.desc()).first()
+    running_log = _get_latest_running_sync_log()
 
     return render_template('settings/sync_logs.html',
                            logs=logs,
@@ -369,7 +425,7 @@ def sync_logs():
                            hana_progress=hana_progress,
                            blue_progress=blue_progress,
                            running_log=running_log,
-                           sync_running=bool(running_log or hana_progress.get('running') or blue_progress.get('running')),
+                           sync_running=bool(running_log),
                            current_filters={
                                'type': sync_type,
                                'status': status_filter,
@@ -397,9 +453,7 @@ def trigger_hana_sync():
     """Trigger a HANA to datasource sync."""
     from app.models.settings import DataSyncLog
 
-    # Check if sync is already running
-    hana_progress = get_sync_progress()
-    if hana_progress.get('running'):
+    if _get_latest_running_sync_log():
         flash('A HANA sync is already running. Please wait for it to complete.', 'warning')
         return redirect(url_for('settings.sync_logs'))
 
@@ -574,9 +628,7 @@ def trigger_blue_sync():
         flash('Explorance Blue API key is not configured. Please configure it first.', 'danger')
         return redirect(url_for('settings.index'))
 
-    # Check if sync is already running
-    blue_progress = get_blue_sync_progress()
-    if blue_progress.get('running'):
+    if _get_latest_running_sync_log():
         flash('A Blue sync is already running. Please wait for it to complete.', 'warning')
         return redirect(url_for('settings.sync_logs'))
 
@@ -623,10 +675,7 @@ def trigger_full_sync():
         flash('Explorance Blue API key is not configured. Please configure it first.', 'danger')
         return redirect(url_for('settings.index'))
 
-    # Check if any sync is already running
-    hana_progress = get_sync_progress()
-    blue_progress = get_blue_sync_progress()
-    if hana_progress.get('running') or blue_progress.get('running'):
+    if _get_latest_running_sync_log():
         flash('A sync is already running. Please wait for it to complete.', 'warning')
         return redirect(url_for('settings.sync_logs'))
 

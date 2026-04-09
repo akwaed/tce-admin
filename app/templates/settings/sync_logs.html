@@ -15,6 +15,17 @@
 </div>
 
 {% set running_summary = running_log.summary if running_log else {} %}
+{% set initial_detail = '' %}
+{% if running_summary.get('current_datasource_name') %}
+    {% set initial_detail = 'Datasource ' ~ running_summary.get('datasource_number', 0) ~ '/' ~ running_summary.get('total_datasources', 0) ~ ': ' ~ running_summary.get('current_datasource_name') %}
+    {% if running_summary.get('batch_number') and running_summary.get('total_batches') %}
+        {% set initial_detail = initial_detail ~ ' | Batch ' ~ running_summary.get('batch_number') ~ '/' ~ running_summary.get('total_batches') %}
+    {% endif %}
+{% elif running_summary.get('pipeline_phase') == 'database_sync' %}
+    {% set initial_detail = 'Database sync in progress...' %}
+{% elif running_summary.get('pipeline_phase') == 'hana_pull' %}
+    {% set initial_detail = 'Fetching data from SAP HANA...' %}
+{% endif %}
 
 <!-- Running Sync Status -->
 {% if sync_running %}
@@ -26,7 +37,7 @@
         <div class="flex-grow-1">
             <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
                 {% if running_log %}
-                <strong>{{ running_log.sync_type_display }} Running</strong>
+                <strong class="sync-type-label">{{ running_log.sync_type_display }} Running</strong>
                 <span class="badge bg-primary sync-step-label">
                     Step {{ running_summary.get('pipeline_step', 1) }}/{{ running_summary.get('pipeline_total_steps', 1) }}
                 </span>
@@ -46,7 +57,8 @@
                      style="width: {{ ((running_summary.get('pipeline_step', 1) / running_summary.get('pipeline_total_steps', 2)) * 100)|round(0, 'floor') }}%;"></div>
             </div>
 
-            <div class="small text-muted sync-db-step" style="display:none;"></div>
+            <div class="small text-muted sync-detail-label" {% if not initial_detail %}style="display:none;"{% endif %}>{{ initial_detail }}</div>
+            <div class="small text-muted sync-elapsed-label"></div>
 
             {% if hana_progress.error %}
             <div class="text-danger small mt-2">
@@ -398,7 +410,9 @@ updateBlueSyncButton();
     var msgEl      = alertBox ? alertBox.querySelector('.sync-pipeline-message') : null;
     var progressEl = alertBox ? alertBox.querySelector('.progress-bar') : null;
     var stepEl     = alertBox ? alertBox.querySelector('.sync-step-label') : null;
-    var dbStepEl   = alertBox ? alertBox.querySelector('.sync-db-step') : null;
+    var detailEl   = alertBox ? alertBox.querySelector('.sync-detail-label') : null;
+    var elapsedEl  = alertBox ? alertBox.querySelector('.sync-elapsed-label') : null;
+    var typeEl     = alertBox ? alertBox.querySelector('.sync-type-label') : null;
 
     function poll() {
         fetch('{{ url_for("settings.api_sync_status") }}')
@@ -409,12 +423,15 @@ updateBlueSyncButton();
                     location.reload();
                     return;
                 }
+                if (typeEl && data.sync_type_display) {
+                    typeEl.textContent = data.sync_type_display + ' Running';
+                }
                 // Update message
                 if (msgEl && data.pipeline_message) {
                     msgEl.textContent = data.pipeline_message;
                 }
                 // Update step label
-                if (stepEl && data.pipeline_step) {
+                if (stepEl && data.pipeline_total_steps) {
                     stepEl.textContent = 'Step ' + data.pipeline_step + '/' + data.pipeline_total_steps;
                 }
                 // Update progress bar
@@ -422,15 +439,17 @@ updateBlueSyncButton();
                     var pct = Math.round((data.pipeline_step / data.pipeline_total_steps) * 100);
                     progressEl.style.width = pct + '%';
                 }
-                // Show DB sync sub-step label
-                if (dbStepEl) {
-                    if (data.pipeline_phase === 'database_sync') {
-                        dbStepEl.textContent = 'Database sync in progress...';
-                        dbStepEl.style.display = '';
-                    } else if (data.pipeline_phase === 'hana_pull') {
-                        dbStepEl.textContent = 'Fetching from HANA...';
-                        dbStepEl.style.display = '';
+                if (detailEl) {
+                    if (data.detail_message) {
+                        detailEl.textContent = data.detail_message;
+                        detailEl.style.display = '';
+                    } else {
+                        detailEl.textContent = '';
+                        detailEl.style.display = 'none';
                     }
+                }
+                if (elapsedEl) {
+                    elapsedEl.textContent = data.elapsed_display ? 'Elapsed ' + data.elapsed_display : '';
                 }
                 setTimeout(poll, 3000);
             })
