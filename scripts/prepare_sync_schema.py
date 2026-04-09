@@ -27,6 +27,14 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# Load .env from the project root before importing app so DATABASE_URL etc.
+# are in the environment before Flask/SQLAlchemy reads them.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_ROOT / '.env')
+except ImportError:
+    pass
+
 from sqlalchemy import func, inspect, select, text
 from app import create_app
 from app.models import db
