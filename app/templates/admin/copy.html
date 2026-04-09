@@ -82,6 +82,9 @@
                     <div class="alert alert-info">
                         <i class="bi bi-info-circle me-2"></i>
                         Enter the new administrator's details below. All role settings and permissions will be copied from {{ source_admin.full_name }}.
+                        {% if not current_user.can_grant_qb_access() %}
+                        <br>Question Bank access will not be granted as part of this copy.
+                        {% endif %}
                         <br><small class="text-muted">Note: Primary contact status is never copied - new admins are created as non-primary.</small>
                     </div>
 

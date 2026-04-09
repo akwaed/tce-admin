@@ -196,7 +196,7 @@
                                 </label>
                             </div>
                         </div>
-                        {% if current_user.is_super_admin() or (current_user.is_college_admin() and current_user.is_primary_contact) %}
+                        {% if current_user.can_grant_qb_access() %}
                         <div class="col-md-4">
                             <div class="form-check">
                                 <input class="form-check-input" type="checkbox" id="has_qb_access" 

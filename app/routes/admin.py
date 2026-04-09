@@ -274,10 +274,7 @@ def add_admin():
         # Access flags
         has_dashboard = form_data['has_dashboard_access']
         has_static_report = form_data['has_static_report_access']
-        has_qb = form_data['has_qb_access'] if (
-            current_user.is_super_admin() or
-            (current_user.is_college_admin() and current_user.is_primary_contact)
-        ) else False
+        has_qb = form_data['has_qb_access'] if current_user.can_grant_qb_access() else False
 
         # Validation
         if not linkblue or not first_name or not last_name:
@@ -411,7 +408,8 @@ def add_admin():
             existing.is_primary_contact = is_primary
             existing.has_dashboard_access = has_dashboard
             existing.has_static_report_access = has_static_report
-            existing.has_qb_access = has_qb
+            if current_user.can_grant_qb_access():
+                existing.has_qb_access = has_qb
             existing.is_active = True
             if not existing.created_by_id:
                 existing.created_by_id = current_user.id
@@ -577,7 +575,8 @@ def copy_admin(admin_id):
                 existing.is_primary_contact = False  # Never copy primary contact status
                 existing.has_dashboard_access = source_admin.has_dashboard_access
                 existing.has_static_report_access = source_admin.has_static_report_access
-                existing.has_qb_access = source_admin.has_qb_access
+                if current_user.can_grant_qb_access():
+                    existing.has_qb_access = source_admin.has_qb_access
                 existing.is_active = True
                 if not existing.created_by_id:
                     existing.created_by_id = current_user.id
@@ -620,7 +619,7 @@ def copy_admin(admin_id):
             is_primary_contact=False,  # Never copy primary contact status
             has_dashboard_access=source_admin.has_dashboard_access,
             has_static_report_access=source_admin.has_static_report_access,
-            has_qb_access=source_admin.has_qb_access,
+            has_qb_access=source_admin.has_qb_access if current_user.can_grant_qb_access() else False,
             created_by_id=current_user.id
         )
 
@@ -922,8 +921,8 @@ def edit_admin(admin_id):
         admin.has_dashboard_access = request.form.get('has_dashboard_access') == 'yes'
         admin.has_static_report_access = request.form.get('has_static_report_access') == 'yes'
 
-        # QB access - super admin or primary college admin only
-        if current_user.is_super_admin() or (current_user.is_college_admin() and current_user.is_primary_contact):
+        # QB access can only be granted by super admins.
+        if current_user.can_grant_qb_access():
             admin.has_qb_access = request.form.get('has_qb_access') == 'yes'
 
         db.session.commit()

@@ -198,6 +198,10 @@ class Admin(UserMixin, db.Model):
         if self.role == 'super_admin':
             return True
         return self.has_qb_access
+
+    def can_grant_qb_access(self):
+        """Only super admins can grant QB access to admins."""
+        return self.role == 'super_admin'
     
     def can_approve_questions(self):
         """Check if admin can approve pending questions"""
