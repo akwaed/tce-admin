@@ -19,6 +19,14 @@ Usage:
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
+
+# Ensure the project root is on sys.path so 'app' is importable
+# regardless of where the script is invoked from.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
 from sqlalchemy import func, inspect, select, text
 from app import create_app
 from app.models import db
