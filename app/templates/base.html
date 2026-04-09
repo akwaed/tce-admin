@@ -312,12 +312,6 @@
                             <i class="bi bi-speedometer2 me-1"></i>Dashboard
                         </a>
                     </li>
-                    <li class="nav-item">
-                        <a class="nav-link {% if 'admin' in request.endpoint %}active{% endif %}" 
-                           href="{{ url_for('admin.list_admins') }}">
-                            <i class="bi bi-people me-1"></i>Admin List
-                        </a>
-                    </li>
                     {% if current_user.has_dashboard_access %}
                     <li class="nav-item">
                         <a class="nav-link {% if 'verification' in request.endpoint %}active{% endif %}" 
@@ -326,6 +320,12 @@
                         </a>
                     </li>
                     {% endif %}
+                    <li class="nav-item">
+                        <a class="nav-link {% if 'admin' in request.endpoint %}active{% endif %}" 
+                           href="{{ url_for('admin.list_admins') }}">
+                            <i class="bi bi-people me-1"></i>Admin List
+                        </a>
+                    </li>
                     {% if current_user.can_manage_qb() %}
                     <li class="nav-item">
                         <a class="nav-link {% if 'questions' in request.endpoint %}active{% endif %}"
