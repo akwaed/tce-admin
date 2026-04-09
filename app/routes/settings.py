@@ -520,11 +520,9 @@ def trigger_hana_sync():
                     log.status = DataSyncLog.STATUS_FAILED
                     log.errors = [result.stderr[:1000] or result.stdout[:1000] or 'HANA sync failed with no output']
                 else:
-                    # Step 2: chain CSV -> Database so the verification page
-                    # actually reflects what was just pulled from HANA.
-                    # Without this the CSVs change but the DB (which the
-                    # verification UI reads from) stays stale until the
-                    # nightly cron runs.
+                    # Step 2: run CSV -> DB sync as a *subprocess* so it gets
+                    # its own process, its own connection pool, and can't
+                    # deadlock against the web worker's SQLAlchemy pool.
                     db_summary = None
                     db_error = None
                     try:
@@ -537,19 +535,35 @@ def trigger_hana_sync():
                         db.session.commit()
 
                         project_root = _get_project_root()
-                        from app.services.course_sync import (
-                            CourseSyncService, resolve_datasources_path,
+                        ds_path = os.path.join(project_root, 'datasources')
+                        db_script = os.path.join(project_root, 'scripts', 'db_sync.py')
+                        db_proc = subprocess.run(
+                            [sys.executable, db_script, '--datasources', ds_path],
+                            capture_output=True, text=True,
+                            timeout=900,   # 15 min hard limit
+                            cwd=project_root,
                         )
-                        ds_path = resolve_datasources_path(
-                            os.path.join(project_root, 'datasources')
-                        )
-                        course_sync = CourseSyncService(ds_path)
-                        db_result = course_sync.sync_all()
-                        db_summary = {
-                            'success': db_result.get('success', False),
-                            'stats': db_result.get('stats', {}),
-                            'errors': db_result.get('errors', [])[:10],
-                        }
+                        # Script emits a single JSON line on stdout.
+                        db_result = {}
+                        if db_proc.stdout.strip():
+                            try:
+                                db_result = json.loads(db_proc.stdout.strip())
+                            except json.JSONDecodeError:
+                                db_error = f'Could not parse db_sync output: {db_proc.stdout[:500]}'
+
+                        if db_proc.returncode != 0 and not db_error:
+                            db_error = db_result.get('errors', [db_proc.stderr[:500] or 'db_sync.py exited non-zero'])[0]
+
+                        if not db_error:
+                            db_summary = {
+                                'success': db_result.get('success', False),
+                                'stats': db_result.get('stats', {}),
+                                'errors': db_result.get('errors', [])[:10],
+                                'elapsed_seconds': db_result.get('elapsed_seconds'),
+                                'sync_run_id': db_result.get('sync_run_id'),
+                            }
+                    except subprocess.TimeoutExpired:
+                        db_error = 'CSV->DB sync timed out after 15 minutes'
                     except Exception as db_e:
                         import traceback
                         db_error = str(db_e)
