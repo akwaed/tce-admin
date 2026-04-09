@@ -266,6 +266,36 @@ def ws_url():
                            default_url=default_url)
 
 
+@settings_bp.route('/api/sync-status')
+@super_admin_required
+def api_sync_status():
+    """API: Return current sync status from DB (cross-process safe).
+
+    Used by the sync_logs page to poll real progress without relying on the
+    in-memory _sync_progress dict, which is not visible across threads that
+    spin up their own app context.
+    """
+    running_log = DataSyncLog.query.filter(
+        DataSyncLog.status == DataSyncLog.STATUS_RUNNING
+    ).order_by(DataSyncLog.started_at.desc()).first()
+
+    if not running_log:
+        return jsonify({'running': False})
+
+    summary = running_log.summary or {}
+    return jsonify({
+        'running': True,
+        'log_id': running_log.id,
+        'sync_type': running_log.sync_type,
+        'started_at': running_log.started_at.strftime('%Y-%m-%d %H:%M:%S') if running_log.started_at else None,
+        'pipeline_phase': summary.get('pipeline_phase', ''),
+        'pipeline_step': summary.get('pipeline_step', 1),
+        'pipeline_total_steps': summary.get('pipeline_total_steps', 2),
+        'pipeline_message': summary.get('pipeline_message', 'Running...'),
+        'error': summary.get('pipeline_message', '') if summary.get('pipeline_phase') == 'failed' else None,
+    })
+
+
 @settings_bp.route('/api/validate-key', methods=['POST'])
 @super_admin_required
 def api_validate_key():

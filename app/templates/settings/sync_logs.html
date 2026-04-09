@@ -27,7 +27,7 @@
             <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
                 {% if running_log %}
                 <strong>{{ running_log.sync_type_display }} Running</strong>
-                <span class="badge bg-primary">
+                <span class="badge bg-primary sync-step-label">
                     Step {{ running_summary.get('pipeline_step', 1) }}/{{ running_summary.get('pipeline_total_steps', 1) }}
                 </span>
                 <small class="text-muted">
@@ -36,41 +36,17 @@
                 {% endif %}
             </div>
 
-            {% if running_log and running_summary.get('pipeline_message') %}
-            <div class="mb-2">
-                {{ running_summary.get('pipeline_message') }}
+            <div class="mb-2 sync-pipeline-message">
+                {{ running_summary.get('pipeline_message', 'Initializing...') if running_log else 'Starting...' }}
             </div>
-            {% endif %}
 
-            {% if running_log and running_summary.get('pipeline_total_steps') %}
             <div class="progress mb-2" style="height: 8px;">
                 <div class="progress-bar progress-bar-striped progress-bar-animated"
                      role="progressbar"
-                     style="width: {{ ((running_summary.get('pipeline_step', 1) / running_summary.get('pipeline_total_steps', 1)) * 100)|round(0, 'floor') }}%;"></div>
+                     style="width: {{ ((running_summary.get('pipeline_step', 1) / running_summary.get('pipeline_total_steps', 2)) * 100)|round(0, 'floor') }}%;"></div>
             </div>
-            {% endif %}
 
-            {% if hana_progress.running %}
-            <div>
-                <strong>Database Sync:</strong> {{ hana_progress.current_step }}
-                (Step {{ hana_progress.step_number }}/{{ hana_progress.total_steps }})
-                {% if hana_progress.records_processed %}
-                <span class="ms-2 badge bg-light text-dark">{{ "{:,}".format(hana_progress.records_processed) }} rows processed</span>
-                {% endif %}
-            </div>
-            {% elif blue_progress.running %}
-            <div>
-                <strong>Blue Sync:</strong> {{ blue_progress.current_datasource }} - {{ blue_progress.current_step }}
-                ({{ blue_progress.datasource_number }}/{{ blue_progress.total_datasources }})
-                {% if blue_progress.records_processed %}
-                <span class="ms-2 badge bg-light text-dark">{{ "{:,}".format(blue_progress.records_processed) }} rows processed</span>
-                {% endif %}
-            </div>
-            {% elif running_log %}
-            <div class="small text-muted">
-                Waiting for the next pipeline phase update...
-            </div>
-            {% endif %}
+            <div class="small text-muted sync-db-step" style="display:none;"></div>
 
             {% if hana_progress.error %}
             <div class="text-danger small mt-2">
@@ -415,10 +391,56 @@ document.querySelectorAll('.ds-checkbox').forEach(cb => {
 updateBlueSyncButton();
 
 {% if sync_running %}
-// Auto-refresh when sync is running
-setTimeout(function() {
-    location.reload();
-}, 5000);
+// Poll /settings/api/sync-status every 3 seconds while a sync is running.
+// This reads from the DB so it works across background threads.
+(function pollSyncStatus() {
+    var alertBox   = document.getElementById('running-sync-alert');
+    var msgEl      = alertBox ? alertBox.querySelector('.sync-pipeline-message') : null;
+    var progressEl = alertBox ? alertBox.querySelector('.progress-bar') : null;
+    var stepEl     = alertBox ? alertBox.querySelector('.sync-step-label') : null;
+    var dbStepEl   = alertBox ? alertBox.querySelector('.sync-db-step') : null;
+
+    function poll() {
+        fetch('{{ url_for("settings.api_sync_status") }}')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!data.running) {
+                    // Sync finished — do one full reload to show final log entry.
+                    location.reload();
+                    return;
+                }
+                // Update message
+                if (msgEl && data.pipeline_message) {
+                    msgEl.textContent = data.pipeline_message;
+                }
+                // Update step label
+                if (stepEl && data.pipeline_step) {
+                    stepEl.textContent = 'Step ' + data.pipeline_step + '/' + data.pipeline_total_steps;
+                }
+                // Update progress bar
+                if (progressEl && data.pipeline_total_steps) {
+                    var pct = Math.round((data.pipeline_step / data.pipeline_total_steps) * 100);
+                    progressEl.style.width = pct + '%';
+                }
+                // Show DB sync sub-step label
+                if (dbStepEl) {
+                    if (data.pipeline_phase === 'database_sync') {
+                        dbStepEl.textContent = 'Database sync in progress...';
+                        dbStepEl.style.display = '';
+                    } else if (data.pipeline_phase === 'hana_pull') {
+                        dbStepEl.textContent = 'Fetching from HANA...';
+                        dbStepEl.style.display = '';
+                    }
+                }
+                setTimeout(poll, 3000);
+            })
+            .catch(function() {
+                // Network hiccup — retry a bit slower.
+                setTimeout(poll, 6000);
+            });
+    }
+    setTimeout(poll, 3000);
+})();
 {% endif %}
 </script>
 {% endblock %}

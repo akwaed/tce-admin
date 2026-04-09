@@ -73,7 +73,7 @@ class Course(db.Model):
     student_count = db.Column(db.Integer, default=0)
     
     # Term info (extracted from section_key)
-    term_code = db.Column(db.String(10), index=True)  # e.g., "2025010" for Spring 2025
+    term_code = db.Column(db.String(20), index=True)  # e.g., "Spring 2026" or "2025010"
     
     # Sync metadata
     last_synced = db.Column(db.DateTime, default=datetime.utcnow)
