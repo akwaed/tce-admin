@@ -28,6 +28,7 @@ LOCK_FILE="/tmp/tce-admin-sync.lock"
 DATASOURCES_DIR="$PROJECT_DIR/datasources"
 HANA_SCRIPT="$PROJECT_DIR/scripts/hana_sync.py"
 DB_SCRIPT="$PROJECT_DIR/scripts/db_sync.py"
+DRA_SCRIPT="$PROJECT_DIR/scripts/dra_sync.py"
 
 # ---------------------------------------------------------------------------
 # Logging helper
@@ -121,6 +122,20 @@ log "  Courses  : +${COURSES_ADDED} added, ~${COURSES_UPDATED} updated"
 log "  Instructors: +${INSTRUCTORS} added"
 log "  Students counted: ${STUDENTS}"
 log "  DB sync took: ${ELAPSED}s"
+
+# ---------------------------------------------------------------------------
+# Step 3: DRA -> Explorance Blue
+# ---------------------------------------------------------------------------
+log "Step 3/3: Pushing DRA data to Explorance Blue..."
+DRA_START=$(date +%s)
+
+if ! "$VENV_PYTHON" "$DRA_SCRIPT"; then
+    log "WARNING: DRA sync failed (exit code $?). Daily DB sync was successful."
+    # DRA failure is non-fatal — do not abort or change exit code
+fi
+
+DRA_END=$(date +%s)
+log "Step 3/3 complete in $(( DRA_END - DRA_START ))s."
 
 # ---------------------------------------------------------------------------
 # Done
