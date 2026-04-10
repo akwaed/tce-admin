@@ -98,7 +98,7 @@ log "Step 1/2 complete in $(( HANA_END - HANA_START ))s."
 log "Step 2/2: Loading CSV data into PostgreSQL..."
 DB_START=$(date +%s)
 
-DB_OUTPUT=$("$VENV_PYTHON" "$DB_SCRIPT" --datasources "$DATASOURCES_DIR" 2>&1)
+DB_OUTPUT=$("$VENV_PYTHON" "$DB_SCRIPT" --datasources "$DATASOURCES_DIR" --scheduled 2>&1)
 DB_EXIT=$?
 
 DB_END=$(date +%s)
