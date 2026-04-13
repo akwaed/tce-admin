@@ -110,6 +110,80 @@
     </div>
 </div>
 
+<!-- TCE Timeline -->
+<div class="row g-4 mb-4">
+    <div class="col-md-6 col-xl-4">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start mb-3">
+                    <div>
+                        <div class="text-uppercase text-muted small fw-semibold">Active TCEs Today</div>
+                        <div class="small text-muted">{{ stats.dashboard_date_label }}</div>
+                    </div>
+                    <i class="bi bi-play-circle text-primary fs-3"></i>
+                </div>
+                <div class="display-6 fw-bold mb-1">{{ stats.active_tce_today or 0 }}</div>
+                <div class="text-muted">Courses currently in an evaluation window</div>
+                <hr>
+                <div class="small text-muted">Students in those courses</div>
+                <div class="h4 mb-0">{{ '{:,}'.format(stats.active_tce_today_students or 0) }}</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6 col-xl-4">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start mb-3">
+                    <div>
+                        <div class="text-uppercase text-muted small fw-semibold">Upcoming Peak Release</div>
+                        <div class="small text-muted">{{ stats.peak_release_date_label }}</div>
+                    </div>
+                    <i class="bi bi-calendar-event text-success fs-3"></i>
+                </div>
+                <div class="display-6 fw-bold mb-1">{{ stats.peak_release_count or 0 }}</div>
+                <div class="text-muted">TCEs scheduled to start that day</div>
+                <hr>
+                <div class="small text-muted">
+                    {% if stats.peak_release_days_away is none %}
+                    No future TCE start dates are scheduled.
+                    {% elif stats.peak_release_days_away == 0 %}
+                    Starts today.
+                    {% elif stats.peak_release_days_away == 1 %}
+                    Starts in 1 day.
+                    {% else %}
+                    Starts in {{ stats.peak_release_days_away }} days.
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6 col-xl-4">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start mb-3">
+                    <div>
+                        <div class="text-uppercase text-muted small fw-semibold">Next Zero-Evaluation Day</div>
+                        <div class="small text-muted">{{ stats.next_zero_day_label }}</div>
+                    </div>
+                    <i class="bi bi-calendar-x text-danger fs-3"></i>
+                </div>
+                <div class="display-6 fw-bold mb-1">
+                    {% if stats.next_zero_day_countdown == 0 %}
+                    Today
+                    {% elif stats.next_zero_day_countdown == 1 %}
+                    1 day
+                    {% else %}
+                    {{ stats.next_zero_day_countdown }} days
+                    {% endif %}
+                </div>
+                <div class="text-muted">Until no marked courses are in an active evaluation window</div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Quick Actions & Info -->
 <div class="row g-4">
     <div class="col-md-6">
