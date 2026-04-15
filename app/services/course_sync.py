@@ -35,6 +35,7 @@ from collections import defaultdict
 from datetime import datetime
 
 from app.models import db
+from app.services.sync_control import SyncCancelledError, raise_if_sync_cancelled
 
 # ---------------------------------------------------------------------------
 # Tunables
@@ -237,14 +238,24 @@ class CourseSyncService:
         self._csv_terms = set()
         self._users_cache = {}
         self._change_buffer = []  # list of tuples
+        self._sync_log_id = None
+
+    def _raise_if_cancelled(self, conn):
+        if self._sync_log_id:
+            raise_if_sync_cancelled(
+                self._sync_log_id,
+                conn=conn,
+                message='Sync cancelled by user.',
+            )
 
     # ------------------------------------------------------------------
     # Top-level orchestration
     # ------------------------------------------------------------------
 
-    def sync_all(self):
+    def sync_all(self, sync_log_id=None):
         """Run the full sync. Returns a summary dict; raises on fatal error."""
         _reset_progress()
+        self._sync_log_id = sync_log_id
 
         # Flush SQLAlchemy session before we grab a raw connection.
         try:
@@ -259,24 +270,30 @@ class CourseSyncService:
         conn = _get_raw_pg_connection()
         conn.autocommit = False  # we manage transactions explicitly
         try:
+            self._raise_if_cancelled(conn)
             self._ensure_tables_exist(conn)
             self.sync_run_id = self._create_sync_run(conn, started_at)
             conn.commit()
 
+            self._raise_if_cancelled(conn)
             _update_progress('Loading courses...', 1)
             self._sync_courses(conn)
 
+            self._raise_if_cancelled(conn)
             _update_progress('Loading users and instructors...', 2)
             self._sync_users(conn)
             self._sync_instructors(conn)
 
+            self._raise_if_cancelled(conn)
             _update_progress('Loading student enrollments...', 3)
             self._sync_student_counts(conn)
 
+            self._raise_if_cancelled(conn)
             _update_progress('Flushing change log...', 4)
             self._flush_change_buffer(conn)
 
             elapsed = time.monotonic() - started
+            self._raise_if_cancelled(conn)
             _update_progress('Finalizing...', 5)
             self._finalize_sync_run(conn, elapsed, 'completed')
             conn.commit()
@@ -299,14 +316,19 @@ class CourseSyncService:
             }
         except Exception as exc:
             elapsed = time.monotonic() - started
+            status = 'cancelled' if isinstance(exc, SyncCancelledError) else 'failed'
             try:
                 conn.rollback()
-                self._finalize_sync_run(conn, elapsed, 'failed', str(exc))
+                self._finalize_sync_run(conn, elapsed, status, str(exc))
                 conn.commit()
             except Exception:
                 pass
-            _finish_progress(f'Failed: {exc}')
-            _update_progress('Failed', 5, error=str(exc))
+            if isinstance(exc, SyncCancelledError):
+                _finish_progress('Cancelled')
+                _update_progress('Cancelled', 5)
+            else:
+                _finish_progress(f'Failed: {exc}')
+                _update_progress('Failed', 5, error=str(exc))
             raise
         finally:
             try:
@@ -644,6 +666,7 @@ class CourseSyncService:
 
     def _upsert_colleges_and_departments(self, conn, colleges, dept_info):
         cur = conn.cursor()
+        self._raise_if_cancelled(conn)
 
         # Colleges
         existing_colleges = set()
@@ -662,6 +685,7 @@ class CourseSyncService:
             self.stats['colleges_added'] = len(new_colleges)
 
         for code, name in colleges.items():
+            self._raise_if_cancelled(conn)
             if code in existing_colleges and name:
                 cur.execute(
                     'UPDATE colleges SET name = %s WHERE code = %s AND name != %s',
@@ -676,6 +700,7 @@ class CourseSyncService:
 
         new_depts = []
         for did, (dname, ccode) in dept_info.items():
+            self._raise_if_cancelled(conn)
             if did in existing_depts:
                 cur.execute(
                     'UPDATE departments SET name = %s, college_code = %s '
@@ -732,6 +757,7 @@ class CourseSyncService:
         )
         cur = conn.cursor()
         for i in range(0, len(rows), BATCH_SIZE):
+            self._raise_if_cancelled(conn)
             batch = rows[i:i + BATCH_SIZE]
             _execute_values(
                 cur, sql,
@@ -756,6 +782,7 @@ class CourseSyncService:
             )
         keys = list(keys)
         for i in range(0, len(keys), 500):
+            self._raise_if_cancelled(conn)
             chunk = keys[i:i + 500]
             placeholders = ','.join(['%s'] * len(chunk))
             cur.execute(
@@ -821,6 +848,7 @@ class CourseSyncService:
             'last_synced = EXCLUDED.last_synced'
         )
         for i in range(0, len(rows), BATCH_SIZE):
+            self._raise_if_cancelled(conn)
             batch = rows[i:i + BATCH_SIZE]
             _execute_values(cur, sql, batch)
         conn.commit()
@@ -861,6 +889,7 @@ class CourseSyncService:
         keys = list(self._csv_section_keys)
         total_deleted = 0
         for i in range(0, len(keys), 500):
+            self._raise_if_cancelled(conn)
             chunk = keys[i:i + 500]
             placeholders = ','.join(['%s'] * len(chunk))
             cur.execute(
@@ -945,6 +974,7 @@ class CourseSyncService:
         batch = [tuple(m[c] for c in cols) for m in new_pairs.values()]
         if batch:
             for i in range(0, len(batch), BATCH_SIZE):
+                self._raise_if_cancelled(conn)
                 _execute_values(cur, sql, batch[i:i + BATCH_SIZE])
         conn.commit()
 
@@ -955,6 +985,7 @@ class CourseSyncService:
         _update_progress('Refreshing TCE flags...', 2)
         terms = list(self._csv_terms)
         for i in range(0, len(terms), 500):
+            self._raise_if_cancelled(conn)
             chunk = terms[i:i + 500]
             placeholders = ','.join(['%s'] * len(chunk))
             cur.execute(
@@ -964,6 +995,7 @@ class CourseSyncService:
             )
         keys2 = list(courses_with_instructors)
         for i in range(0, len(keys2), 500):
+            self._raise_if_cancelled(conn)
             chunk = keys2[i:i + 500]
             placeholders = ','.join(['%s'] * len(chunk))
             cur.execute(
@@ -1056,6 +1088,7 @@ class CourseSyncService:
         keys = list(self._csv_section_keys)
         if keys:
             for i in range(0, len(keys), 500):
+                self._raise_if_cancelled(conn)
                 chunk = keys[i:i + 500]
                 placeholders = ','.join(['%s'] * len(chunk))
                 cur.execute(
@@ -1077,6 +1110,7 @@ class CourseSyncService:
         if rows:
             sql = 'INSERT INTO student_enrollments (section_key, user_id, last_synced) VALUES %s'
             for i in range(0, len(rows), BATCH_SIZE):
+                self._raise_if_cancelled(conn)
                 batch = rows[i:i + BATCH_SIZE]
                 _execute_values(cur, sql, batch)
         conn.commit()
@@ -1092,6 +1126,7 @@ class CourseSyncService:
         # zero enrollment do not retain stale values from the prior sync.
         if keys:
             for i in range(0, len(keys), 500):
+                self._raise_if_cancelled(conn)
                 chunk = keys[i:i + 500]
                 placeholders = ','.join(['%s'] * len(chunk))
                 cur.execute(
@@ -1115,6 +1150,7 @@ class CourseSyncService:
 
         batch = list(counts.items())
         for i in range(0, len(batch), BATCH_SIZE):
+            self._raise_if_cancelled(conn)
             chunk = batch[i:i + BATCH_SIZE]
             _execute_values(
                 cur,

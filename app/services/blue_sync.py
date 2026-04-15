@@ -35,6 +35,11 @@ import threading
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Any
 from flask import current_app
+from app.services.sync_control import (
+    SyncCancelledError,
+    is_sync_cancellation_requested,
+    mark_sync_cancelled,
+)
 
 # ============================================================================
 # CONFIGURATION
@@ -371,6 +376,7 @@ class BlueSyncService:
         self.errors = []
         self.stats = {}
         self.results = {}
+        self._parent_sync_log_id = None
 
     def _get_api_key(self) -> Optional[str]:
         """Get API key from database settings."""
@@ -448,6 +454,7 @@ class BlueSyncService:
             'started_at': progress.get('started_at'),
             'updated_at': progress.get('updated_at'),
             'error': progress.get('error'),
+            'parent_sync_log_id': self._parent_sync_log_id,
         }
 
     def _persist_sync_log_progress(self, sync_log_id: int, dry_run: bool = False,
@@ -461,7 +468,18 @@ class BlueSyncService:
             if not sync_log:
                 return
 
+            existing_summary = sync_log.summary or {}
             summary = self._build_progress_summary(dry_run=dry_run)
+            for key in (
+                'cancel_requested',
+                'cancel_requested_at',
+                'cancel_requested_by',
+                'cancel_requested_by_id',
+                'cancel_reason',
+                'parent_sync_log_id',
+            ):
+                if existing_summary.get(key) is not None and summary.get(key) is None:
+                    summary[key] = existing_summary.get(key)
             if extra_summary:
                 summary.update(extra_summary)
 
@@ -480,8 +498,26 @@ class BlueSyncService:
                 sync_log_id,
             )
 
+    def _raise_if_cancelled(self, sync_log_id: Optional[int] = None,
+                            parent_sync_log_id: Optional[int] = None) -> None:
+        """Stop when either the Blue log or parent full-sync log was cancelled."""
+        if sync_log_id and is_sync_cancellation_requested(sync_log_id):
+            raise SyncCancelledError('Blue sync cancelled by user.')
+        if parent_sync_log_id and is_sync_cancellation_requested(parent_sync_log_id):
+            raise SyncCancelledError('Full sync cancelled by user.')
+
+    def _sleep_with_cancel_checks(self, seconds: int, sync_log_id: Optional[int] = None,
+                                  parent_sync_log_id: Optional[int] = None) -> None:
+        """Sleep in short intervals so cancel requests take effect promptly."""
+        remaining = max(int(seconds), 0)
+        while remaining > 0:
+            self._raise_if_cancelled(sync_log_id, parent_sync_log_id)
+            time.sleep(1)
+            remaining -= 1
+
     def push_all(self, datasources: List[str] = None, dry_run: bool = False,
-                 triggered_by=None, trigger_type: str = 'manual') -> Dict[str, Any]:
+                 triggered_by=None, trigger_type: str = 'manual',
+                 parent_sync_log_id: Optional[int] = None) -> Dict[str, Any]:
         """
         Push all (or specified) datasources to Blue.
 
@@ -513,6 +549,7 @@ class BlueSyncService:
         # Determine which datasources to push
         to_push = datasources if datasources else IMPORT_ORDER
         to_push = [ds for ds in IMPORT_ORDER if ds in to_push]  # Maintain order
+        self._parent_sync_log_id = parent_sync_log_id
 
         # Initialize progress
         with _blue_sync_lock:
@@ -541,7 +578,11 @@ class BlueSyncService:
         )
         db.session.add(sync_log)
         db.session.commit()
-        self._persist_sync_log_progress(sync_log.id, dry_run=dry_run)
+        self._persist_sync_log_progress(
+            sync_log.id,
+            dry_run=dry_run,
+            extra_summary={'parent_sync_log_id': parent_sync_log_id} if parent_sync_log_id else None,
+        )
 
         self.errors = []
         self.results = {}
@@ -553,18 +594,24 @@ class BlueSyncService:
 
         try:
             for idx, ds_key in enumerate(to_push, 1):
+                self._raise_if_cancelled(sync_log.id, parent_sync_log_id)
                 _update_blue_progress(
                     datasource=ds_key,
                     step='Starting...',
                     ds_num=idx
                 )
-                self._persist_sync_log_progress(sync_log.id, dry_run=dry_run)
+                self._persist_sync_log_progress(
+                    sync_log.id,
+                    dry_run=dry_run,
+                    extra_summary={'parent_sync_log_id': parent_sync_log_id} if parent_sync_log_id else None,
+                )
 
                 try:
                     success = self._import_datasource(
                         ds_key,
                         dry_run=dry_run,
                         sync_log_id=sync_log.id,
+                        parent_sync_log_id=parent_sync_log_id,
                     )
                     self.results[ds_key] = 'SUCCESS' if success else 'FAILED'
                     if success:
@@ -576,7 +623,11 @@ class BlueSyncService:
                         datasource=ds_key,
                         result='SUCCESS' if success else 'FAILED'
                     )
-                    self._persist_sync_log_progress(sync_log.id, dry_run=dry_run)
+                    self._persist_sync_log_progress(
+                        sync_log.id,
+                        dry_run=dry_run,
+                        extra_summary={'parent_sync_log_id': parent_sync_log_id} if parent_sync_log_id else None,
+                    )
 
                     # Add delay between datasources to prevent timeouts
                     # Skip delay after the last datasource
@@ -584,9 +635,19 @@ class BlueSyncService:
                         _update_blue_progress(
                             step=f'Waiting {IMPORT_DELAY_SECONDS}s before next datasource...'
                         )
-                        self._persist_sync_log_progress(sync_log.id, dry_run=dry_run)
-                        time.sleep(IMPORT_DELAY_SECONDS)
+                        self._persist_sync_log_progress(
+                            sync_log.id,
+                            dry_run=dry_run,
+                            extra_summary={'parent_sync_log_id': parent_sync_log_id} if parent_sync_log_id else None,
+                        )
+                        self._sleep_with_cancel_checks(
+                            IMPORT_DELAY_SECONDS,
+                            sync_log_id=sync_log.id,
+                            parent_sync_log_id=parent_sync_log_id,
+                        )
 
+                except SyncCancelledError:
+                    raise
                 except Exception as e:
                     self.errors.append(f"{ds_key}: {str(e)}")
                     self.results[ds_key] = f'ERROR: {str(e)}'
@@ -596,11 +657,19 @@ class BlueSyncService:
                         error=str(e),
                         result='ERROR'
                     )
-                    self._persist_sync_log_progress(sync_log.id, dry_run=dry_run)
+                    self._persist_sync_log_progress(
+                        sync_log.id,
+                        dry_run=dry_run,
+                        extra_summary={'parent_sync_log_id': parent_sync_log_id} if parent_sync_log_id else None,
+                    )
 
                     # Also add delay after errors to give server time to recover
                     if idx < len(to_push):
-                        time.sleep(IMPORT_DELAY_SECONDS)
+                        self._sleep_with_cancel_checks(
+                            IMPORT_DELAY_SECONDS,
+                            sync_log_id=sync_log.id,
+                            parent_sync_log_id=parent_sync_log_id,
+                        )
 
             # Update sync log
             all_success = self.stats['datasources_failed'] == 0
@@ -638,10 +707,43 @@ class BlueSyncService:
                 'sync_log_id': sync_log.id
             }
 
+        except SyncCancelledError as e:
+            mark_sync_cancelled(sync_log, str(e))
+            sync_log.blue_results = self.results
+            sync_log.records_processed = self.stats['total_records']
+            sync_log.errors = (self.errors + [str(e)])[:50]
+            summary = self._build_progress_summary(dry_run=dry_run)
+            summary.update({
+                'cancel_requested': True,
+                'parent_sync_log_id': parent_sync_log_id,
+                'pipeline_phase': 'cancelled',
+                'pipeline_message': str(e),
+                'results': self.results,
+            })
+            sync_log.summary = summary
+            db.session.commit()
+
+            with _blue_sync_lock:
+                _blue_sync_progress['running'] = False
+                _blue_sync_progress['current_step'] = 'Cancelled'
+                _blue_sync_progress['error'] = None
+                _blue_sync_progress['updated_at'] = datetime.utcnow().isoformat()
+
+            return {
+                'success': False,
+                'cancelled': True,
+                'message': str(e),
+                'results': self.results,
+                'stats': self.stats,
+                'errors': self.errors[:10],
+                'sync_log_id': sync_log.id,
+            }
+
         except Exception as e:
             sync_log.fail(str(e))
             summary = self._build_progress_summary(dry_run=dry_run)
             summary.update({
+                'parent_sync_log_id': parent_sync_log_id,
                 'pipeline_phase': 'failed',
                 'pipeline_message': f'Datasource to Blue sync failed: {e}',
             })
@@ -656,10 +758,12 @@ class BlueSyncService:
             raise
 
     def _import_datasource(self, datasource_key: str, dry_run: bool = False,
-                           sync_log_id: Optional[int] = None) -> bool:
+                           sync_log_id: Optional[int] = None,
+                           parent_sync_log_id: Optional[int] = None) -> bool:
         """Import a single datasource to Blue."""
         ds = DATASOURCES[datasource_key]
 
+        self._raise_if_cancelled(sync_log_id, parent_sync_log_id)
         _update_blue_progress(step='Discovering schema...')
         if sync_log_id:
             self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
@@ -675,6 +779,7 @@ class BlueSyncService:
                 return False
 
         # Load CSV
+        self._raise_if_cancelled(sync_log_id, parent_sync_log_id)
         _update_blue_progress(step='Loading CSV...')
         if sync_log_id:
             self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
@@ -695,6 +800,7 @@ class BlueSyncService:
             return True
 
         # Register import
+        self._raise_if_cancelled(sync_log_id, parent_sync_log_id)
         _update_blue_progress(step='Registering import...')
         if sync_log_id:
             self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
@@ -719,6 +825,7 @@ class BlueSyncService:
 
         try:
             for i in range(0, len(rows), BATCH_SIZE):
+                self._raise_if_cancelled(sync_log_id, parent_sync_log_id)
                 batch = rows[i:i + BATCH_SIZE]
                 batch_num = (i // BATCH_SIZE) + 1
 
@@ -740,6 +847,7 @@ class BlueSyncService:
                     return False
 
             # Prepare for finalization
+            self._raise_if_cancelled(sync_log_id, parent_sync_log_id)
             _update_blue_progress(step='Validating...')
             if sync_log_id:
                 self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
@@ -753,6 +861,7 @@ class BlueSyncService:
                 return False
 
             # Finalize
+            self._raise_if_cancelled(sync_log_id, parent_sync_log_id)
             _update_blue_progress(step='Finalizing...')
             if sync_log_id:
                 self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
@@ -769,6 +878,10 @@ class BlueSyncService:
                 self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
             return True
 
+        except SyncCancelledError:
+            if transaction_id:
+                self._cancel_import(transaction_id)
+            raise
         except KeyboardInterrupt:
             self._cancel_import(transaction_id)
             raise

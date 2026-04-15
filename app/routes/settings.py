@@ -15,9 +15,19 @@ from datetime import datetime
 import json
 import tempfile
 import threading
+import time
 import os
 import subprocess
 import sys
+from app.services.sync_control import (
+    SyncCancelledError,
+    mark_sync_cancelled,
+    raise_if_sync_cancelled,
+    register_sync_process,
+    request_sync_cancellation,
+    terminate_sync_process,
+    unregister_sync_process,
+)
 
 settings_bp = Blueprint('settings', __name__)
 PROCESS_STARTED_AT = datetime.utcnow()
@@ -140,11 +150,76 @@ def _build_sync_status_payload(running_log):
         'total_datasources': total_datasources,
         'batch_number': batch_number,
         'total_batches': total_batches,
+        'cancel_requested': bool(summary.get('cancel_requested')),
         'error': summary.get('pipeline_message', '') if summary.get('pipeline_phase') == 'failed' else None,
     }
 
 
-def _run_hana_sync_script():
+def _merge_cancel_summary(log, summary):
+    """Preserve cancel-request metadata when overwriting a sync summary."""
+    existing_summary = log.summary or {}
+    merged = dict(summary or {})
+    for key in (
+        'cancel_requested',
+        'cancel_requested_at',
+        'cancel_requested_by',
+        'cancel_requested_by_id',
+        'cancel_reason',
+        'parent_sync_log_id',
+    ):
+        if existing_summary.get(key) is not None and merged.get(key) is None:
+            merged[key] = existing_summary.get(key)
+    return merged
+
+
+def _run_cancellable_subprocess(command, cwd, timeout, sync_log_id=None):
+    """Run a subprocess with timeout and cooperative cancellation support."""
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+    )
+    register_sync_process(sync_log_id, process)
+    deadline = time.monotonic() + timeout
+
+    try:
+        while True:
+            try:
+                stdout, stderr = process.communicate(timeout=1)
+                return subprocess.CompletedProcess(
+                    command, process.returncode, stdout, stderr,
+                )
+            except subprocess.TimeoutExpired:
+                if sync_log_id:
+                    raise_if_sync_cancelled(
+                        sync_log_id,
+                        message='Sync cancelled by user.',
+                    )
+                if time.monotonic() >= deadline:
+                    if process.poll() is None:
+                        process.terminate()
+                    try:
+                        process.communicate(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.communicate()
+                    raise subprocess.TimeoutExpired(command, timeout)
+    except SyncCancelledError:
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+        raise
+    finally:
+        unregister_sync_process(sync_log_id)
+
+
+def _run_hana_sync_script(sync_log_id=None):
     """
     Run the HANA sync script with the same interpreter as the Flask app.
 
@@ -168,16 +243,15 @@ def _run_hana_sync_script():
     os.close(json_fd)
 
     try:
-        completed = subprocess.run(
+        completed = _run_cancellable_subprocess(
             [
                 sys.executable, script_path,
                 '--output', datasources_path,
                 '--json-output', json_path,
             ],
-            capture_output=True,
-            text=True,
+            cwd=project_root,
             timeout=600,
-            cwd=project_root
+            sync_log_id=sync_log_id,
         )
 
         json_result = None
@@ -443,6 +517,41 @@ def sync_log_detail(log_id):
     return render_template('settings/sync_log_detail.html', log=log)
 
 
+@settings_bp.route('/sync-logs/<int:log_id>/cancel', methods=['POST'])
+@super_admin_required
+def cancel_sync(log_id):
+    """Request cancellation for a running sync and stop any active subprocess."""
+    _mark_stale_running_logs()
+    log = DataSyncLog.query.get_or_404(log_id)
+
+    if log.status != DataSyncLog.STATUS_RUNNING:
+        flash('That sync is no longer running.', 'warning')
+        return redirect(url_for('settings.sync_logs'))
+
+    request_sync_cancellation(
+        log.id,
+        requested_by=current_user,
+        reason='Stop requested from the sync logs page.',
+    )
+
+    parent_log_id = (log.summary or {}).get('parent_sync_log_id')
+    if parent_log_id:
+        request_sync_cancellation(
+            parent_log_id,
+            requested_by=current_user,
+            reason='Child Blue sync cancellation requested from the sync logs page.',
+        )
+
+    terminated = terminate_sync_process(log.id)
+
+    if terminated:
+        flash('Stop requested. The active sync subprocess was terminated.', 'warning')
+    else:
+        flash('Stop requested. The sync will stop after the current step reaches a cancellation check.', 'warning')
+
+    return redirect(url_for('settings.sync_logs'))
+
+
 # ============================================================================
 # MANUAL SYNC TRIGGERS
 # ============================================================================
@@ -474,17 +583,18 @@ def trigger_hana_sync():
         with app.app_context():
             log = DataSyncLog.query.get(log_id)
             try:
-                log.summary = {
+                raise_if_sync_cancelled(log_id)
+                log.summary = _merge_cancel_summary(log, {
                     'pipeline_phase': 'hana_pull',
                     'pipeline_step': 1,
                     'pipeline_total_steps': 2,
                     'pipeline_message': 'Fetching data from SAP HANA and writing datasource CSV files...'
-                }
+                })
                 db.session.commit()
 
-                result, json_result = _run_hana_sync_script()
+                result, json_result = _run_hana_sync_script(sync_log_id=log_id)
 
-                log.summary = {
+                log.summary = _merge_cancel_summary(log, {
                     'stdout': result.stdout[:2000],
                     'stderr': result.stderr[:1000],
                     'command': f'{sys.executable} scripts/hana_sync.py --output datasources',
@@ -494,7 +604,7 @@ def trigger_hana_sync():
                     'pipeline_step': 1,
                     'pipeline_total_steps': 2,
                     'pipeline_message': 'Fetched HANA data. Preparing database sync...'
-                }
+                })
 
                 # Populate row counts and per-file diffs from the script's
                 # JSON result so the sync log accurately reflects what the
@@ -520,6 +630,7 @@ def trigger_hana_sync():
                     log.status = DataSyncLog.STATUS_FAILED
                     log.errors = [result.stderr[:1000] or result.stdout[:1000] or 'HANA sync failed with no output']
                 else:
+                    raise_if_sync_cancelled(log_id)
                     # Step 2: run CSV -> DB sync as a *subprocess* so it gets
                     # its own process, its own connection pool, and can't
                     # deadlock against the web worker's SQLAlchemy pool.
@@ -531,17 +642,17 @@ def trigger_hana_sync():
                         summary['pipeline_step'] = 2
                         summary['pipeline_total_steps'] = 2
                         summary['pipeline_message'] = 'Syncing datasource CSV files into the application database...'
-                        log.summary = summary
+                        log.summary = _merge_cancel_summary(log, summary)
                         db.session.commit()
 
                         project_root = _get_project_root()
                         ds_path = os.path.join(project_root, 'datasources')
                         db_script = os.path.join(project_root, 'scripts', 'db_sync.py')
-                        db_proc = subprocess.run(
+                        db_proc = _run_cancellable_subprocess(
                             [sys.executable, db_script, '--datasources', ds_path],
-                            capture_output=True, text=True,
-                            timeout=900,   # 15 min hard limit
                             cwd=project_root,
+                            timeout=900,   # 15 min hard limit
+                            sync_log_id=log_id,
                         )
                         # Script emits a single JSON line on stdout.
                         db_result = {}
@@ -562,6 +673,8 @@ def trigger_hana_sync():
                                 'elapsed_seconds': db_result.get('elapsed_seconds'),
                                 'sync_run_id': db_result.get('sync_run_id'),
                             }
+                    except SyncCancelledError:
+                        raise
                     except subprocess.TimeoutExpired:
                         db_error = 'CSV->DB sync timed out after 15 minutes'
                     except Exception as db_e:
@@ -571,7 +684,7 @@ def trigger_hana_sync():
 
                     summary = log.summary
                     summary['database_sync'] = db_summary or {'error': db_error}
-                    log.summary = summary
+                    log.summary = _merge_cancel_summary(log, summary)
 
                     if db_error:
                         log.status = DataSyncLog.STATUS_FAILED
@@ -600,29 +713,34 @@ def trigger_hana_sync():
                         summary['pipeline_step'] = 2
                         summary['pipeline_total_steps'] = 2
                         summary['pipeline_message'] = 'HANA pull and database sync completed.'
-                        log.summary = summary
+                        log.summary = _merge_cancel_summary(log, summary)
 
+            except SyncCancelledError as e:
+                mark_sync_cancelled(log, str(e))
+                errors = log.errors or []
+                errors.append(str(e))
+                log.errors = errors[:50]
             except subprocess.TimeoutExpired:
                 log.status = DataSyncLog.STATUS_FAILED
                 log.errors = ['HANA sync timed out after 10 minutes']
                 summary = log.summary
                 summary['pipeline_phase'] = 'failed'
                 summary['pipeline_message'] = 'HANA sync timed out after 10 minutes.'
-                log.summary = summary
+                log.summary = _merge_cancel_summary(log, summary)
             except FileNotFoundError as e:
                 log.status = DataSyncLog.STATUS_FAILED
                 log.errors = [str(e)]
                 summary = log.summary
                 summary['pipeline_phase'] = 'failed'
                 summary['pipeline_message'] = str(e)
-                log.summary = summary
+                log.summary = _merge_cancel_summary(log, summary)
             except Exception as e:
                 log.status = DataSyncLog.STATUS_FAILED
                 log.errors = [str(e)]
                 summary = log.summary
                 summary['pipeline_phase'] = 'failed'
                 summary['pipeline_message'] = str(e)
-                log.summary = summary
+                log.summary = _merge_cancel_summary(log, summary)
 
             log.completed_at = datetime.utcnow()
             db.session.commit()
@@ -718,12 +836,13 @@ def trigger_full_sync():
                 'pipeline_total_steps': 3,
                 'pipeline_message': 'Fetching data from SAP HANA and writing datasource CSV files...'
             }
-            log.summary = summary
+            log.summary = _merge_cancel_summary(log, summary)
             db.session.commit()
 
             try:
+                raise_if_sync_cancelled(log_id)
                 # Step 1: HANA to datasource
-                result, json_result = _run_hana_sync_script()
+                result, json_result = _run_hana_sync_script(sync_log_id=log_id)
 
                 summary['hana_sync'] = {
                     'success': result.returncode == 0,
@@ -732,7 +851,7 @@ def trigger_full_sync():
                     'output_path': (json_result or {}).get('output_path'),
                     'table_stats': (json_result or {}).get('stats'),
                 }
-                log.summary = summary
+                log.summary = _merge_cancel_summary(log, summary)
 
                 if json_result:
                     log.records_processed = json_result.get('records_processed', 0) or 0
@@ -755,16 +874,17 @@ def trigger_full_sync():
                     log.errors = errors
                     summary['pipeline_phase'] = 'failed'
                     summary['pipeline_message'] = 'HANA sync step failed.'
-                    log.summary = summary
+                    log.summary = _merge_cancel_summary(log, summary)
                     log.completed_at = datetime.utcnow()
                     db.session.commit()
                     return
 
+                raise_if_sync_cancelled(log_id)
                 # Step 2: CSV -> database via CourseSyncService (PostgreSQL-native).
                 summary['pipeline_phase'] = 'database_sync'
                 summary['pipeline_step'] = 2
                 summary['pipeline_message'] = 'Syncing datasource CSV files into the application database...'
-                log.summary = summary
+                log.summary = _merge_cancel_summary(log, summary)
                 db.session.commit()
 
                 project_root = _get_project_root()
@@ -775,7 +895,7 @@ def trigger_full_sync():
                     os.path.join(project_root, 'datasources')
                 )
                 course_sync = CourseSyncService(ds_path)
-                db_result = course_sync.sync_all()
+                db_result = course_sync.sync_all(sync_log_id=log_id)
 
                 summary['database_sync'] = {
                     'success': db_result.get('success', False),
@@ -784,7 +904,7 @@ def trigger_full_sync():
                     'elapsed_seconds': db_result.get('elapsed_seconds'),
                     'sync_run_id': db_result.get('sync_run_id'),
                 }
-                log.summary = summary
+                log.summary = _merge_cancel_summary(log, summary)
 
                 ds_stats = db_result.get('stats') or {}
                 log.records_added = (log.records_added or 0) + (
@@ -798,37 +918,55 @@ def trigger_full_sync():
                     ds_stats.get('students_counted', 0)
                 )
 
+                raise_if_sync_cancelled(log_id)
                 # Step 3: Push to Blue.
                 summary['pipeline_phase'] = 'blue_push'
                 summary['pipeline_step'] = 3
                 summary['pipeline_message'] = 'Pushing datasources to Explorance Blue...'
-                log.summary = summary
+                log.summary = _merge_cancel_summary(log, summary)
                 db.session.commit()
 
                 try:
                     from app.models.admin import Admin
                     admin = Admin.query.get(log.triggered_by_id) if log.triggered_by_id else None
                     blue_service = get_blue_sync_service()
-                    blue_service.push_all(triggered_by=admin, trigger_type='manual')
+                    blue_result = blue_service.push_all(
+                        triggered_by=admin,
+                        trigger_type='manual',
+                        parent_sync_log_id=log.id,
+                    )
+                    if blue_result.get('cancelled'):
+                        raise SyncCancelledError(
+                            blue_result.get('message') or 'Sync cancelled by user.'
+                        )
                     summary['pipeline_phase'] = 'complete'
                     summary['pipeline_message'] = 'Full pipeline completed successfully.'
                     log.status = DataSyncLog.STATUS_COMPLETED
+                except SyncCancelledError as cancel_exc:
+                    summary['pipeline_phase'] = 'cancelled'
+                    summary['pipeline_message'] = str(cancel_exc)
+                    log.status = DataSyncLog.STATUS_CANCELLED
+                    errors.append(str(cancel_exc))
                 except Exception as blue_exc:
                     errors.append(f'Blue push failed: {blue_exc}')
                     summary['pipeline_phase'] = 'failed'
                     summary['pipeline_message'] = f'Blue push failed: {blue_exc}'
                     log.status = DataSyncLog.STATUS_FAILED
 
-                log.summary = summary
+                log.summary = _merge_cancel_summary(log, summary)
                 log.errors = errors
 
+            except SyncCancelledError as e:
+                errors.append(str(e))
+                log.errors = errors[:50]
+                mark_sync_cancelled(log, str(e))
             except subprocess.TimeoutExpired:
                 log.status = DataSyncLog.STATUS_FAILED
                 errors.append('HANA sync timed out after 10 minutes')
                 log.errors = errors
                 summary['pipeline_phase'] = 'failed'
                 summary['pipeline_message'] = 'HANA sync timed out after 10 minutes.'
-                log.summary = summary
+                log.summary = _merge_cancel_summary(log, summary)
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -837,7 +975,7 @@ def trigger_full_sync():
                 log.errors = errors
                 summary['pipeline_phase'] = 'failed'
                 summary['pipeline_message'] = str(e)
-                log.summary = summary
+                log.summary = _merge_cancel_summary(log, summary)
 
             log.completed_at = datetime.utcnow()
             db.session.commit()
