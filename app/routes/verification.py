@@ -11,7 +11,7 @@ from app.models.admin import Admin
 from sqlalchemy import func, case, asc, desc
 import csv
 import io
-from datetime import datetime
+from datetime import datetime, date
 
 # Mapping of sort column names to database fields
 SORT_COLUMNS = {
@@ -289,6 +289,8 @@ def user_lookup():
                 Course.department_id.label('department_id'),
                 Department.name.label('department_name'),
                 Course.marked_for_tce.label('marked_for_tce'),
+                Course.tce_start.label('tce_start'),
+                Course.tce_end.label('tce_end'),
                 Course.student_count.label('student_count'),
             ).join(
                 Instructor, Instructor.user_id == CourseUser.user_id
@@ -329,6 +331,8 @@ def user_lookup():
                 Course.department_id.label('department_id'),
                 Department.name.label('department_name'),
                 Course.marked_for_tce.label('marked_for_tce'),
+                Course.tce_start.label('tce_start'),
+                Course.tce_end.label('tce_end'),
                 Course.student_count.label('student_count'),
             ).join(
                 StudentEnrollment, StudentEnrollment.user_id == CourseUser.user_id
@@ -365,6 +369,7 @@ def user_lookup():
             'term': term_filter,
             'user_type': user_type,
         },
+        today=date.today(),
     )
 
 

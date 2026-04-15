@@ -92,6 +92,7 @@
                         <th>Department</th>
                         <th>Instructor Role</th>
                         <th>Status</th>
+                        <th>Evaluation Date</th>
                         <th class="text-center">Students</th>
                     </tr>
                 </thead>
@@ -117,11 +118,29 @@
                             <span class="badge bg-secondary">Not Marked</span>
                             {% endif %}
                         </td>
+                        <td>
+                            {% if row.marked_for_tce %}
+                                {% if row.tce_start and row.tce_start > today %}
+                                <span class="text-muted small d-block">Starts</span>
+                                {{ row.tce_start.strftime('%Y-%m-%d') }}
+                                {% elif row.tce_end %}
+                                <span class="text-muted small d-block">Ends</span>
+                                {{ row.tce_end.strftime('%Y-%m-%d') }}
+                                {% elif row.tce_start %}
+                                <span class="text-muted small d-block">Starts</span>
+                                {{ row.tce_start.strftime('%Y-%m-%d') }}
+                                {% else %}
+                                -
+                                {% endif %}
+                            {% else %}
+                            -
+                            {% endif %}
+                        </td>
                         <td class="text-center">{{ row.student_count }}</td>
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="9" class="text-center text-muted py-4">
+                        <td colspan="10" class="text-center text-muted py-4">
                             No instructor matches found.
                         </td>
                     </tr>
@@ -153,6 +172,7 @@
                         <th>Title</th>
                         <th>Department</th>
                         <th>Status</th>
+                        <th>Evaluation Date</th>
                         <th class="text-center">Students</th>
                     </tr>
                 </thead>
@@ -177,11 +197,29 @@
                             <span class="badge bg-secondary">Not Marked</span>
                             {% endif %}
                         </td>
+                        <td>
+                            {% if row.marked_for_tce %}
+                                {% if row.tce_start and row.tce_start > today %}
+                                <span class="text-muted small d-block">Starts</span>
+                                {{ row.tce_start.strftime('%Y-%m-%d') }}
+                                {% elif row.tce_end %}
+                                <span class="text-muted small d-block">Ends</span>
+                                {{ row.tce_end.strftime('%Y-%m-%d') }}
+                                {% elif row.tce_start %}
+                                <span class="text-muted small d-block">Starts</span>
+                                {{ row.tce_start.strftime('%Y-%m-%d') }}
+                                {% else %}
+                                -
+                                {% endif %}
+                            {% else %}
+                            -
+                            {% endif %}
+                        </td>
                         <td class="text-center">{{ row.student_count }}</td>
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="8" class="text-center text-muted py-4">
+                        <td colspan="9" class="text-center text-muted py-4">
                             No student matches found.
                         </td>
                     </tr>
