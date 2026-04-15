@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+
+{% block title %}User Lookup{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="d-flex justify-content-between align-items-center">
+        <div>
+            <h1><i class="bi bi-search me-2"></i>User Lookup</h1>
+            <p class="text-muted mb-0">
+                Super-admin reverse lookup for instructors and students using LinkBlue or name.
+            </p>
+        </div>
+    </div>
+</div>
+
+<div class="alert alert-info">
+    Search by <strong>LinkBlue</strong>, <strong>first name</strong>, or <strong>last name</strong>.
+    Instructor results show the courses where a person is listed for evaluation. Student results show the
+    courses a person is enrolled in and whether those courses are currently marked for evaluation.
+</div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" action="{{ url_for('verification.user_lookup') }}">
+            <div class="row g-3 align-items-end">
+                <div class="col-md-5">
+                    <label class="form-label small text-muted">Search by name or LinkBlue</label>
+                    <input type="text" class="form-control" name="search"
+                           placeholder="e.g., jsmith2 or Jamie Smith"
+                           value="{{ current_filters.search }}">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small text-muted">Academic Term</label>
+                    <select name="term" class="form-select">
+                        <option value="">All Terms</option>
+                        {% for term in terms %}
+                        <option value="{{ term.code }}" {% if current_filters.term == term.code %}selected{% endif %}>
+                            {{ term.name }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small text-muted">User Type</label>
+                    <select name="user_type" class="form-select">
+                        <option value="all" {% if current_filters.user_type == 'all' %}selected{% endif %}>All</option>
+                        <option value="instructor" {% if current_filters.user_type == 'instructor' %}selected{% endif %}>Instructor</option>
+                        <option value="student" {% if current_filters.user_type == 'student' %}selected{% endif %}>Student</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <button type="submit" class="btn btn-uk-primary">
+                        <i class="bi bi-search me-1"></i>Search
+                    </button>
+                    <a href="{{ url_for('verification.user_lookup') }}" class="btn btn-outline-secondary">
+                        <i class="bi bi-x-lg me-1"></i>Clear
+                    </a>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+{% if not current_filters.search %}
+<div class="card">
+    <div class="card-body text-center text-muted py-5">
+        <i class="bi bi-person-lines-fill fs-1 d-block mb-3"></i>
+        Enter a person's name or LinkBlue to search instructors and/or students.
+    </div>
+</div>
+{% else %}
+
+{% if current_filters.user_type in ['all', 'instructor'] %}
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <div><i class="bi bi-person-badge me-2"></i>Instructor Matches</div>
+        <small class="text-muted">
+            {{ instructor_summary.users }} user(s), {{ instructor_summary.courses }} course match(es)
+        </small>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-uk table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>LinkBlue</th>
+                        <th>Term</th>
+                        <th>Course</th>
+                        <th>Title</th>
+                        <th>Department</th>
+                        <th>Instructor Role</th>
+                        <th>Status</th>
+                        <th class="text-center">Students</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in instructor_results %}
+                    {% set display_name = ((row.first_name or '') ~ ' ' ~ (row.last_name or ''))|trim %}
+                    <tr>
+                        <td>{{ display_name or 'Name not available' }}</td>
+                        <td><code>{{ row.user_id }}</code></td>
+                        <td>{{ row.term_code or '-' }}</td>
+                        <td>{{ row.class_code }}{% if row.crs_section %}<br><small class="text-muted">{{ row.crs_section }}</small>{% endif %}</td>
+                        <td>
+                            <a href="{{ url_for('verification.course_detail', section_key=row.section_key) }}" class="text-decoration-none">
+                                {{ row.section_title or row.section_key }}
+                            </a>
+                        </td>
+                        <td>{{ row.department_name or row.department_id or '-' }}</td>
+                        <td>{{ row.instructor_role or '-' }}</td>
+                        <td>
+                            {% if row.marked_for_tce %}
+                            <span class="badge bg-success">Listed for Evaluation</span>
+                            {% else %}
+                            <span class="badge bg-secondary">Not Marked</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-center">{{ row.student_count }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="9" class="text-center text-muted py-4">
+                            No instructor matches found.
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{% if current_filters.user_type in ['all', 'student'] %}
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <div><i class="bi bi-people me-2"></i>Student Matches</div>
+        <small class="text-muted">
+            {{ student_summary.users }} user(s), {{ student_summary.courses }} course match(es)
+        </small>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-uk table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>LinkBlue</th>
+                        <th>Term</th>
+                        <th>Course</th>
+                        <th>Title</th>
+                        <th>Department</th>
+                        <th>Status</th>
+                        <th class="text-center">Students</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in student_results %}
+                    {% set display_name = ((row.first_name or '') ~ ' ' ~ (row.last_name or ''))|trim %}
+                    <tr>
+                        <td>{{ display_name or 'Name not available' }}</td>
+                        <td><code>{{ row.user_id }}</code></td>
+                        <td>{{ row.term_code or '-' }}</td>
+                        <td>{{ row.class_code }}{% if row.crs_section %}<br><small class="text-muted">{{ row.crs_section }}</small>{% endif %}</td>
+                        <td>
+                            <a href="{{ url_for('verification.course_detail', section_key=row.section_key) }}" class="text-decoration-none">
+                                {{ row.section_title or row.section_key }}
+                            </a>
+                        </td>
+                        <td>{{ row.department_name or row.department_id or '-' }}</td>
+                        <td>
+                            {% if row.marked_for_tce %}
+                            <span class="badge bg-success">To Be Evaluated</span>
+                            {% else %}
+                            <span class="badge bg-secondary">Not Marked</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-center">{{ row.student_count }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="8" class="text-center text-muted py-4">
+                            No student matches found.
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{% endif %}
+{% endblock %}

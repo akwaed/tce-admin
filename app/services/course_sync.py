@@ -223,8 +223,10 @@ class CourseSyncService:
             'courses_added': 0,
             'courses_updated': 0,
             'courses_removed': 0,
+            'users_synced': 0,
             'instructors_added': 0,
             'instructors_removed': 0,
+            'student_enrollments_synced': 0,
             'colleges_added': 0,
             'departments_added': 0,
             'students_counted': 0,
@@ -233,6 +235,7 @@ class CourseSyncService:
         self.sync_run_id = None
         self._csv_section_keys = set()
         self._csv_terms = set()
+        self._users_cache = {}
         self._change_buffer = []  # list of tuples
 
     # ------------------------------------------------------------------
@@ -263,10 +266,11 @@ class CourseSyncService:
             _update_progress('Loading courses...', 1)
             self._sync_courses(conn)
 
-            _update_progress('Loading instructors...', 2)
+            _update_progress('Loading users and instructors...', 2)
+            self._sync_users(conn)
             self._sync_instructors(conn)
 
-            _update_progress('Counting students...', 3)
+            _update_progress('Loading student enrollments...', 3)
             self._sync_student_counts(conn)
 
             _update_progress('Flushing change log...', 4)
@@ -359,6 +363,34 @@ class CourseSyncService:
                 ON change_log(sync_run_id, change_type);
             CREATE INDEX IF NOT EXISTS ix_change_log_created_at
                 ON change_log(created_at);
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS course_users (
+                user_id VARCHAR(50) PRIMARY KEY,
+                first_name VARCHAR(100),
+                last_name VARCHAR(100),
+                email VARCHAR(200),
+                last_synced TIMESTAMP DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS ix_course_users_last_name
+                ON course_users(last_name);
+            CREATE INDEX IF NOT EXISTS ix_course_users_first_name
+                ON course_users(first_name);
+            CREATE INDEX IF NOT EXISTS ix_course_users_email
+                ON course_users(email);
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS student_enrollments (
+                id BIGSERIAL PRIMARY KEY,
+                section_key VARCHAR(100) NOT NULL REFERENCES courses(section_key) ON DELETE CASCADE,
+                user_id VARCHAR(50) NOT NULL REFERENCES course_users(user_id),
+                last_synced TIMESTAMP DEFAULT NOW(),
+                CONSTRAINT uq_student_enrollment_section_user UNIQUE (section_key, user_id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_student_enrollments_section_key
+                ON student_enrollments(section_key);
+            CREATE INDEX IF NOT EXISTS ix_student_enrollments_user_id
+                ON student_enrollments(user_id);
         """)
         cur.close()
 
@@ -738,6 +770,63 @@ class CourseSyncService:
             self.stats['courses_removed'] += cur.rowcount or 0
         cur.close()
 
+    def _load_users_csv(self):
+        """Load Users.csv into a cached {user_id: (first, last, email)} mapping."""
+        if self._users_cache:
+            return self._users_cache
+
+        users_data = {}
+        users_path = os.path.join(self.datasources_path, 'Users.csv')
+        if not os.path.exists(users_path):
+            self.errors.append(f'Users.csv not found at {users_path}')
+            self._users_cache = users_data
+            return users_data
+
+        try:
+            with open(users_path, 'r', encoding='utf-8') as f:
+                for row in csv.DictReader(f):
+                    uid = _clean(row, 'USER_ID')
+                    if not uid:
+                        continue
+                    users_data[uid] = (
+                        _clean(row, 'FIRSTNAME'),
+                        _clean(row, 'LASTNAME'),
+                        _clean(row, 'EMAIL'),
+                    )
+        except Exception as e:
+            self.errors.append(f'Error loading Users.csv: {e}')
+
+        self._users_cache = users_data
+        return users_data
+
+    def _sync_users(self, conn):
+        """Upsert the user directory from Users.csv for reverse lookup pages."""
+        users_data = self._load_users_csv()
+        if not users_data:
+            return
+
+        _update_progress(f'Upserting {len(users_data):,} users...', 2)
+        now_dt = datetime.utcnow()
+        rows = [
+            (uid, first_name or None, last_name or None, email or None, now_dt)
+            for uid, (first_name, last_name, email) in users_data.items()
+        ]
+        cur = conn.cursor()
+        sql = (
+            'INSERT INTO course_users (user_id, first_name, last_name, email, last_synced) VALUES %s '
+            'ON CONFLICT (user_id) DO UPDATE SET '
+            'first_name = EXCLUDED.first_name, '
+            'last_name = EXCLUDED.last_name, '
+            'email = EXCLUDED.email, '
+            'last_synced = EXCLUDED.last_synced'
+        )
+        for i in range(0, len(rows), BATCH_SIZE):
+            batch = rows[i:i + BATCH_SIZE]
+            _execute_values(cur, sql, batch)
+        conn.commit()
+        cur.close()
+        self.stats['users_synced'] = len(rows)
+
     # ------------------------------------------------------------------
     # Phase 2: instructors
     # ------------------------------------------------------------------
@@ -749,21 +838,7 @@ class CourseSyncService:
 
     def _sync_instructors(self, conn):
         # Load Users.csv for name/email lookups.
-        users_data = {}
-        users_path = os.path.join(self.datasources_path, 'Users.csv')
-        if os.path.exists(users_path):
-            try:
-                with open(users_path, 'r', encoding='utf-8') as f:
-                    for row in csv.DictReader(f):
-                        uid = _clean(row, 'USER_ID')
-                        if uid:
-                            users_data[uid] = (
-                                _clean(row, 'FIRSTNAME'),
-                                _clean(row, 'LASTNAME'),
-                                _clean(row, 'EMAIL'),
-                            )
-            except Exception as e:
-                self.errors.append(f'Error loading Users.csv: {e}')
+        users_data = self._load_users_csv()
 
         path = os.path.join(self.datasources_path, 'Instructor_Course.csv')
         if not os.path.exists(path):
@@ -820,6 +895,16 @@ class CourseSyncService:
                 'last_synced': now_dt,
             }
             courses_with_instructors.add(sk)
+
+        missing_user_ids = sorted({uid for _, uid in new_pairs if uid not in self._users_cache})
+        if missing_user_ids:
+            fallback_rows = [(user_id, None, None, None, now_dt) for user_id in missing_user_ids]
+            _execute_values(
+                cur,
+                'INSERT INTO course_users (user_id, first_name, last_name, email, last_synced) VALUES %s '
+                'ON CONFLICT (user_id) DO NOTHING',
+                fallback_rows,
+            )
 
         # Compute diff for change_log.
         added_pairs = set(new_pairs) - set(old_pairs)
@@ -934,43 +1019,91 @@ class CourseSyncService:
     # ------------------------------------------------------------------
 
     def _sync_student_counts(self, conn):
-        """Aggregate Student_Course.csv -> update courses.student_count.
-
-        Individual student rows are NOT stored in the application DB;
-        only the per-course count is retained. This keeps the DB lean and
-        the sync fast (avoids inserting 335k rows on every run).
-        """
+        """Persist student-course links and update per-course student counts."""
         path = os.path.join(self.datasources_path, 'Student_Course.csv')
         if not os.path.exists(path):
             self.errors.append(f'Student_Course.csv not found at {path}')
             return
 
-        _update_progress('Counting enrollments per course...', 3)
+        _update_progress('Loading student enrollments from CSV...', 3)
 
-        # Count in Python — single-pass over the CSV, no DB round-trips needed
-        # until we flush the aggregated counts.
+        # Persist the unique (section_key, user_id) enrollment pairs so super
+        # admins can reverse-search a student and see which courses would be
+        # evaluated. We still compute the per-course counts from the same pass.
+        valid_courses = self._valid_course_keys(conn, self._csv_section_keys)
+        enrollments = set()
         counts: dict[str, int] = defaultdict(int)
-        total_students = 0
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 for row in csv.DictReader(f):
                     sk = _clean(row, 'SECTION_KEY')
-                    if sk and sk in self._csv_section_keys:
-                        counts[sk] += 1
-                        total_students += 1
+                    uid = _clean(row, 'USER_ID')
+                    if not sk or not uid or sk not in valid_courses:
+                        continue
+                    key = (sk, uid)
+                    if key in enrollments:
+                        continue
+                    enrollments.add(key)
+                    counts[sk] += 1
         except Exception as e:
             self.errors.append(f'Error reading Student_Course.csv: {e}')
             return
+
+        total_students = len(enrollments)
+
+        _update_progress(f'Refreshing {total_students:,} student enrollments...', 3)
+        cur = conn.cursor()
+        keys = list(self._csv_section_keys)
+        if keys:
+            for i in range(0, len(keys), 500):
+                chunk = keys[i:i + 500]
+                placeholders = ','.join(['%s'] * len(chunk))
+                cur.execute(
+                    f'DELETE FROM student_enrollments WHERE section_key IN ({placeholders})',
+                    chunk,
+                )
+
+        missing_user_ids = sorted({user_id for _, user_id in enrollments if user_id not in self._users_cache})
+        if missing_user_ids:
+            fallback_rows = [(user_id, None, None, None, datetime.utcnow()) for user_id in missing_user_ids]
+            _execute_values(
+                cur,
+                'INSERT INTO course_users (user_id, first_name, last_name, email, last_synced) VALUES %s '
+                'ON CONFLICT (user_id) DO NOTHING',
+                fallback_rows,
+            )
+
+        rows = [(section_key, user_id, datetime.utcnow()) for section_key, user_id in enrollments]
+        if rows:
+            sql = 'INSERT INTO student_enrollments (section_key, user_id, last_synced) VALUES %s'
+            for i in range(0, len(rows), BATCH_SIZE):
+                batch = rows[i:i + BATCH_SIZE]
+                _execute_values(cur, sql, batch)
+        conn.commit()
 
         _update_progress(
             f'Updating student counts ({len(counts):,} courses, {total_students:,} students)...',
             3,
         )
 
+        existing_counts = self._get_existing_student_counts(conn, keys)
+
+        # Reset counts for the full sync window first so courses that dropped to
+        # zero enrollment do not retain stale values from the prior sync.
+        if keys:
+            for i in range(0, len(keys), 500):
+                chunk = keys[i:i + 500]
+                placeholders = ','.join(['%s'] * len(chunk))
+                cur.execute(
+                    f'UPDATE courses SET student_count = 0 WHERE section_key IN ({placeholders})',
+                    chunk,
+                )
+
         # Record changes for courses where student_count changed.
-        existing_counts = self._get_existing_student_counts(conn, list(counts.keys()))
-        for sk, new_count in counts.items():
+        all_keys = set(existing_counts) | set(counts)
+        for sk in all_keys:
             old_count = existing_counts.get(sk, 0)
+            new_count = counts.get(sk, 0)
             if old_count != new_count:
                 self._record_change(
                     'student_count', sk, 'updated',
@@ -980,7 +1113,6 @@ class CourseSyncService:
                     display_label=sk,
                 )
 
-        cur = conn.cursor()
         batch = list(counts.items())
         for i in range(0, len(batch), BATCH_SIZE):
             chunk = batch[i:i + BATCH_SIZE]
@@ -996,6 +1128,7 @@ class CourseSyncService:
         conn.commit()
         cur.close()
 
+        self.stats['student_enrollments_synced'] = total_students
         self.stats['students_counted'] = total_students
 
     def _get_existing_student_counts(self, conn, section_keys):

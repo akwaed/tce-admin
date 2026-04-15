@@ -5,7 +5,7 @@ Course listings with TCE status from UKDIG data
 from flask import Blueprint, render_template, request, Response, flash, redirect, url_for, jsonify
 from flask_login import login_required, current_user
 from app.models import db
-from app.models.course import Course, College, Department, Instructor, SyncLog
+from app.models.course import Course, College, Department, Instructor, SyncLog, CourseUser, StudentEnrollment
 from app.models.sync_history import SyncRun
 from app.models.admin import Admin
 from sqlalchemy import func, case, asc, desc
@@ -57,6 +57,24 @@ def format_term_code(term_code):
     return f'{semester} {year}'
 
 verification_bp = Blueprint('verification', __name__)
+
+
+def _course_user_search_condition(search):
+    """Match a course user by LinkBlue, first name, last name, or full name."""
+    pattern = f'%{search}%'
+    full_name = func.trim(
+        func.concat(
+            func.coalesce(CourseUser.first_name, ''),
+            ' ',
+            func.coalesce(CourseUser.last_name, ''),
+        )
+    )
+    return db.or_(
+        CourseUser.user_id.ilike(pattern),
+        CourseUser.first_name.ilike(pattern),
+        CourseUser.last_name.ilike(pattern),
+        full_name.ilike(pattern),
+    )
 
 
 @verification_bp.route('/')
@@ -222,6 +240,132 @@ def list_courses():
                              'sort': sort_by,
                              'order': sort_order
                          })
+
+
+@verification_bp.route('/users')
+@login_required
+def user_lookup():
+    """Super-admin reverse lookup for instructors and students."""
+    if not current_user.is_super_admin():
+        flash('Only super administrators can access the user lookup page.', 'danger')
+        return redirect(url_for('verification.list_courses'))
+
+    search = request.args.get('search', '').strip()
+    term_filter = request.args.get('term', '').strip()
+    user_type = request.args.get('user_type', 'all').strip() or 'all'
+
+    term_codes = [
+        term_code for (term_code,) in db.session.query(Course.term_code)
+        .filter(Course.term_code.isnot(None))
+        .distinct()
+        .order_by(Course.term_code.desc())
+        .all()
+        if term_code
+    ]
+    terms = [{'code': term_code, 'name': term_code} for term_code in term_codes]
+
+    instructor_results = []
+    student_results = []
+    instructor_summary = {'users': 0, 'courses': 0}
+    student_summary = {'users': 0, 'courses': 0}
+
+    if search:
+        search_filter = _course_user_search_condition(search)
+
+        if user_type in ('all', 'instructor'):
+            instructor_query = db.session.query(
+                CourseUser.user_id.label('user_id'),
+                CourseUser.first_name.label('first_name'),
+                CourseUser.last_name.label('last_name'),
+                CourseUser.email.label('email'),
+                Instructor.instructor_role.label('instructor_role'),
+                Course.section_key.label('section_key'),
+                Course.class_code.label('class_code'),
+                Course.crs_section.label('crs_section'),
+                Course.section_id.label('section_id'),
+                Course.section_title.label('section_title'),
+                Course.term_code.label('term_code'),
+                Course.college_code.label('college_code'),
+                Course.department_id.label('department_id'),
+                Department.name.label('department_name'),
+                Course.marked_for_tce.label('marked_for_tce'),
+                Course.student_count.label('student_count'),
+            ).join(
+                Instructor, Instructor.user_id == CourseUser.user_id
+            ).join(
+                Course, Course.section_key == Instructor.section_key
+            ).outerjoin(
+                Department, Department.id == Course.department_id
+            ).filter(search_filter)
+
+            if term_filter:
+                instructor_query = instructor_query.filter(Course.term_code == term_filter)
+
+            instructor_results = instructor_query.order_by(
+                CourseUser.last_name.asc(),
+                CourseUser.first_name.asc(),
+                Course.term_code.desc(),
+                Course.class_code.asc(),
+                Course.crs_section.asc(),
+            ).all()
+            instructor_summary = {
+                'users': len({row.user_id for row in instructor_results}),
+                'courses': len(instructor_results),
+            }
+
+        if user_type in ('all', 'student'):
+            student_query = db.session.query(
+                CourseUser.user_id.label('user_id'),
+                CourseUser.first_name.label('first_name'),
+                CourseUser.last_name.label('last_name'),
+                CourseUser.email.label('email'),
+                Course.section_key.label('section_key'),
+                Course.class_code.label('class_code'),
+                Course.crs_section.label('crs_section'),
+                Course.section_id.label('section_id'),
+                Course.section_title.label('section_title'),
+                Course.term_code.label('term_code'),
+                Course.college_code.label('college_code'),
+                Course.department_id.label('department_id'),
+                Department.name.label('department_name'),
+                Course.marked_for_tce.label('marked_for_tce'),
+                Course.student_count.label('student_count'),
+            ).join(
+                StudentEnrollment, StudentEnrollment.user_id == CourseUser.user_id
+            ).join(
+                Course, Course.section_key == StudentEnrollment.section_key
+            ).outerjoin(
+                Department, Department.id == Course.department_id
+            ).filter(search_filter)
+
+            if term_filter:
+                student_query = student_query.filter(Course.term_code == term_filter)
+
+            student_results = student_query.order_by(
+                CourseUser.last_name.asc(),
+                CourseUser.first_name.asc(),
+                Course.term_code.desc(),
+                Course.class_code.asc(),
+                Course.crs_section.asc(),
+            ).all()
+            student_summary = {
+                'users': len({row.user_id for row in student_results}),
+                'courses': len(student_results),
+            }
+
+    return render_template(
+        'verification/user_lookup.html',
+        terms=terms,
+        instructor_results=instructor_results,
+        student_results=student_results,
+        instructor_summary=instructor_summary,
+        student_summary=student_summary,
+        current_filters={
+            'search': search,
+            'term': term_filter,
+            'user_type': user_type,
+        },
+    )
 
 
 @verification_bp.route('/course/<path:section_key>')

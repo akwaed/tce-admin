@@ -314,9 +314,17 @@
                     </li>
                     {% if current_user.has_dashboard_access %}
                     <li class="nav-item">
-                        <a class="nav-link {% if 'verification' in request.endpoint %}active{% endif %}" 
+                        <a class="nav-link {% if request.endpoint and request.endpoint.startswith('verification.') and request.endpoint != 'verification.user_lookup' %}active{% endif %}" 
                            href="{{ url_for('verification.list_courses') }}">
                             <i class="bi bi-clipboard-check me-1"></i>Verification
+                        </a>
+                    </li>
+                    {% endif %}
+                    {% if current_user.is_super_admin() %}
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'verification.user_lookup' %}active{% endif %}"
+                           href="{{ url_for('verification.user_lookup') }}">
+                            <i class="bi bi-search me-1"></i>User Lookup
                         </a>
                     </li>
                     {% endif %}

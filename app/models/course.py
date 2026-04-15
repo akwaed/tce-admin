@@ -81,6 +81,8 @@ class Course(db.Model):
     # Relationships
     instructors = db.relationship('Instructor', backref='course', lazy='dynamic',
                                   cascade='all, delete-orphan')
+    student_enrollments = db.relationship('StudentEnrollment', backref='course', lazy='dynamic',
+                                          cascade='all, delete-orphan')
     
     def __repr__(self):
         return f'<Course {self.class_code} - {self.section_id}>'
@@ -186,6 +188,56 @@ class Instructor(db.Model):
             'email': self.email,
             'instructor_role': self.instructor_role
         }
+
+
+class CourseUser(db.Model):
+    """
+    Directory of people present in Users.csv.
+
+    This supports reverse lookups by LinkBlue or name for the super-admin user
+    lookup page.
+    """
+    __tablename__ = 'course_users'
+
+    user_id = db.Column(db.String(50), primary_key=True)  # USER_ID / linkblue
+    first_name = db.Column(db.String(100), index=True)
+    last_name = db.Column(db.String(100), index=True)
+    email = db.Column(db.String(200), index=True)
+    last_synced = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    student_enrollments = db.relationship('StudentEnrollment', backref='user', lazy='dynamic',
+                                          cascade='all, delete-orphan')
+
+    def __repr__(self):
+        return f'<CourseUser {self.user_id}: {self.full_name}>'
+
+    @property
+    def full_name(self):
+        return f'{self.first_name or ""} {self.last_name or ""}'.strip() or self.user_id
+
+
+class StudentEnrollment(db.Model):
+    """
+    Student-course relationships from Student_Course.csv.
+
+    Unlike the legacy implementation, these rows are retained so super admins
+    can reverse-search a student and see which courses are currently set to be
+    evaluated.
+    """
+    __tablename__ = 'student_enrollments'
+    __table_args__ = (
+        db.UniqueConstraint('section_key', 'user_id', name='uq_student_enrollment_section_user'),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    section_key = db.Column(db.String(100), db.ForeignKey('courses.section_key', ondelete='CASCADE'),
+                            nullable=False, index=True)
+    user_id = db.Column(db.String(50), db.ForeignKey('course_users.user_id'),
+                        nullable=False, index=True)
+    last_synced = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    def __repr__(self):
+        return f'<StudentEnrollment {self.user_id} -> {self.section_key}>'
 
 
 class SyncLog(db.Model):
