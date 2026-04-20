@@ -21,6 +21,7 @@ questions_bp = Blueprint('questions', __name__)
 DATASOURCES_PATH = './datasources'
 QB_FILENAME = 'QB.xlsx'
 QM_FILENAME = 'QM.xlsx'
+QM_SHEET_NAME = 'Question Bank Mappings'
 PENDING_CHANGES_FILE = 'pending_changes.json'
 AUDIT_LOG_FILE = 'qb_audit_log.json'
 
@@ -202,6 +203,7 @@ class QuestionBankService:
         self._placeholder_names = []
         self._uuid_row = []
         self._unit_to_college = {}
+        self._section_key_to_crs_section = {}
         # Cache tracking
         self._cache_timestamps = {}
         self._hierarchy_html_cache = {}
@@ -261,6 +263,7 @@ class QuestionBankService:
             dept_id = str(row.get('CLASS_DEPARTMENT_ID', '')).strip()
             class_code = str(row.get('CLASS', '')).strip()
             section_key = str(row.get('SECTION_KEY', '')).strip()
+            crs_section = str(row.get('CRS_SECTION', '')).strip()
             
             if dept_id and dept_id != 'nan':
                 self._unit_to_college[dept_id] = college_code
@@ -268,6 +271,10 @@ class QuestionBankService:
                 self._unit_to_college[class_code] = college_code
             if section_key and section_key != 'nan':
                 self._unit_to_college[section_key] = college_code
+            if crs_section and crs_section != 'nan':
+                self._unit_to_college[crs_section] = college_code
+                if section_key and section_key != 'nan':
+                    self._section_key_to_crs_section[section_key] = crs_section
         
         # Apply admin scope filtering for display
         if admin_scope:
@@ -325,7 +332,75 @@ class QuestionBankService:
 
     def get_college_for_unit(self, unit_id):
         """Get college code for a unit ID"""
-        return self._unit_to_college.get(str(unit_id), None)
+        unit_id = str(unit_id)
+        return (
+            self._unit_to_college.get(unit_id)
+            or self._unit_to_college.get(self._canonical_mapping_unit_id('SECTION', unit_id))
+        )
+
+    def _strip_term_from_section_key(self, unit_id):
+        """Return CRS_SECTION-style ID when passed a SECTION_KEY-style value."""
+        unit_id = str(unit_id or '').strip()
+        base, separator, suffix = unit_id.rpartition('-')
+        if separator and suffix.isdigit() and suffix.startswith('20') and len(suffix) >= 6:
+            return base
+        return unit_id
+
+    def _canonical_mapping_unit_id(self, unit_type, unit_id):
+        """Normalize mapping IDs to the format expected by the QM file."""
+        unit_type = str(unit_type or '').upper()
+        unit_id = str(unit_id or '').strip()
+        if unit_type == 'SECTION':
+            return self._section_key_to_crs_section.get(unit_id) or self._strip_term_from_section_key(unit_id)
+        return unit_id
+
+    def _merge_question_mappings(self, target, source):
+        """Merge mappings without overwriting existing placeholder assignments."""
+        for placeholder, question_id in (source or {}).items():
+            if placeholder and question_id and not target.get(placeholder):
+                target[placeholder] = question_id
+        return target
+
+    def _mapping_for_unit(self, unit_type, unit_id, create=False):
+        """Get a mapping bucket, coalescing SECTION_KEY aliases into CRS_SECTION IDs."""
+        unit_type = str(unit_type or '').upper()
+        raw_unit_id = str(unit_id or '').strip()
+        canonical_unit_id = self._canonical_mapping_unit_id(unit_type, raw_unit_id)
+
+        if unit_type not in self.question_mapping:
+            if not create:
+                return {}
+            self.question_mapping[unit_type] = {}
+
+        mapping_level = self.question_mapping[unit_type]
+        if raw_unit_id != canonical_unit_id and raw_unit_id in mapping_level:
+            raw_mapping = mapping_level.pop(raw_unit_id)
+            target = mapping_level.setdefault(canonical_unit_id, {})
+            self._merge_question_mappings(target, raw_mapping)
+
+        if canonical_unit_id not in mapping_level:
+            if not create:
+                return {}
+            mapping_level[canonical_unit_id] = {}
+
+        return mapping_level[canonical_unit_id]
+
+    def _coalesce_question_mapping(self):
+        """Remove duplicate mapping rows that only differ by SECTION_KEY vs CRS_SECTION."""
+        for unit_type in list(self.question_mapping.keys()):
+            normalized = {}
+            for unit_id, questions in self.question_mapping.get(unit_type, {}).items():
+                canonical_unit_id = self._canonical_mapping_unit_id(unit_type, unit_id)
+                target = normalized.setdefault(canonical_unit_id, {})
+                self._merge_question_mappings(target, questions)
+            self.question_mapping[unit_type] = normalized
+
+    def _iter_question_mapping_rows(self):
+        """Yield normalized QM rows in mapping-level order."""
+        self._coalesce_question_mapping()
+        for unit_type in ['DEPARTMENT', 'COURSE', 'SECTION']:
+            for unit_id, questions in self.question_mapping.get(unit_type, {}).items():
+                yield unit_type, unit_id, questions
     
     def load_question_bank(self, qb_file=None):
         """Load questions from QB.xlsx with caching"""
@@ -436,7 +511,9 @@ class QuestionBankService:
                         if pd.notna(value) and str(value) != 'nan':
                             questions[placeholder] = str(value)
                 
-                self.question_mapping[mapping_type][unit_id] = questions
+                canonical_unit_id = self._canonical_mapping_unit_id(mapping_type, unit_id)
+                existing_questions = self.question_mapping[mapping_type].setdefault(canonical_unit_id, {})
+                self._merge_question_mappings(existing_questions, questions)
         
         except Exception as e:
             print(f"Error loading question mapping: {e}")
@@ -457,7 +534,7 @@ class QuestionBankService:
         unit_type = unit_type.upper()
         unit_id = str(unit_id)
         
-        mapping = self.question_mapping.get(unit_type, {}).get(unit_id, {})
+        mapping = self._mapping_for_unit(unit_type, unit_id)
         
         course_questions = []
         instructor_questions = []
@@ -514,12 +591,8 @@ class QuestionBankService:
         unit_type = unit_type.upper()
         unit_id = str(unit_id)
         
-        if unit_type not in self.question_mapping:
-            self.question_mapping[unit_type] = {}
-        if unit_id not in self.question_mapping[unit_type]:
-            self.question_mapping[unit_type][unit_id] = {}
-        
-        self.question_mapping[unit_type][unit_id][placeholder] = question_id
+        mapping = self._mapping_for_unit(unit_type, unit_id, create=True)
+        mapping[placeholder] = question_id
         self._save_question_mapping()
         return True
     
@@ -528,11 +601,11 @@ class QuestionBankService:
         unit_type = unit_type.upper()
         unit_id = str(unit_id)
         
-        if unit_type in self.question_mapping and unit_id in self.question_mapping[unit_type]:
-            if placeholder in self.question_mapping[unit_type][unit_id]:
-                del self.question_mapping[unit_type][unit_id][placeholder]
-                self._save_question_mapping()
-                return True
+        mapping = self._mapping_for_unit(unit_type, unit_id)
+        if placeholder in mapping:
+            del mapping[placeholder]
+            self._save_question_mapping()
+            return True
         return False
     
     def update_question(self, question_id, new_text):
@@ -580,7 +653,7 @@ class QuestionBankService:
         max_num = 14 if q_type_abbr == 'Sel' else 5
 
         # Get currently used placeholders for this unit
-        current_mapping = self.question_mapping.get(unit_type, {}).get(unit_id, {})
+        current_mapping = self._mapping_for_unit(unit_type, unit_id)
         used_placeholders = set(current_mapping.keys())
 
         # Find next available placeholder
@@ -674,18 +747,18 @@ class QuestionBankService:
             rows.append(self._uuid_row if self._uuid_row else [''] * 117)
             rows.append(self._placeholder_names if self._placeholder_names else ['Type', 'ID'] + [f'Placeholder_{i}' for i in range(115)])
             
-            for unit_type in ['DEPARTMENT', 'COURSE', 'SECTION']:
-                for unit_id, questions in self.question_mapping.get(unit_type, {}).items():
-                    row = [unit_type, unit_id]
-                    for i in range(2, len(self._placeholder_names) if self._placeholder_names else 117):
-                        placeholder = self._placeholder_names[i] if i < len(self._placeholder_names) else ''
-                        row.append(questions.get(placeholder, ''))
-                    rows.append(row)
+            for unit_type, unit_id, questions in self._iter_question_mapping_rows():
+                row = [unit_type, unit_id]
+                for i in range(2, len(self._placeholder_names) if self._placeholder_names else 117):
+                    placeholder = self._placeholder_names[i] if i < len(self._placeholder_names) else ''
+                    row.append(questions.get(placeholder, ''))
+                rows.append(row)
             
-            pd.DataFrame(rows).to_excel(writer, sheet_name='Sheet1', index=False, header=False)
+            pd.DataFrame(rows).to_excel(writer, sheet_name=QM_SHEET_NAME, index=False, header=False)
     
     def get_units_with_questions(self):
         """Get set of unit IDs that have questions assigned"""
+        self._coalesce_question_mapping()
         units = {'DEPARTMENT': set(), 'COURSE': set(), 'SECTION': set()}
         for unit_type, mappings in self.question_mapping.items():
             for unit_id, questions in mappings.items():
@@ -731,15 +804,14 @@ class QuestionBankService:
                 self._placeholder_names if self._placeholder_names else ['Type', 'ID'] + [f'Placeholder_{i}' for i in range(115)]
             ]
             
-            for unit_type in ['DEPARTMENT', 'COURSE', 'SECTION']:
-                for unit_id, questions in self.question_mapping.get(unit_type, {}).items():
-                    row = [unit_type, unit_id]
-                    for i in range(2, len(self._placeholder_names) if self._placeholder_names else 117):
-                        placeholder = self._placeholder_names[i] if i < len(self._placeholder_names) else ''
-                        row.append(questions.get(placeholder, ''))
-                    rows.append(row)
+            for unit_type, unit_id, questions in self._iter_question_mapping_rows():
+                row = [unit_type, unit_id]
+                for i in range(2, len(self._placeholder_names) if self._placeholder_names else 117):
+                    placeholder = self._placeholder_names[i] if i < len(self._placeholder_names) else ''
+                    row.append(questions.get(placeholder, ''))
+                rows.append(row)
             
-            pd.DataFrame(rows).to_excel(writer, sheet_name='Sheet1', index=False, header=False)
+            pd.DataFrame(rows).to_excel(writer, sheet_name=QM_SHEET_NAME, index=False, header=False)
         
         output.seek(0)
         return output
@@ -758,7 +830,8 @@ class QuestionBankService:
             type_map = {'college': 'COLLEGE', 'department': 'DEPARTMENT', 'course': 'COURSE', 'section': 'SECTION'}
             mapped_type = type_map.get(node_type, node_type.upper())
             
-            if str(node_id) in units_with_questions.get(mapped_type, set()):
+            mapped_node_id = self._canonical_mapping_unit_id(mapped_type, node_id)
+            if mapped_node_id in units_with_questions.get(mapped_type, set()):
                 return True
             
             for child_node in node.get('children', {}).values():
@@ -774,9 +847,10 @@ class QuestionBankService:
             type_map = {'college': 'COLLEGE', 'department': 'DEPARTMENT', 'course': 'COURSE', 'section': 'SECTION'}
             mapped_type = type_map.get(node_type, node_type.upper())
             
-            has_direct = str(node_id) in units_with_questions.get(mapped_type, set())
+            mapped_node_id = self._canonical_mapping_unit_id(mapped_type, node_id)
+            has_direct = mapped_node_id in units_with_questions.get(mapped_type, set())
             has_child = has_questions_recursive(node, node_type, node_id) and not has_direct
-            question_count = len(self.question_mapping.get(mapped_type, {}).get(str(node_id), {}))
+            question_count = len(self.question_mapping.get(mapped_type, {}).get(mapped_node_id, {}))
             
             classes = ['tree-node']
             if has_direct:
@@ -922,7 +996,7 @@ def api_get_questions(unit_type, unit_id):
 
         # Get available placeholders
         all_placeholders = qb_service.get_available_placeholders(unit_type)
-        used_placeholders = list(qb_service.question_mapping.get(unit_type.upper(), {}).get(str(unit_id), {}).keys())
+        used_placeholders = list(qb_service._mapping_for_unit(unit_type, unit_id).keys())
         unused_placeholders = [p for p in all_placeholders if p not in used_placeholders]
 
         # Get pending changes for current user (for visual feedback)
@@ -1078,7 +1152,11 @@ def api_add_question():
         q = qb_service.questions.get(question_id, {})
         q_type = q.get('type', 'Selection')
         # Infer if instructor question from existing mappings
-        is_ins = any('ins_' in p.lower() for p, qid in qb_service.question_mapping.get(unit_type.upper(), {}).get(str(unit_id), {}).items() if qid == question_id)
+        is_ins = any(
+            'ins_' in p.lower()
+            for p, qid in qb_service._mapping_for_unit(unit_type, unit_id).items()
+            if qid == question_id
+        )
         placeholder = qb_service.get_next_placeholder(unit_type, unit_id, q_type, is_ins)
         if not placeholder:
             return jsonify({'success': False, 'error': 'No available placeholders'})
@@ -1150,7 +1228,7 @@ def api_remove_question():
     if not qb_service.questions:
         qb_service.load_question_bank()
 
-    current_mapping = qb_service.question_mapping.get(unit_type.upper(), {}).get(str(unit_id), {})
+    current_mapping = qb_service._mapping_for_unit(unit_type, unit_id)
     question_id = current_mapping.get(placeholder, '')
     college_code = qb_service.get_college_for_unit(unit_id) or current_user.college_code
 
