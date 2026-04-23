@@ -7,6 +7,8 @@ subprocess handles for hard-stop support during stalled script execution.
 from __future__ import annotations
 
 import json
+import os
+import signal
 import threading
 from datetime import datetime
 
@@ -20,6 +22,54 @@ class SyncCancelledError(Exception):
 
 _active_processes = {}
 _active_processes_lock = threading.Lock()
+
+
+def _coerce_pid(pid):
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+    return pid if pid > 0 else None
+
+
+def is_process_running(pid):
+    """Return True if a local OS process appears to still exist."""
+    pid = _coerce_pid(pid)
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # The process exists but this user cannot signal it.
+        return True
+    except OSError:
+        return False
+
+
+def _kill_process(pid):
+    """Hard-kill a process, using its process group when it owns one."""
+    pid = _coerce_pid(pid)
+    if not pid:
+        return False
+
+    try:
+        pgid = os.getpgid(pid)
+    except OSError:
+        pgid = None
+
+    try:
+        if pgid == pid:
+            os.killpg(pgid, signal.SIGKILL)
+        else:
+            os.kill(pid, signal.SIGKILL)
+        return True
+    except ProcessLookupError:
+        return False
+    except Exception:
+        return False
 
 
 def register_sync_process(sync_log_id, process):
@@ -39,7 +89,7 @@ def unregister_sync_process(sync_log_id):
 
 
 def terminate_sync_process(sync_log_id):
-    """Terminate a tracked subprocess if one is still active."""
+    """Hard-kill a tracked subprocess if one is still active."""
     if not sync_log_id:
         return False
 
@@ -49,11 +99,20 @@ def terminate_sync_process(sync_log_id):
     if not process or process.poll() is not None:
         return False
 
-    try:
-        process.terminate()
-        return True
-    except Exception:
+    return _kill_process(process.pid)
+
+
+def terminate_external_sync_process(sync_log_id):
+    """Hard-kill a scheduled sync process recorded in the sync log summary."""
+    if not sync_log_id:
         return False
+
+    log = DataSyncLog.query.get(sync_log_id)
+    if not log:
+        return False
+
+    pid = (log.summary or {}).get('process_pid')
+    return _kill_process(pid)
 
 
 def _read_summary_from_connection(conn, sync_log_id):

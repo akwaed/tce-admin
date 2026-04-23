@@ -9,7 +9,7 @@ from app.models import db
 from app.models.settings import SystemSetting, DataSyncLog
 from app.models.sync_history import SyncRun, ChangeLog
 from app.services.blue_sync import get_blue_sync_service, get_blue_sync_progress
-from app.services.course_sync import CourseSyncService, get_sync_progress
+from app.services.course_sync import get_sync_progress
 from functools import wraps
 from datetime import datetime
 import json
@@ -21,16 +21,19 @@ import subprocess
 import sys
 from app.services.sync_control import (
     SyncCancelledError,
+    is_process_running,
     mark_sync_cancelled,
     raise_if_sync_cancelled,
     register_sync_process,
     request_sync_cancellation,
+    terminate_external_sync_process,
     terminate_sync_process,
     unregister_sync_process,
 )
 
 settings_bp = Blueprint('settings', __name__)
 PROCESS_STARTED_AT = datetime.utcnow()
+SYNC_MAX_RUNTIME_SECONDS = int(os.environ.get('SYNC_MAX_RUNTIME_SECONDS', '3600'))
 
 
 def super_admin_required(f):
@@ -52,35 +55,77 @@ def _get_project_root():
 
 def _mark_stale_running_logs():
     """
-    Mark orphaned running logs as failed after an app restart.
+    Mark orphaned or overlong running logs as failed.
 
     Sync work runs in background threads inside this process. If the web app is
     restarted, those threads disappear but their ``data_sync_logs`` rows remain
-    in ``running`` state. Any running log started before this process booted is
-    stale and should not keep the UI stuck in a fake running state.
+    in ``running`` state. Scheduled cron jobs run outside the web process, so
+    they are only treated as stale when their recorded PID is gone or when they
+    exceed the hard runtime guard.
     """
-    stale_logs = DataSyncLog.query.filter(
-        DataSyncLog.status == DataSyncLog.STATUS_RUNNING,
-        DataSyncLog.started_at < PROCESS_STARTED_AT
+    running_logs = DataSyncLog.query.filter(
+        DataSyncLog.status == DataSyncLog.STATUS_RUNNING
     ).all()
 
-    if not stale_logs:
+    if not running_logs:
         return
 
-    for log in stale_logs:
-        summary = log.summary
+    changed = False
+    now = datetime.utcnow()
+
+    for log in running_logs:
+        summary = log.summary or {}
+        age_seconds = None
+        if log.started_at:
+            age_seconds = max((now - log.started_at).total_seconds(), 0)
+
+        process_pid = summary.get('process_pid')
+        process_alive = is_process_running(process_pid) if process_pid else False
+        exceeded_runtime = (
+            age_seconds is not None
+            and age_seconds > SYNC_MAX_RUNTIME_SECONDS
+        )
+
+        stale_message = None
+        completed_at = now
+
+        if process_pid and process_alive and exceeded_runtime:
+            terminate_external_sync_process(log.id)
+            stale_message = (
+                f'Sync exceeded the {SYNC_MAX_RUNTIME_SECONDS // 60} minute '
+                'runtime limit and was force-stopped.'
+            )
+        elif process_pid and process_alive:
+            continue
+        elif process_pid and not process_alive:
+            stale_message = 'Sync process exited without updating its log.'
+        elif log.started_at and log.started_at < PROCESS_STARTED_AT:
+            stale_message = 'Sync interrupted by application restart.'
+            completed_at = PROCESS_STARTED_AT
+        elif exceeded_runtime:
+            stale_message = (
+                f'Sync exceeded the {SYNC_MAX_RUNTIME_SECONDS // 60} minute '
+                'runtime limit and was marked failed.'
+            )
+
+        if not stale_message:
+            continue
+
+        summary = log.summary or {}
         summary['pipeline_phase'] = 'failed'
-        summary['pipeline_message'] = 'Sync interrupted by application restart.'
+        summary['pipeline_message'] = stale_message
         log.summary = summary
         log.status = DataSyncLog.STATUS_FAILED
         if not log.completed_at:
-            log.completed_at = PROCESS_STARTED_AT
+            log.completed_at = completed_at
         errors = log.errors
-        if 'Sync interrupted by application restart.' not in errors:
-            errors.append('Sync interrupted by application restart.')
+        if stale_message not in errors:
+            errors.append(stale_message)
         log.errors = errors[:50]
+        changed = True
 
-    db.session.commit()
+    if changed:
+        db.session.commit()
 
 
 def _get_latest_running_sync_log():
@@ -180,43 +225,77 @@ def _run_cancellable_subprocess(command, cwd, timeout, sync_log_id=None):
         stderr=subprocess.PIPE,
         text=True,
         cwd=cwd,
+        start_new_session=True,
     )
     register_sync_process(sync_log_id, process)
+    if sync_log_id:
+        log = DataSyncLog.query.get(sync_log_id)
+        if log:
+            summary = log.summary or {}
+            summary['process_pid'] = process.pid
+            summary['process_started_at'] = datetime.utcnow().isoformat()
+            summary['process_command'] = ' '.join(command)
+            log.summary = summary
+            db.session.commit()
     deadline = time.monotonic() + timeout
 
     try:
         while True:
             try:
                 stdout, stderr = process.communicate(timeout=1)
+                if sync_log_id:
+                    raise_if_sync_cancelled(
+                        sync_log_id,
+                        message='Sync force-stopped by user.',
+                    )
                 return subprocess.CompletedProcess(
                     command, process.returncode, stdout, stderr,
                 )
             except subprocess.TimeoutExpired:
                 if sync_log_id:
-                    raise_if_sync_cancelled(
-                        sync_log_id,
-                        message='Sync cancelled by user.',
-                    )
-                if time.monotonic() >= deadline:
-                    if process.poll() is None:
-                        process.terminate()
                     try:
-                        process.communicate(timeout=10)
+                        raise_if_sync_cancelled(
+                            sync_log_id,
+                            message='Sync force-stopped by user.',
+                        )
+                    except SyncCancelledError:
+                        terminate_sync_process(sync_log_id)
+                        raise
+                if time.monotonic() >= deadline:
+                    terminate_sync_process(sync_log_id)
+                    if process.poll() is None:
+                        try:
+                            process.kill()
+                        except ProcessLookupError:
+                            pass
+                    try:
+                        process.communicate(timeout=5)
                     except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.communicate()
+                        pass
                     raise subprocess.TimeoutExpired(command, timeout)
     except SyncCancelledError:
+        terminate_sync_process(sync_log_id)
         if process.poll() is None:
-            process.terminate()
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
         try:
-            process.communicate(timeout=10)
+            process.communicate(timeout=5)
         except subprocess.TimeoutExpired:
-            process.kill()
-            process.communicate()
+            pass
         raise
     finally:
         unregister_sync_process(sync_log_id)
+        if sync_log_id:
+            log = DataSyncLog.query.get(sync_log_id)
+            if log and (log.summary or {}).get('process_pid') == process.pid:
+                summary = log.summary or {}
+                summary.pop('process_pid', None)
+                summary.pop('process_started_at', None)
+                summary.pop('process_command', None)
+                log.summary = summary
+                db.session.commit()
 
 
 def _run_hana_sync_script(sync_log_id=None):
@@ -267,6 +346,58 @@ def _run_hana_sync_script(sync_log_id=None):
             os.remove(json_path)
         except OSError:
             pass
+
+
+def _parse_json_from_stdout(stdout):
+    """Return the last JSON object printed by a helper script."""
+    for line in reversed((stdout or '').splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            return json.loads(line), None
+        except json.JSONDecodeError:
+            continue
+    return {}, f'Could not parse helper script JSON output: {(stdout or "")[:500]}'
+
+
+def _run_db_sync_script(sync_log_id=None, timeout=900):
+    """Run CSV -> DB sync as a killable subprocess and parse its JSON result."""
+    project_root = _get_project_root()
+    ds_path = os.path.join(project_root, 'datasources')
+    db_script = os.path.join(project_root, 'scripts', 'db_sync.py')
+
+    completed = _run_cancellable_subprocess(
+        [sys.executable, db_script, '--datasources', ds_path],
+        cwd=project_root,
+        timeout=timeout,
+        sync_log_id=sync_log_id,
+    )
+
+    db_result, parse_error = _parse_json_from_stdout(completed.stdout)
+    db_error = None
+
+    if completed.returncode != 0:
+        db_error = (
+            (db_result.get('errors') or [None])[0]
+            or completed.stderr[:500]
+            or parse_error
+            or 'db_sync.py exited non-zero'
+        )
+    elif parse_error:
+        db_error = parse_error
+
+    db_summary = None
+    if not db_error:
+        db_summary = {
+            'success': db_result.get('success', False),
+            'stats': db_result.get('stats', {}),
+            'errors': db_result.get('errors', [])[:10],
+            'elapsed_seconds': db_result.get('elapsed_seconds'),
+            'sync_run_id': db_result.get('sync_run_id'),
+        }
+
+    return completed, db_result, db_summary, db_error
 
 
 # ============================================================================
@@ -520,7 +651,7 @@ def sync_log_detail(log_id):
 @settings_bp.route('/sync-logs/<int:log_id>/cancel', methods=['POST'])
 @super_admin_required
 def cancel_sync(log_id):
-    """Request cancellation for a running sync and stop any active subprocess."""
+    """Force-stop a running sync and any related child/parent syncs."""
     _mark_stale_running_logs()
     log = DataSyncLog.query.get_or_404(log_id)
 
@@ -528,26 +659,44 @@ def cancel_sync(log_id):
         flash('That sync is no longer running.', 'warning')
         return redirect(url_for('settings.sync_logs'))
 
-    request_sync_cancellation(
-        log.id,
-        requested_by=current_user,
-        reason='Stop requested from the sync logs page.',
-    )
-
+    target_logs = {log.id: log}
     parent_log_id = (log.summary or {}).get('parent_sync_log_id')
     if parent_log_id:
+        parent_log = DataSyncLog.query.get(parent_log_id)
+        if parent_log and parent_log.status == DataSyncLog.STATUS_RUNNING:
+            target_logs[parent_log.id] = parent_log
+
+    running_logs = DataSyncLog.query.filter(
+        DataSyncLog.status == DataSyncLog.STATUS_RUNNING
+    ).all()
+    for running in running_logs:
+        if (running.summary or {}).get('parent_sync_log_id') == log.id:
+            target_logs[running.id] = running
+
+    killed_count = 0
+    for target in target_logs.values():
         request_sync_cancellation(
-            parent_log_id,
+            target.id,
             requested_by=current_user,
-            reason='Child Blue sync cancellation requested from the sync logs page.',
+            reason='Force stop requested from the sync logs page.',
         )
+        if terminate_sync_process(target.id):
+            killed_count += 1
+        if terminate_external_sync_process(target.id):
+            killed_count += 1
 
-    terminated = terminate_sync_process(log.id)
+        mark_sync_cancelled(target, 'Sync force-stopped by user.')
+        errors = target.errors
+        if 'Sync force-stopped by user.' not in errors:
+            errors.append('Sync force-stopped by user.')
+        target.errors = errors[:50]
 
-    if terminated:
-        flash('Stop requested. The active sync subprocess was terminated.', 'warning')
+    db.session.commit()
+
+    if killed_count:
+        flash('Sync force-stopped. Any active sync process was killed.', 'warning')
     else:
-        flash('Stop requested. The sync will stop after the current step reaches a cancellation check.', 'warning')
+        flash('Sync marked cancelled. No active sync subprocess was found to kill.', 'warning')
 
     return redirect(url_for('settings.sync_logs'))
 
@@ -645,34 +794,10 @@ def trigger_hana_sync():
                         log.summary = _merge_cancel_summary(log, summary)
                         db.session.commit()
 
-                        project_root = _get_project_root()
-                        ds_path = os.path.join(project_root, 'datasources')
-                        db_script = os.path.join(project_root, 'scripts', 'db_sync.py')
-                        db_proc = _run_cancellable_subprocess(
-                            [sys.executable, db_script, '--datasources', ds_path],
-                            cwd=project_root,
-                            timeout=900,   # 15 min hard limit
+                        _db_proc, _db_result, db_summary, db_error = _run_db_sync_script(
                             sync_log_id=log_id,
+                            timeout=900,
                         )
-                        # Script emits a single JSON line on stdout.
-                        db_result = {}
-                        if db_proc.stdout.strip():
-                            try:
-                                db_result = json.loads(db_proc.stdout.strip())
-                            except json.JSONDecodeError:
-                                db_error = f'Could not parse db_sync output: {db_proc.stdout[:500]}'
-
-                        if db_proc.returncode != 0 and not db_error:
-                            db_error = db_result.get('errors', [db_proc.stderr[:500] or 'db_sync.py exited non-zero'])[0]
-
-                        if not db_error:
-                            db_summary = {
-                                'success': db_result.get('success', False),
-                                'stats': db_result.get('stats', {}),
-                                'errors': db_result.get('errors', [])[:10],
-                                'elapsed_seconds': db_result.get('elapsed_seconds'),
-                                'sync_run_id': db_result.get('sync_run_id'),
-                            }
                     except SyncCancelledError:
                         raise
                     except subprocess.TimeoutExpired:
@@ -880,31 +1005,36 @@ def trigger_full_sync():
                     return
 
                 raise_if_sync_cancelled(log_id)
-                # Step 2: CSV -> database via CourseSyncService (PostgreSQL-native).
+                # Step 2: CSV -> database via a killable subprocess.
                 summary['pipeline_phase'] = 'database_sync'
                 summary['pipeline_step'] = 2
                 summary['pipeline_message'] = 'Syncing datasource CSV files into the application database...'
                 log.summary = _merge_cancel_summary(log, summary)
                 db.session.commit()
 
-                project_root = _get_project_root()
-                from app.services.course_sync import (
-                    CourseSyncService, resolve_datasources_path,
-                )
-                ds_path = resolve_datasources_path(
-                    os.path.join(project_root, 'datasources')
-                )
-                course_sync = CourseSyncService(ds_path)
-                db_result = course_sync.sync_all(sync_log_id=log_id)
+                try:
+                    _db_proc, db_result, db_summary, db_error = _run_db_sync_script(
+                        sync_log_id=log_id,
+                        timeout=900,
+                    )
+                except subprocess.TimeoutExpired:
+                    db_result = {}
+                    db_summary = None
+                    db_error = 'CSV->DB sync timed out after 15 minutes'
 
-                summary['database_sync'] = {
-                    'success': db_result.get('success', False),
-                    'stats': db_result.get('stats', {}),
-                    'errors': db_result.get('errors', [])[:10],
-                    'elapsed_seconds': db_result.get('elapsed_seconds'),
-                    'sync_run_id': db_result.get('sync_run_id'),
-                }
+                summary['database_sync'] = db_summary or {'error': db_error}
                 log.summary = _merge_cancel_summary(log, summary)
+
+                if db_error:
+                    log.status = DataSyncLog.STATUS_FAILED
+                    errors.append(f'CSV->DB sync failed: {db_error}')
+                    log.errors = errors
+                    summary['pipeline_phase'] = 'failed'
+                    summary['pipeline_message'] = f'CSV->DB sync failed: {db_error}'
+                    log.summary = _merge_cancel_summary(log, summary)
+                    log.completed_at = datetime.utcnow()
+                    db.session.commit()
+                    return
 
                 ds_stats = db_result.get('stats') or {}
                 log.records_added = (log.records_added or 0) + (

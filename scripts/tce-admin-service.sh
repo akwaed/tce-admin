@@ -35,7 +35,11 @@ case "$ACTION" in
         ;;
     stop)
         require_sudo "$ACTION"
-        systemctl stop "$SERVICE_NAME"
+        if ! timeout 15s systemctl stop "$SERVICE_NAME"; then
+            echo "Graceful stop timed out; force-killing $SERVICE_NAME."
+            systemctl kill --kill-who=all --signal=SIGKILL "$SERVICE_NAME" || true
+            systemctl reset-failed "$SERVICE_NAME" || true
+        fi
         systemctl status "$SERVICE_NAME" --no-pager || true
         ;;
     restart)

@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import sys
+from datetime import datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -57,6 +59,7 @@ def main():
     with app.app_context():
         from app.models import db
         from app.models.settings import DataSyncLog
+        from app.services.sync_control import SyncCancelledError, mark_sync_cancelled
 
         ds_path = resolve_datasources_path(args.datasources)
 
@@ -76,13 +79,33 @@ def main():
                 'pipeline_step': 1,
                 'pipeline_total_steps': 1,
                 'pipeline_message': 'Scheduled: Syncing CSV datasources into the database...',
+                'process_pid': os.getpid(),
+                'process_started_at': datetime.utcnow().isoformat(),
             }
             db.session.add(sync_log)
             db.session.commit()
 
+            def handle_stop_signal(signum, _frame):
+                current_log = DataSyncLog.query.get(sync_log.id)
+                if current_log and current_log.status == DataSyncLog.STATUS_RUNNING:
+                    summary = current_log.summary
+                    summary['pipeline_phase'] = 'failed'
+                    summary['pipeline_message'] = f'Scheduled sync terminated by signal {signum}.'
+                    current_log.summary = summary
+                    current_log.status = DataSyncLog.STATUS_FAILED
+                    current_log.completed_at = datetime.utcnow()
+                    errors = current_log.errors
+                    errors.append(f'Scheduled sync terminated by signal {signum}.')
+                    current_log.errors = errors[:50]
+                    db.session.commit()
+                sys.exit(128 + signum)
+
+            signal.signal(signal.SIGTERM, handle_stop_signal)
+            signal.signal(signal.SIGINT, handle_stop_signal)
+
         service = CourseSyncService(ds_path)
         try:
-            result = service.sync_all()
+            result = service.sync_all(sync_log_id=sync_log.id if sync_log else None)
 
             if sync_log:
                 stats = result.get('stats', {})
@@ -111,6 +134,26 @@ def main():
 
             print(json.dumps(result, default=str))
             sys.exit(0)
+
+        except SyncCancelledError as e:
+            if sync_log:
+                current_log = DataSyncLog.query.get(sync_log.id)
+                if current_log:
+                    mark_sync_cancelled(current_log, str(e))
+                    errors = current_log.errors
+                    errors.append(str(e))
+                    current_log.errors = errors[:50]
+                    db.session.commit()
+
+            print(json.dumps({
+                'success': False,
+                'cancelled': True,
+                'errors': [str(e)],
+                'stats': {},
+                'elapsed_seconds': 0,
+                'sync_log_id': sync_log.id if sync_log else None,
+            }))
+            sys.exit(1)
 
         except Exception as e:
             if sync_log:

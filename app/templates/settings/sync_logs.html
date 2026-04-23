@@ -60,7 +60,7 @@
             <div class="small text-muted sync-detail-label" {% if not initial_detail %}style="display:none;"{% endif %}>{{ initial_detail }}</div>
             <div class="small text-muted sync-elapsed-label"></div>
             <div class="small text-warning sync-cancel-label" {% if not running_summary.get('cancel_requested') %}style="display:none;"{% endif %}>
-                Stop requested. Waiting for the current step to exit cleanly.
+                Stop requested. The active sync process is being force-stopped.
             </div>
 
             {% if hana_progress.error %}
@@ -79,13 +79,13 @@
             <form action="{{ url_for('settings.cancel_sync', log_id=running_log.id) }}"
                   method="post"
                   class="d-inline"
-                  onsubmit="return confirm('Stop the running sync?\n\nThis will request cancellation and terminate any active script subprocess if possible.')">
+                  onsubmit="return confirm('Force-stop the running sync?\n\nThis will kill any active sync subprocess instead of waiting for a graceful exit.')">
                 <button type="submit"
                         class="btn btn-sm btn-outline-danger sync-stop-btn"
                         {% if running_summary.get('cancel_requested') %}disabled{% endif %}>
                     <i class="bi bi-stop-circle"></i>
                     <span class="sync-stop-label">
-                        {% if running_summary.get('cancel_requested') %}Stop Requested{% else %}Stop Sync{% endif %}
+                        {% if running_summary.get('cancel_requested') %}Force Stop Requested{% else %}Force Stop{% endif %}
                     </span>
                 </button>
             </form>
@@ -313,7 +313,7 @@
                             <form action="{{ url_for('settings.cancel_sync', log_id=log.id) }}"
                                   method="post"
                                   class="d-inline"
-                                  onsubmit="return confirm('Stop this running sync?')">
+                                  onsubmit="return confirm('Force-stop this running sync?')">
                                 <button type="submit" class="btn btn-sm btn-outline-danger">
                                     <i class="bi bi-stop-circle"></i> Stop
                                 </button>
@@ -485,7 +485,7 @@ updateBlueSyncButton();
                 }
                 if (stopBtn && stopLabel) {
                     stopBtn.disabled = !!data.cancel_requested;
-                    stopLabel.textContent = data.cancel_requested ? 'Stop Requested' : 'Stop Sync';
+                    stopLabel.textContent = data.cancel_requested ? 'Force Stop Requested' : 'Force Stop';
                 }
                 if (cancelEl) {
                     cancelEl.style.display = data.cancel_requested ? '' : 'none';

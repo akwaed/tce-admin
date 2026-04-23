@@ -2,9 +2,10 @@
 # =============================================================================
 # daily_sync.sh  -  TCE Admin nightly HANA -> PostgreSQL sync
 #
-# Runs two steps:
+# Runs three steps:
 #   1. scripts/hana_sync.py   : pulls CSV files from SAP HANA
 #   2. scripts/db_sync.py     : loads CSVs into PostgreSQL
+#   3. scripts/dra_sync.py    : pushes DRA data to Explorance Blue
 #
 # Usage:
 #   bash /var/www/tce-admin/scripts/daily_sync.sh
@@ -29,12 +30,25 @@ DATASOURCES_DIR="$PROJECT_DIR/datasources"
 HANA_SCRIPT="$PROJECT_DIR/scripts/hana_sync.py"
 DB_SCRIPT="$PROJECT_DIR/scripts/db_sync.py"
 DRA_SCRIPT="$PROJECT_DIR/scripts/dra_sync.py"
+HANA_TIMEOUT_SECONDS="${HANA_TIMEOUT_SECONDS:-600}"
+DB_SYNC_TIMEOUT_SECONDS="${DB_SYNC_TIMEOUT_SECONDS:-900}"
+DRA_SYNC_TIMEOUT_SECONDS="${DRA_SYNC_TIMEOUT_SECONDS:-900}"
 
 # ---------------------------------------------------------------------------
 # Logging helper
 # ---------------------------------------------------------------------------
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+run_with_timeout() {
+    local seconds="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout --kill-after=30s "$seconds" "$@"
+    else
+        "$@"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -81,30 +95,45 @@ OVERALL_START=$(date +%s)
 # ---------------------------------------------------------------------------
 # Step 1: HANA -> CSV
 # ---------------------------------------------------------------------------
-log "Step 1/2: Fetching data from SAP HANA..."
+log "Step 1/3: Fetching data from SAP HANA..."
 HANA_START=$(date +%s)
 
-if ! "$VENV_PYTHON" "$HANA_SCRIPT" --output "$DATASOURCES_DIR"; then
-    log "ERROR: HANA sync failed (exit code $?). Aborting."
+set +e
+run_with_timeout "$HANA_TIMEOUT_SECONDS" "$VENV_PYTHON" "$HANA_SCRIPT" --output "$DATASOURCES_DIR"
+HANA_EXIT=$?
+set -e
+
+if [ $HANA_EXIT -ne 0 ]; then
+    if [ $HANA_EXIT -eq 124 ] || [ $HANA_EXIT -eq 137 ]; then
+        log "ERROR: HANA sync timed out after ${HANA_TIMEOUT_SECONDS}s. Aborting."
+    else
+        log "ERROR: HANA sync failed (exit code $HANA_EXIT). Aborting."
+    fi
     exit 1
 fi
 
 HANA_END=$(date +%s)
-log "Step 1/2 complete in $(( HANA_END - HANA_START ))s."
+log "Step 1/3 complete in $(( HANA_END - HANA_START ))s."
 
 # ---------------------------------------------------------------------------
 # Step 2: CSV -> PostgreSQL
 # ---------------------------------------------------------------------------
-log "Step 2/2: Loading CSV data into PostgreSQL..."
+log "Step 2/3: Loading CSV data into PostgreSQL..."
 DB_START=$(date +%s)
 
-DB_OUTPUT=$("$VENV_PYTHON" "$DB_SCRIPT" --datasources "$DATASOURCES_DIR" --scheduled 2>&1)
+set +e
+DB_OUTPUT=$(run_with_timeout "$DB_SYNC_TIMEOUT_SECONDS" "$VENV_PYTHON" "$DB_SCRIPT" --datasources "$DATASOURCES_DIR" --scheduled 2>&1)
 DB_EXIT=$?
+set -e
 
 DB_END=$(date +%s)
 
 if [ $DB_EXIT -ne 0 ]; then
-    log "ERROR: db_sync.py failed (exit code $DB_EXIT)."
+    if [ $DB_EXIT -eq 124 ] || [ $DB_EXIT -eq 137 ]; then
+        log "ERROR: db_sync.py timed out after ${DB_SYNC_TIMEOUT_SECONDS}s."
+    else
+        log "ERROR: db_sync.py failed (exit code $DB_EXIT)."
+    fi
     log "Output: $DB_OUTPUT"
     exit 1
 fi
@@ -117,7 +146,7 @@ INSTRUCTORS=$(echo "$DB_JSON"    | python3 -c "import sys,json; d=json.load(sys.
 STUDENTS=$(echo "$DB_JSON"       | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('stats',{}).get('students_counted',0))" 2>/dev/null || echo "?")
 ELAPSED=$(echo "$DB_JSON"        | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d.get('elapsed_seconds',0),1))" 2>/dev/null || echo "?")
 
-log "Step 2/2 complete in $(( DB_END - DB_START ))s."
+log "Step 2/3 complete in $(( DB_END - DB_START ))s."
 log "  Courses  : +${COURSES_ADDED} added, ~${COURSES_UPDATED} updated"
 log "  Instructors: +${INSTRUCTORS} added"
 log "  Students counted: ${STUDENTS}"
@@ -129,8 +158,17 @@ log "  DB sync took: ${ELAPSED}s"
 log "Step 3/3: Pushing DRA data to Explorance Blue..."
 DRA_START=$(date +%s)
 
-if ! "$VENV_PYTHON" "$DRA_SCRIPT"; then
-    log "WARNING: DRA sync failed (exit code $?). Daily DB sync was successful."
+set +e
+run_with_timeout "$DRA_SYNC_TIMEOUT_SECONDS" "$VENV_PYTHON" "$DRA_SCRIPT"
+DRA_EXIT=$?
+set -e
+
+if [ $DRA_EXIT -ne 0 ]; then
+    if [ $DRA_EXIT -eq 124 ] || [ $DRA_EXIT -eq 137 ]; then
+        log "WARNING: DRA sync timed out after ${DRA_SYNC_TIMEOUT_SECONDS}s. Daily DB sync was successful."
+    else
+        log "WARNING: DRA sync failed (exit code $DRA_EXIT). Daily DB sync was successful."
+    fi
     # DRA failure is non-fatal — do not abort or change exit code
 fi
 
