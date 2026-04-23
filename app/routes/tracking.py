@@ -99,6 +99,110 @@ def get_department_sources_for_dra(admin):
     return [], [f"No department ID for dept admin {admin.linkblue}"]
 
 
+def get_latest_course_load():
+    """Return courses from the most recent Courses.csv database load."""
+    latest_synced = db.session.query(db.func.max(Course.last_synced)).scalar()
+    if not latest_synced:
+        return [], None
+
+    courses = Course.query.filter(
+        Course.last_synced == latest_synced
+    ).all()
+    return courses, latest_synced
+
+
+def build_hierarchy_rows(courses):
+    """
+    Build Explorance hierarchy rows from synced Courses.csv fields.
+
+    Levels:
+    1. University
+    2. CLASS_COLLEGE_SHORT
+    3. CLASS_DEPARTMENT_ID
+    4. CLASS_ID
+    """
+    colleges = {}
+    departments = {}
+    course_rows = set()
+    errors = []
+
+    for course in courses:
+        college_code = _clean_dra_source(course.college_code)
+        department_id = _clean_dra_source(course.department_id)
+        class_id = _clean_dra_source(course.class_id)
+        class_code = _clean_dra_source(course.class_code)
+        section_title = _clean_dra_source(course.section_title)
+
+        college_name = course.college.name if course.college else college_code
+        department_name = course.department.name if course.department else department_id
+        department_college_code = (
+            _clean_dra_source(course.department.college_code)
+            if course.department else college_code
+        )
+        department_college_name = (
+            course.department.college.name
+            if course.department and course.department.college else college_name
+        )
+
+        if college_code:
+            colleges[college_code] = college_name or college_code
+        else:
+            errors.append(f"Missing CLASS_COLLEGE_SHORT for {course.section_key}")
+
+        if department_id:
+            departments[department_id] = {
+                'name': department_name or department_id,
+                'college_code': department_college_code or college_code,
+                'college_name': department_college_name or college_name,
+            }
+        else:
+            errors.append(f"Missing CLASS_DEPARTMENT_ID for {course.section_key}")
+
+        if class_id and department_id:
+            course_rows.add((
+                class_id,
+                section_title or class_code or class_id,
+                department_id,
+                department_name or department_id,
+                4,
+                class_code,
+            ))
+        elif not class_id:
+            errors.append(f"Missing CLASS_ID for {course.section_key}")
+
+    rows = [
+        ['University', 'University', '', '', 1, '']
+    ]
+
+    for college_code, college_name in sorted(
+        colleges.items(),
+        key=lambda item: (item[1], item[0])
+    ):
+        rows.append([college_code, college_name, 'University', 'University', 2, ''])
+
+    department_items = sorted(
+        departments.items(),
+        key=lambda item: (item[1]['college_name'], item[1]['name'], item[0])
+    )
+    for department_id, department in department_items:
+        rows.append([
+            department_id,
+            department['name'],
+            department['college_code'],
+            department['college_name'],
+            3,
+            '',
+        ])
+
+    for course_row in sorted(
+        course_rows,
+        key=lambda row: (row[3], row[5], row[1], row[0])
+    ):
+        rows.append(list(course_row))
+
+    return rows, errors
+
+
 @tracking_bp.route('/')
 @super_admin_required
 def index():
@@ -567,6 +671,61 @@ def export_dra():
     output.seek(0)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     filename = f'DRA_export_{timestamp}.csv'
+
+    return Response(
+        output.getvalue(),
+        mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename={filename}'}
+    )
+
+
+@tracking_bp.route('/export-hierarchy')
+@super_admin_required
+def export_hierarchy():
+    """
+    Export the Explorance hierarchy file from the latest synced Courses.csv data.
+
+    Format: Node Id, Node Caption, Parent Node Id, Parent Node Caption, Level, CourseNo
+    - Level 1: University
+    - Level 2: CLASS_COLLEGE_SHORT
+    - Level 3: CLASS_DEPARTMENT_ID
+    - Level 4: CLASS_ID
+    """
+    courses, latest_synced = get_latest_course_load()
+    if not latest_synced or not courses:
+        flash(
+            'No synced course data found. Run a HANA/database sync before creating the hierarchy file.',
+            'warning'
+        )
+        return redirect(url_for('tracking.index'))
+
+    hierarchy_rows, errors = build_hierarchy_rows(courses)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        'Node Id',
+        'Node Caption',
+        'Parent Node Id',
+        'Parent Node Caption',
+        'Level',
+        'CourseNo',
+    ])
+    writer.writerows(hierarchy_rows)
+
+    QBAuditLog.log_action('hierarchy_export', current_user,
+                          details={
+                              'latest_course_load': latest_synced.isoformat(),
+                              'courses_loaded': len(courses),
+                              'rows_exported': len(hierarchy_rows),
+                              'errors_count': len(errors),
+                              'errors': errors[:10],
+                          })
+    db.session.commit()
+
+    output.seek(0)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f'hierarchy_export_{timestamp}.csv'
 
     return Response(
         output.getvalue(),
