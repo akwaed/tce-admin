@@ -64,31 +64,76 @@ def log(msg: str) -> None:
 # DRA CSV generation (mirrors export_dra() in app/routes/tracking.py)
 # ---------------------------------------------------------------------------
 
-# Maps internal college codes -> Explorance DRA source codes
-DRA_COLLEGE_CODES = {
-    'AS':       '8E000',
-    'FA':       '8X000',
-    'AG':       '81010',
-    'BE':       '8F000',
-    'EN':       '8H000',
-    'ME':       '7H000',
-    'DE':       '8N000',
-    'DS':       '8N000',
-    'HS':       '7N800',
-    'PH':       '7P610',
-    'PU':       '7P610',
-    'ED':       '8G000',
-    'DEN':      '7A000',
-    'CI':       '8M000',
-    'SW':       '8T110',
-    'GS':       '8W300',
-    'UE':       '8Z110',
-    'LHC':      '30000055',
-    '30000055': '30000055',
-    'LA':       '8K000',
-    'NU':       '7E000',
-    'PHA':      '7K000',
-}
+def _clean_dra_source(value) -> str:
+    return str(value).strip() if value is not None else ''
+
+
+def _resolve_college_code_from_courses(college_value) -> str | None:
+    """Resolve a stored college value to CLASS_COLLEGE_SHORT from synced Courses.csv data."""
+    from app.models import db
+    from app.models.course import College
+
+    college_value = _clean_dra_source(college_value)
+    if not college_value:
+        return None
+
+    college = College.query.get(college_value)
+    if not college:
+        college = College.query.filter(
+            db.func.lower(College.name) == college_value.lower()
+        ).first()
+
+    return college.code if college else None
+
+
+def _get_college_source(admin) -> tuple[str | None, str | None]:
+    college_code = _resolve_college_code_from_courses(admin.college_code)
+    if college_code:
+        return college_code, None
+
+    if admin.college_code:
+        return None, f"College not found in synced Courses.csv data: {admin.college_code} ({admin.linkblue})"
+    return None, f"No college code for college admin {admin.linkblue}"
+
+
+def _resolve_department_source(department_value, college_value=None) -> str | None:
+    """Resolve a stored department value to CLASS_DEPARTMENT_ID."""
+    from app.models import db
+    from app.models.course import Department
+
+    department_value = _clean_dra_source(department_value)
+    if not department_value or department_value.lower() == 'all':
+        return None
+
+    department = Department.query.get(department_value)
+    if department:
+        return department.id
+
+    query = Department.query.filter(
+        db.func.lower(Department.name) == department_value.lower()
+    )
+    college_code = _resolve_college_code_from_courses(college_value)
+    if college_code:
+        query = query.filter(Department.college_code == college_code)
+
+    departments = query.all()
+    if len(departments) == 1:
+        return departments[0].id
+    return None
+
+
+def _get_department_sources(admin) -> tuple[list[str], list[str]]:
+    departments = admin.departments.all()
+    if departments:
+        return [_clean_dra_source(dept.id) for dept in departments if dept.id], []
+
+    if admin.department_id:
+        department_id = _resolve_department_source(admin.department_id, admin.college_code)
+        if department_id:
+            return [department_id], []
+        return [], [f"Department not found or ambiguous in synced Courses.csv data: {admin.department_id} ({admin.linkblue})"]
+
+    return [], [f"No department ID for dept admin {admin.linkblue}"]
 
 
 def generate_dra_rows(app_ctx) -> tuple[list[list], list[str]]:
@@ -96,8 +141,7 @@ def generate_dra_rows(app_ctx) -> tuple[list[list], list[str]]:
 
     Must be called inside a Flask app context.
     """
-    from app.models.admin import Admin, CourseCoordinatorAssignment
-    from app.models.course import Course, College
+    from app.models.admin import Admin
 
     rows: list[list] = []
     errors: list[str] = []
@@ -117,20 +161,17 @@ def generate_dra_rows(app_ctx) -> tuple[list[list], list[str]]:
                     rows.append([class_id, admin.linkblue, 'CRS1'])
 
             elif admin.contact_type == 'College' or admin.role == 'college_admin':
-                dra_code = DRA_COLLEGE_CODES.get(admin.college_code)
-                if not dra_code:
-                    errors.append(f"No DRA code for college {admin.college_code} ({admin.linkblue})")
+                college_source, college_error = _get_college_source(admin)
+                if college_error:
+                    errors.append(college_error)
                     continue
-                rows.append([dra_code, admin.linkblue, 'C4'])
+                rows.append([college_source, admin.linkblue, 'C4'])
 
             elif admin.contact_type == 'Department' or admin.role == 'dept_admin':
-                if admin.departments.count() > 0:
-                    for dept in admin.departments.all():
-                        rows.append([dept.id, admin.linkblue, 'D3'])
-                elif admin.department_id:
-                    rows.append([admin.department_id, admin.linkblue, 'D3'])
-                else:
-                    errors.append(f"No department ID for dept admin {admin.linkblue}")
+                department_sources, department_errors = _get_department_sources(admin)
+                errors.extend(department_errors)
+                for department_source in department_sources:
+                    rows.append([department_source, admin.linkblue, 'D3'])
 
         except Exception as e:
             errors.append(f"Error processing {admin.linkblue}: {e}")

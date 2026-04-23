@@ -7,7 +7,7 @@ Export DRA data for Explorance Blue integration
 from flask import Blueprint, render_template, redirect, url_for, flash, request, Response, jsonify
 from flask_login import login_required, current_user
 from app.models import db
-from app.models.admin import Admin, AdminAuditLog, CourseCoordinatorAssignment
+from app.models.admin import Admin, AdminAuditLog
 from app.models.question import QBAuditLog, QBBackup
 from app.models.course import College, Department, Course
 from app.services.backup_service import get_backup_service
@@ -17,32 +17,6 @@ import csv
 import io
 
 tracking_bp = Blueprint('tracking', __name__)
-
-# DRA College Code Mapping - Maps internal college codes to Explorance DRA codes
-DRA_COLLEGE_CODES = {
-    'AS': '8E000',    # Arts and Sciences
-    'FA': '8X000',    # Fine Arts
-    'AG': '81010',    # Ag, Food and Environment
-    'BE': '8F000',    # Business & Economics
-    'EN': '8H000',    # Engineering
-    'ME': '7H000',    # Medicine
-    'DE': '8N000',    # Design
-    'DS': '8N000',    # Design (alternate code)
-    'HS': '7N800',    # Health Sciences
-    'PH': '7P610',    # Public Health
-    'PU': '7P610',    # Public Health (alternate code)
-    'ED': '8G000',    # Education
-    'DEN': '7A000',   # Dentistry
-    'CI': '8M000',    # Communication and Information
-    'SW': '8T110',    # Social Work
-    'GS': '8W300',    # Graduate School
-    'UE': '8Z110',    # Undergraduate Education
-    'LHC': '30000055',  # Lewis Honors College
-    '30000055': '30000055',  # Lewis Honors College (direct code)
-    'LA': '8K000',    # Law
-    'NU': '7E000',    # Nursing
-    'PHA': '7K000',   # Pharmacy
-}
 
 
 def super_admin_required(f):
@@ -55,6 +29,74 @@ def super_admin_required(f):
             return redirect(url_for('main.dashboard'))
         return f(*args, **kwargs)
     return decorated_function
+
+
+def _clean_dra_source(value):
+    return str(value).strip() if value is not None else ''
+
+
+def _resolve_college_code_from_courses(college_value):
+    """Resolve a stored college value to CLASS_COLLEGE_SHORT from synced Courses.csv data."""
+    college_value = _clean_dra_source(college_value)
+    if not college_value:
+        return None
+
+    college = College.query.get(college_value)
+    if not college:
+        college = College.query.filter(
+            db.func.lower(College.name) == college_value.lower()
+        ).first()
+
+    return college.code if college else None
+
+
+def get_college_source_for_dra(admin):
+    """Return the C4 source value from CLASS_COLLEGE_SHORT."""
+    college_code = _resolve_college_code_from_courses(admin.college_code)
+    if college_code:
+        return college_code, None
+
+    if admin.college_code:
+        return None, f"College not found in synced Courses.csv data: {admin.college_code} for {admin.linkblue}"
+    return None, f"No college code for college admin {admin.linkblue}"
+
+
+def resolve_department_source_for_dra(department_value, college_value=None):
+    """Resolve a stored department value to CLASS_DEPARTMENT_ID."""
+    department_value = _clean_dra_source(department_value)
+    if not department_value or department_value.lower() == 'all':
+        return None
+
+    department = Department.query.get(department_value)
+    if department:
+        return department.id
+
+    query = Department.query.filter(
+        db.func.lower(Department.name) == department_value.lower()
+    )
+    college_code = _resolve_college_code_from_courses(college_value)
+    if college_code:
+        query = query.filter(Department.college_code == college_code)
+
+    departments = query.all()
+    if len(departments) == 1:
+        return departments[0].id
+    return None
+
+
+def get_department_sources_for_dra(admin):
+    """Return D3 source values from CLASS_DEPARTMENT_ID."""
+    departments = admin.departments.all()
+    if departments:
+        return [_clean_dra_source(dept.id) for dept in departments if dept.id], []
+
+    if admin.department_id:
+        department_id = resolve_department_source_for_dra(admin.department_id, admin.college_code)
+        if department_id:
+            return [department_id], []
+        return [], [f"Department not found or ambiguous in synced Courses.csv data: {admin.department_id} for {admin.linkblue}"]
+
+    return [], [f"No department ID for dept admin {admin.linkblue}"]
 
 
 @tracking_bp.route('/')
@@ -444,7 +486,7 @@ def export_dra():
     Export DRA (Data Relationship Assignment) file for Explorance Blue.
 
     Format: source,target,targetType
-    - source: The organizational unit code (college DRA code, department ID, or class ID)
+    - source: The CLASS_COLLEGE_SHORT, CLASS_DEPARTMENT_ID, or CLASS_ID from synced Courses.csv data
     - target: The admin's linkblue
     - targetType: C4 (college), D3 (department), or CRS1 (course)
 
@@ -490,36 +532,24 @@ def export_dra():
             elif admin.contact_type == 'College' or admin.role == 'college_admin':
                 # College-level contact
                 target_type = 'C4'
-                # Map internal college code to DRA code
-                dra_code = DRA_COLLEGE_CODES.get(admin.college_code)
-                if not dra_code:
-                    # Try to find from College table
-                    college = College.query.get(admin.college_code)
-                    if college:
-                        # If no mapping, use a default pattern or skip
-                        errors.append(f"No DRA code mapping for college {admin.college_code}")
-                        continue
-                    else:
-                        errors.append(f"College not found: {admin.college_code} for {admin.linkblue}")
-                        continue
+                college_source, college_error = get_college_source_for_dra(admin)
+                if college_error:
+                    errors.append(college_error)
+                    continue
 
-                writer.writerow([dra_code, admin.linkblue, target_type])
+                writer.writerow([college_source, admin.linkblue, target_type])
                 rows_written += 1
 
             elif admin.contact_type == 'Department' or admin.role == 'dept_admin':
                 # Department-level contact
                 target_type = 'D3'
 
-                # Check if admin has multiple departments
-                if admin.departments.count() > 0:
-                    for dept in admin.departments.all():
-                        writer.writerow([dept.id, admin.linkblue, target_type])
-                        rows_written += 1
-                elif admin.department_id:
-                    writer.writerow([admin.department_id, admin.linkblue, target_type])
+                department_sources, department_errors = get_department_sources_for_dra(admin)
+                errors.extend(department_errors)
+
+                for department_source in department_sources:
+                    writer.writerow([department_source, admin.linkblue, target_type])
                     rows_written += 1
-                else:
-                    errors.append(f"No department ID for dept admin {admin.linkblue}")
 
         except Exception as e:
             errors.append(f"Error processing {admin.linkblue}: {str(e)}")
@@ -599,9 +629,13 @@ def dra_preview():
 
             elif admin.contact_type == 'College' or admin.role == 'college_admin':
                 target_type = 'C4'
-                dra_code = DRA_COLLEGE_CODES.get(admin.college_code, f'UNMAPPED:{admin.college_code}')
+                college_source, college_error = get_college_source_for_dra(admin)
+                if college_error:
+                    errors.append(college_error)
+                    continue
+
                 preview_data.append({
-                    'source': dra_code,
+                    'source': college_source,
                     'target': admin.linkblue,
                     'targetType': target_type,
                     'admin_name': admin.full_name,
@@ -610,27 +644,20 @@ def dra_preview():
 
             elif admin.contact_type == 'Department' or admin.role == 'dept_admin':
                 target_type = 'D3'
-                if admin.departments.count() > 0:
-                    for dept in admin.departments.all():
-                        preview_data.append({
-                            'source': dept.id,
-                            'target': admin.linkblue,
-                            'targetType': target_type,
-                            'admin_name': admin.full_name,
-                            'contact_type': f'Department: {dept.name}'
-                        })
-                elif admin.department_id:
-                    dept = Department.query.get(admin.department_id)
-                    dept_name = dept.name if dept else admin.department_id
+
+                department_sources, department_errors = get_department_sources_for_dra(admin)
+                errors.extend(department_errors)
+
+                for department_source in department_sources:
+                    dept = Department.query.get(department_source)
+                    dept_name = dept.name if dept else department_source
                     preview_data.append({
-                        'source': admin.department_id,
+                        'source': department_source,
                         'target': admin.linkblue,
                         'targetType': target_type,
                         'admin_name': admin.full_name,
                         'contact_type': f'Department: {dept_name}'
                     })
-                else:
-                    errors.append(f"No department for {admin.linkblue}")
 
         except Exception as e:
             errors.append(f"Error: {admin.linkblue} - {str(e)}")
@@ -647,5 +674,4 @@ def dra_preview():
     return render_template('tracking/dra_preview.html',
                            preview_data=preview_data,
                            errors=errors,
-                           stats=stats,
-                           dra_codes=DRA_COLLEGE_CODES)
+                           stats=stats)
