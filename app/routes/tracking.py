@@ -13,6 +13,7 @@ from app.models.course import College, Department, Course
 from app.services.backup_service import get_backup_service
 from functools import wraps
 from datetime import datetime
+from collections import defaultdict
 import csv
 import io
 
@@ -123,52 +124,78 @@ def build_hierarchy_rows(courses):
     """
     colleges = {}
     departments = {}
-    course_rows = set()
+    course_candidates = defaultdict(set)
+    course_sections = defaultdict(set)
+    flattened_departments = set()
     errors = []
 
     for course in courses:
+        section_key = _clean_dra_source(course.section_key)
         college_code = _clean_dra_source(course.college_code)
         department_id = _clean_dra_source(course.department_id)
         class_id = _clean_dra_source(course.class_id)
         class_code = _clean_dra_source(course.class_code)
         section_title = _clean_dra_source(course.section_title)
 
-        college_name = course.college.name if course.college else college_code
-        department_name = course.department.name if course.department else department_id
-        department_college_code = (
-            _clean_dra_source(course.department.college_code)
-            if course.department else college_code
-        )
-        department_college_name = (
-            course.department.college.name
-            if course.department and course.department.college else college_name
-        )
+        college_name = _clean_dra_source(
+            course.college.name if course.college else college_code
+        ) or college_code
+        department_name = _clean_dra_source(
+            course.department.name if course.department else department_id
+        ) or department_id
 
         if college_code:
             colleges[college_code] = college_name or college_code
         else:
-            errors.append(f"Missing CLASS_COLLEGE_SHORT for {course.section_key}")
+            errors.append(f"Missing CLASS_COLLEGE_SHORT for {section_key}")
 
+        course_parent_id = None
+        course_parent_name = None
         if department_id:
-            departments[department_id] = {
-                'name': department_name or department_id,
-                'college_code': department_college_code or college_code,
-                'college_name': department_college_name or college_name,
-            }
-        else:
-            errors.append(f"Missing CLASS_DEPARTMENT_ID for {course.section_key}")
+            if department_id == college_code:
+                # Explorance treats Node Id as globally unique, so a value
+                # cannot be emitted as both a college and department node.
+                course_parent_id = college_code
+                course_parent_name = college_name or college_code
+                if department_id not in flattened_departments:
+                    errors.append(
+                        "CLASS_DEPARTMENT_ID matches CLASS_COLLEGE_SHORT; "
+                        f"using the college node for {department_id}"
+                    )
+                    flattened_departments.add(department_id)
+            else:
+                department = {
+                    'name': department_name or department_id,
+                    'college_code': college_code,
+                    'college_name': college_name or college_code,
+                }
+                existing_department = departments.get(department_id)
+                if existing_department and existing_department != department:
+                    errors.append(
+                        "Conflicting hierarchy details for CLASS_DEPARTMENT_ID "
+                        f"{department_id}; using {existing_department['college_code']}"
+                    )
+                    department = existing_department
+                else:
+                    departments[department_id] = department
 
-        if class_id and department_id:
-            course_rows.add((
-                class_id,
-                section_title or class_code or class_id,
-                department_id,
-                department_name or department_id,
-                4,
+                course_parent_id = department_id
+                course_parent_name = department['name']
+        else:
+            errors.append(f"Missing CLASS_DEPARTMENT_ID for {section_key}")
+
+        if class_id and course_parent_id:
+            course_candidates[class_id].add((
+                course_parent_id,
+                course_parent_name,
                 class_code,
+                section_title or class_code or class_id,
             ))
+            course_sections[class_id].add(section_key)
         elif not class_id:
-            errors.append(f"Missing CLASS_ID for {course.section_key}")
+            errors.append(f"Missing CLASS_ID for {section_key}")
+        else:
+            errors.append(f"Missing hierarchy parent for CLASS_ID {class_id}")
 
     rows = [
         ['University', 'University', '', '', 1, '']
@@ -194,11 +221,59 @@ def build_hierarchy_rows(courses):
             '',
         ])
 
+    course_rows = []
+    for class_id, candidates in course_candidates.items():
+        sorted_candidates = sorted(
+            candidates,
+            key=lambda row: (row[1], row[0], row[2], row[3])
+        )
+        parent_ids = {candidate[0] for candidate in sorted_candidates}
+        if len(parent_ids) > 1:
+            errors.append(
+                f"CLASS_ID {class_id} appears under multiple parents; "
+                f"exporting one hierarchy node from {len(course_sections[class_id])} sections"
+            )
+
+        parent_id, parent_name, class_code, caption = sorted_candidates[0]
+        captions = {candidate[3] for candidate in sorted_candidates if candidate[3]}
+        if len(captions) > 1 and class_code:
+            caption = class_code
+
+        course_rows.append((
+            class_id,
+            caption or class_code or class_id,
+            parent_id,
+            parent_name,
+            4,
+            class_code,
+        ))
+
     for course_row in sorted(
         course_rows,
         key=lambda row: (row[3], row[5], row[1], row[0])
     ):
         rows.append(list(course_row))
+
+    node_ids = set()
+    duplicate_ids = set()
+    for row in rows:
+        node_id = row[0]
+        if node_id in node_ids:
+            duplicate_ids.add(node_id)
+        node_ids.add(node_id)
+
+    if duplicate_ids:
+        errors.append(
+            f"Duplicate hierarchy Node Ids generated: {', '.join(sorted(duplicate_ids)[:10])}"
+        )
+
+    for index, row in enumerate(rows, start=1):
+        parent_id = row[2]
+        if parent_id and parent_id not in node_ids:
+            errors.append(
+                f"Hierarchy parent missing before export: row {index} "
+                f"parent {parent_id} for node {row[0]}"
+            )
 
     return rows, errors
 

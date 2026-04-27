@@ -1,0 +1,285 @@
+{% extends "base.html" %}
+
+{% block title %}Custom Reports{% endblock %}
+
+{% block extra_css %}
+<style>
+    .report-type-card {
+        border: 1px solid var(--uk-gray);
+        border-radius: 8px;
+        padding: 1rem;
+        height: 100%;
+        background: #fff;
+    }
+
+    .report-builder-grid {
+        display: grid;
+        grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+        gap: 1.25rem;
+        align-items: start;
+    }
+
+    .column-group {
+        border: 1px solid var(--uk-gray);
+        border-radius: 8px;
+        padding: 1rem;
+        background-color: #fff;
+    }
+
+    .column-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 0.5rem 1rem;
+    }
+
+    .report-summary {
+        background-color: #f8fafc;
+        border: 1px solid var(--uk-gray);
+        border-radius: 8px;
+        padding: 1rem;
+    }
+
+    @media (max-width: 992px) {
+        .report-builder-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+        <div>
+            <h1><i class="bi bi-filetype-csv me-2"></i>Custom Reports</h1>
+            <p class="text-muted mb-0">Build CSV exports from synced HANA course, teacher, and enrollment data.</p>
+        </div>
+        <div class="report-summary">
+            <div class="small text-muted text-uppercase">Matching Rows</div>
+            <div class="fs-3 fw-bold text-primary">{{ "{:,}".format(row_count) }}</div>
+        </div>
+    </div>
+</div>
+
+<form method="GET" id="reportForm">
+    <input type="hidden" name="configured" value="1">
+
+    <div class="report-builder-grid">
+        <div>
+            <div class="card mb-4">
+                <div class="card-header">
+                    <i class="bi bi-table me-2"></i>Report Type
+                </div>
+                <div class="card-body">
+                    <select name="report_type" class="form-select" onchange="this.form.action='{{ url_for('reports.index') }}'; this.form.submit();">
+                        {% for key, config in report_types.items() %}
+                        <option value="{{ key }}" {% if report_type == key %}selected{% endif %}>
+                            {{ config.label }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                    <p class="text-muted small mt-3 mb-0">{{ report_config.description }}</p>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <i class="bi bi-funnel me-2"></i>Filters
+                </div>
+                <div class="card-body">
+                    {% if current_user.is_super_admin() %}
+                    <div class="mb-3">
+                        <label class="form-label small text-muted">College</label>
+                        <select name="college" class="form-select" id="collegeFilter" onchange="updateDepartments()">
+                            <option value="">All Colleges</option>
+                            {% for college in colleges %}
+                            <option value="{{ college.code }}" {% if current_filters.college == college.code %}selected{% endif %}>
+                                {{ college.code }} - {{ college.name }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    {% endif %}
+
+                    <div class="mb-3">
+                        <label class="form-label small text-muted">Department</label>
+                        <select name="department" class="form-select" id="deptFilter">
+                            <option value="">All Departments</option>
+                            {% for dept in departments %}
+                            <option value="{{ dept.id }}" {% if current_filters.department == dept.id %}selected{% endif %}>
+                                {{ dept.name }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small text-muted">Academic Term</label>
+                        <select name="term" class="form-select">
+                            <option value="">All Terms</option>
+                            {% for term in terms %}
+                            <option value="{{ term }}" {% if current_filters.term == term %}selected{% endif %}>
+                                {{ term }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small text-muted">TCE Status</label>
+                        <select name="tce_status" class="form-select">
+                            <option value="" {% if not current_filters.tce_status %}selected{% endif %}>Any Status</option>
+                            <option value="marked" {% if current_filters.tce_status == 'marked' %}selected{% endif %}>Marked for TCE</option>
+                            <option value="not_marked" {% if current_filters.tce_status == 'not_marked' %}selected{% endif %}>Not Marked</option>
+                            <option value="marked_active" {% if current_filters.tce_status == 'marked_active' %}selected{% endif %}>Marked with Students</option>
+                            <option value="marked_zero" {% if current_filters.tce_status == 'marked_zero' %}selected{% endif %}>Marked with Zero Enrollment</option>
+                            <option value="not_marked_active" {% if current_filters.tce_status == 'not_marked_active' %}selected{% endif %}>Not Marked with Students</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small text-muted">Enrollment</label>
+                        <select name="enrollment" class="form-select">
+                            <option value="" {% if not current_filters.enrollment %}selected{% endif %}>Any Enrollment</option>
+                            <option value="active" {% if current_filters.enrollment == 'active' %}selected{% endif %}>One or More Students</option>
+                            <option value="zero" {% if current_filters.enrollment == 'zero' %}selected{% endif %}>Zero Students</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small text-muted">Course Search</label>
+                        <input type="text" name="course_search" class="form-control"
+                               value="{{ current_filters.course_search }}"
+                               placeholder="Course, title, section...">
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small text-muted">
+                            {% if report_type == 'student_enrollments' %}Student Search{% else %}Teacher Search{% endif %}
+                        </label>
+                        <input type="text" name="person_search" class="form-control"
+                               value="{{ current_filters.person_search }}"
+                               placeholder="Name, User ID, email...">
+                    </div>
+
+                    <div class="row g-2 mb-3">
+                        <div class="col-6">
+                            <label class="form-label small text-muted">Course Start From</label>
+                            <input type="date" name="course_start_from" class="form-control"
+                                   value="{{ current_filters.course_start_from }}">
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small text-muted">Course Start To</label>
+                            <input type="date" name="course_start_to" class="form-control"
+                                   value="{{ current_filters.course_start_to }}">
+                        </div>
+                    </div>
+
+                    <div class="row g-2 mb-4">
+                        <div class="col-6">
+                            <label class="form-label small text-muted">TCE Start From</label>
+                            <input type="date" name="tce_start_from" class="form-control"
+                                   value="{{ current_filters.tce_start_from }}">
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small text-muted">TCE Start To</label>
+                            <input type="date" name="tce_start_to" class="form-control"
+                                   value="{{ current_filters.tce_start_to }}">
+                        </div>
+                    </div>
+
+                    <div class="d-grid gap-2">
+                        <button type="submit" formaction="{{ url_for('reports.index') }}" class="btn btn-uk-primary">
+                            <i class="bi bi-search me-1"></i>Apply Filters
+                        </button>
+                        <a href="{{ url_for('reports.index', report_type=report_type) }}" class="btn btn-outline-secondary">
+                            <i class="bi bi-x-lg me-1"></i>Clear Filters
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div>
+            <div class="card">
+                <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+                    <div>
+                        <i class="bi bi-check2-square me-2"></i>CSV Columns
+                    </div>
+                    <div class="d-flex gap-2">
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="setAllFields(true)">
+                            Select All
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="setAllFields(false)">
+                            Clear
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    {% for group in grouped_fields %}
+                    <div class="column-group mb-3">
+                        <div class="fw-semibold mb-2">{{ group.name }}</div>
+                        <div class="column-grid">
+                            {% for field in group.fields %}
+                            <div class="form-check">
+                                <input class="form-check-input report-field" type="checkbox"
+                                       name="fields" value="{{ field.key }}" id="field_{{ field.key }}"
+                                       {% if field.key in selected_fields %}checked{% endif %}>
+                                <label class="form-check-label" for="field_{{ field.key }}">
+                                    {{ field.label }}
+                                </label>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endfor %}
+
+                    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mt-4">
+                        <div class="text-muted small">
+                            CSV exports include all matching rows, not just a page of results.
+                        </div>
+                        <button type="submit" formaction="{{ url_for('reports.export') }}" class="btn btn-uk-primary btn-lg">
+                            <i class="bi bi-download me-1"></i>Export CSV
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</form>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function setAllFields(checked) {
+    document.querySelectorAll('.report-field').forEach(function(field) {
+        field.checked = checked;
+    });
+}
+
+function updateDepartments() {
+    const collegeSelect = document.getElementById('collegeFilter');
+    const deptSelect = document.getElementById('deptFilter');
+    if (!collegeSelect || !deptSelect) {
+        return;
+    }
+
+    const collegeCode = collegeSelect.value;
+    deptSelect.innerHTML = '<option value="">All Departments</option>';
+    if (!collegeCode) {
+        return;
+    }
+
+    fetch(`/verification/api/departments/${encodeURIComponent(collegeCode)}`)
+        .then(response => response.json())
+        .then(departments => {
+            departments.forEach(dept => {
+                const option = document.createElement('option');
+                option.value = dept.id;
+                option.textContent = dept.name;
+                deptSelect.appendChild(option);
+            });
+        });
+}
+</script>
+{% endblock %}

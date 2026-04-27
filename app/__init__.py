@@ -43,6 +43,7 @@ def create_app(config_name='default'):
     from app.routes.main import main_bp
     from app.routes.tracking import tracking_bp
     from app.routes.settings import settings_bp
+    from app.routes.reports import reports_bp
 
     app.register_blueprint(main_bp)
     app.register_blueprint(auth_bp, url_prefix='/auth')
@@ -51,6 +52,7 @@ def create_app(config_name='default'):
     app.register_blueprint(questions_bp, url_prefix='/questions')
     app.register_blueprint(tracking_bp, url_prefix='/tracking')
     app.register_blueprint(settings_bp, url_prefix='/settings')
+    app.register_blueprint(reports_bp, url_prefix='/reports')
     
     # Create database tables
     with app.app_context():
