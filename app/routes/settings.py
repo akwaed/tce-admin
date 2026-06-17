@@ -749,6 +749,7 @@ def trigger_hana_sync():
                     'command': f'{sys.executable} scripts/hana_sync.py --output datasources',
                     'output_path': (json_result or {}).get('output_path'),
                     'table_stats': (json_result or {}).get('stats'),
+                    'hana_warnings': (json_result or {}).get('warnings', [])[:50],
                     'pipeline_phase': 'hana_pull',
                     'pipeline_step': 1,
                     'pipeline_total_steps': 2,
@@ -975,6 +976,7 @@ def trigger_full_sync():
                     'stderr': result.stderr[:1000],
                     'output_path': (json_result or {}).get('output_path'),
                     'table_stats': (json_result or {}).get('stats'),
+                    'warnings': (json_result or {}).get('warnings', [])[:50],
                 }
                 log.summary = _merge_cancel_summary(log, summary)
 

@@ -80,8 +80,15 @@ class HANADatasourceSync:
         }
     }
 
-    # Columns that are allowed to be empty
-    OPTIONAL_COLUMNS = ['CROSSLISTED_ID', 'SPEC_TYPE', 'STU_OBJ_ID', 'SECTION_LENGTH_DAYS']
+    # Columns that are allowed to be NULL / empty.
+    # TCE scheduling fields and other metadata are frequently NULL for courses
+    # that have not yet been scheduled or configured.
+    OPTIONAL_COLUMNS = [
+        'CROSSLISTED_ID', 'SPEC_TYPE', 'STU_OBJ_ID', 'SECTION_LENGTH_DAYS',
+        'TCE_INVITE', 'TCE_R1', 'TCE_R2', 'TCE_END_DATE', 'TCE_REPORT_DATE',
+        'CANVAS_SIS_ID', 'DISTANCE_LEARNING', 'UK_CORE_TYPE', 'CLASS_LEVEL',
+        'EMAIL', 'SECONDARY_EMAIL',
+    ]
 
     def __init__(self, output_path=None):
         # Always resolve to an absolute path. If no output_path is supplied,
@@ -91,7 +98,8 @@ class HANADatasourceSync:
         self.output_path = Path(output_path).resolve() if output_path else DEFAULT_OUTPUT_PATH
         self.output_path.mkdir(parents=True, exist_ok=True)
         self.conn = None
-        self.errors = []
+        self.errors = []       # hard failures (DB query errors) — gate exit code
+        self.warnings = []     # soft data-quality warnings (missing fields, dup keys)
         self.stats = {table: 0 for table in self.TABLES}
         # Per-file diff results, populated by _sync_table().
         # Shape: { 'Courses.csv': { 'added': int, 'updated': int,
@@ -167,7 +175,8 @@ class HANADatasourceSync:
             'success': len(self.errors) == 0,
             'stats': self.stats,
             'file_stats': self.file_stats,
-            'errors': self.errors
+            'errors': self.errors,
+            'warnings': self.warnings,
         }
 
     def _sync_table(self, cursor, table, config, from_term, up_to_term):
@@ -182,7 +191,7 @@ class HANADatasourceSync:
             return
 
         if not rows:
-            self.errors.append(f"No rows returned for {table}")
+            self.warnings.append(f"No rows returned for {table}")
             return
 
         # Get column info
@@ -215,7 +224,7 @@ class HANADatasourceSync:
             if key_index >= 0:
                 current_key = rowdata[key_index]
                 if current_key == last_key:
-                    self.errors.append(f"Duplicate key in {table}: {current_key}")
+                    self.warnings.append(f"Duplicate key in {table}: {current_key}")
                     continue
                 last_key = current_key
 
@@ -291,7 +300,7 @@ class HANADatasourceSync:
                         key = '|'.join(row.get(c, '') for c in diff_key_cols)
                         existing_by_key[key] = row
             except Exception as e:
-                self.errors.append(f"Could not read existing {filename} for diff: {e}")
+                self.warnings.append(f"Could not read existing {filename} for diff: {e}")
                 return empty
         else:
             # First-ever sync of this file - everything is "added".
@@ -337,13 +346,17 @@ class HANADatasourceSync:
         }
 
     def _is_missing_data(self, table, column_names, data, key_index):
-        """Check if row is missing required data."""
+        """Check if row is missing required data.
+
+        Only ``None`` (SQL NULL) is treated as missing.  Empty strings and
+        integer ``0`` are legitimate values and must not be flagged.
+        """
         for i, col_name in enumerate(column_names):
-            if not data[i] and col_name not in self.OPTIONAL_COLUMNS:
+            if data[i] is None and col_name not in self.OPTIONAL_COLUMNS:
                 msg = f"Missing {col_name} in {table}"
                 if key_index >= 0:
                     msg += f" for key {data[key_index]}"
-                self.errors.append(msg)
+                self.warnings.append(msg)
                 return True
         return False
 
@@ -392,11 +405,18 @@ def main():
         print(f"Stats: {result['stats']}")
 
         if result['errors']:
-            print(f"\nWarnings/Errors ({len(result['errors'])}):")
+            print(f"\nHard Errors ({len(result['errors'])}):")
             for err in result['errors'][:20]:
                 print(f"  - {err}")
             if len(result['errors']) > 20:
                 print(f"  ... and {len(result['errors']) - 20} more")
+
+        if result['warnings']:
+            print(f"\nWarnings ({len(result['warnings'])}):")
+            for warn in result['warnings'][:20]:
+                print(f"  - {warn}")
+            if len(result['warnings']) > 20:
+                print(f"  ... and {len(result['warnings']) - 20} more")
 
         # Optionally emit a machine-readable result so the web UI can
         # populate the sync log with row counts and diffs.
@@ -407,6 +427,7 @@ def main():
                 'stats': result['stats'],
                 'file_stats': result['file_stats'],
                 'errors': result['errors'],
+                'warnings': result['warnings'],
                 'records_processed': sum(result['stats'].values()),
                 'records_added': sum(
                     fs.get('added', 0) for fs in result['file_stats'].values()
