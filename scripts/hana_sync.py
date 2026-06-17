@@ -381,11 +381,46 @@ def main():
                         help='Optional path to write a JSON file with the '
                              'sync result (per-file row counts and diff). '
                              'Used by the web UI to populate sync logs.')
+    parser.add_argument(
+        '--scheduled', action='store_true',
+        help='Create a DataSyncLog entry so this run appears in the UI sync log.'
+    )
     parser.add_argument('--host', help='HANA host (or set HANA_HOST env var)')
     parser.add_argument('--port', type=int, help='HANA port (or set HANA_PORT env var)')
     parser.add_argument('--user', '-u', help='HANA user (or set HANA_USER env var)')
     parser.add_argument('--password', '-p', help='HANA password (or set HANA_PASSWORD env var)')
     args = parser.parse_args()
+
+    # ------------------------------------------------------------------
+    # --scheduled: create a DataSyncLog row so the UI shows this run.
+    # ------------------------------------------------------------------
+    sync_log_id = None
+    if args.scheduled:
+        from app import create_app
+        app = create_app(os.environ.get('FLASK_ENV', 'production'))
+        with app.app_context():
+            from app.models import db as flask_db
+            from app.models.settings import DataSyncLog
+            sync_log = DataSyncLog(
+                sync_type=DataSyncLog.TYPE_HANA_TO_DATASOURCE,
+                status=DataSyncLog.STATUS_RUNNING,
+                trigger_type='scheduled',
+                triggered_by_id=None,
+            )
+            sync_log.summary = {
+                'pipeline_phase': 'hana_pull',
+                'pipeline_step': 1,
+                'pipeline_total_steps': 1,
+                'pipeline_message': (
+                    'Scheduled: Fetching data from SAP HANA and '
+                    'writing datasource CSV files...'
+                ),
+                'process_pid': os.getpid(),
+                'process_started_at': datetime.utcnow().isoformat(),
+            }
+            flask_db.session.add(sync_log)
+            flask_db.session.commit()
+            sync_log_id = sync_log.id
 
     sync = HANADatasourceSync(args.output)
 
@@ -418,37 +453,109 @@ def main():
             if len(result['warnings']) > 20:
                 print(f"  ... and {len(result['warnings']) - 20} more")
 
-        # Optionally emit a machine-readable result so the web UI can
-        # populate the sync log with row counts and diffs.
+        # Build the structured payload once.
+        payload = {
+            'success': result['success'],
+            'output_path': str(sync.output_path),
+            'stats': result['stats'],
+            'file_stats': result['file_stats'],
+            'errors': result['errors'],
+            'warnings': result['warnings'],
+            'records_processed': sum(result['stats'].values()),
+            'records_added': sum(
+                fs.get('added', 0) for fs in result['file_stats'].values()
+            ),
+            'records_updated': sum(
+                fs.get('updated', 0) for fs in result['file_stats'].values()
+            ),
+            'records_removed': sum(
+                fs.get('removed', 0) for fs in result['file_stats'].values()
+            ),
+        }
+
+        # Write JSON payload file when requested.
         if args.json_output:
-            payload = {
-                'success': result['success'],
-                'output_path': str(sync.output_path),
-                'stats': result['stats'],
-                'file_stats': result['file_stats'],
-                'errors': result['errors'],
-                'warnings': result['warnings'],
-                'records_processed': sum(result['stats'].values()),
-                'records_added': sum(
-                    fs.get('added', 0) for fs in result['file_stats'].values()
-                ),
-                'records_updated': sum(
-                    fs.get('updated', 0) for fs in result['file_stats'].values()
-                ),
-                'records_removed': sum(
-                    fs.get('removed', 0) for fs in result['file_stats'].values()
-                ),
-            }
             try:
                 with open(args.json_output, 'w', encoding='utf-8') as f:
                     json.dump(payload, f, default=str)
             except Exception as e:
                 print(f"WARNING: failed to write --json-output file: {e}")
 
+        # Update the DataSyncLog row for --scheduled runs.
+        if sync_log_id is not None:
+            from app import create_app as _create_app
+            _app = _create_app(os.environ.get('FLASK_ENV', 'production'))
+            with _app.app_context():
+                from app.models import db as _flask_db
+                from app.models.settings import DataSyncLog
+                log = DataSyncLog.query.get(sync_log_id)
+                if log:
+                    log.records_processed = payload['records_processed']
+                    log.records_added = payload['records_added']
+                    log.records_updated = payload['records_updated']
+                    log.file_stats = result['file_stats'] or {}
+                    log.field_changes = {
+                        fname: {
+                            'added': fs.get('added_keys', []),
+                            'updated': fs.get('updated_keys', []),
+                            'removed': fs.get('removed_keys', []),
+                            'diff_key_columns': fs.get('diff_key_columns', []),
+                        }
+                        for fname, fs in (result.get('file_stats') or {}).items()
+                    }
+                    log.summary = {
+                        'pipeline_phase': 'done' if result['success'] else 'failed',
+                        'pipeline_step': 1,
+                        'pipeline_total_steps': 1,
+                        'pipeline_message': (
+                            'Scheduled HANA sync completed successfully.'
+                            if result['success']
+                            else 'Scheduled HANA sync completed with hard errors.'
+                        ),
+                        'table_stats': result['stats'],
+                        'hana_warnings': result.get('warnings', [])[:50],
+                        'process_pid': os.getpid(),
+                    }
+                    if result['success']:
+                        log.status = DataSyncLog.STATUS_COMPLETED
+                        log.complete(success=True)
+                    else:
+                        log.status = DataSyncLog.STATUS_FAILED
+                        log.complete(success=False)
+                        log.errors = result['errors'][:50]
+                    _flask_db.session.commit()
+
         return 0 if result['success'] else 1
 
     except Exception as e:
         print(f"ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+
+        # Update DataSyncLog on hard failure.
+        if sync_log_id is not None:
+            try:
+                from app import create_app as _create_app
+                _app = _create_app(os.environ.get('FLASK_ENV', 'production'))
+                with _app.app_context():
+                    from app.models import db as _flask_db
+                    from app.models.settings import DataSyncLog
+                    log = DataSyncLog.query.get(sync_log_id)
+                    if log:
+                        log.status = DataSyncLog.STATUS_FAILED
+                        log.complete(success=False)
+                        log.summary = {
+                            'pipeline_phase': 'failed',
+                            'pipeline_message': (
+                                'Scheduled HANA sync failed with an exception.'
+                            ),
+                            'error': str(e),
+                        }
+                        log.errors = [str(e)]
+                        _flask_db.session.commit()
+            except Exception:
+                pass
+
         return 1
     finally:
         sync.disconnect()

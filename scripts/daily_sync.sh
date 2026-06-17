@@ -99,7 +99,7 @@ log "Step 1/3: Fetching data from SAP HANA..."
 HANA_START=$(date +%s)
 
 set +e
-run_with_timeout "$HANA_TIMEOUT_SECONDS" "$VENV_PYTHON" "$HANA_SCRIPT" --output "$DATASOURCES_DIR"
+run_with_timeout "$HANA_TIMEOUT_SECONDS" "$VENV_PYTHON" "$HANA_SCRIPT" --output "$DATASOURCES_DIR" --scheduled
 HANA_EXIT=$?
 set -e
 
