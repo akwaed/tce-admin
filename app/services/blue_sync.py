@@ -357,6 +357,12 @@ def check_response(response: requests.Response, action: str) -> Tuple[bool, str,
     if result_match is None and is_success_match is None:
         if "VALID_APIKEY" in text:
             is_success = True
+        # RegisterImport / some calls return string "Success" instead of booleans
+        elif message.strip().lower() == 'success':
+            is_success = True
+        # Also check <Result>Success</Result> (string, not bool)
+        elif re.search(r'<[^>]*Result[^>]*>Success</[^>]*Result>', text, re.IGNORECASE):
+            is_success = True
 
     return is_success, message, has_warning
 
@@ -370,7 +376,7 @@ def extract_value(response_text: str, tag_name: str) -> Optional[str]:
 
 def extract_block_name(response_text: str) -> Optional[str]:
     """Extract DataBlockName from GetDataBlockInformation response."""
-    match = re.search(r'<a:DataBlockName>([^<]*)</a:DataBlockName>', response_text)
+    match = re.search(r'<[^>]*DataBlockName[^>]*>([^<]*)</[^>]*DataBlockName>', response_text)
     return match.group(1) if match else None
 
 
@@ -857,7 +863,12 @@ class BlueSyncService:
 
                 success, message, has_warning = check_response(response, "PushObjectDataV2")
                 if not success:
-                    self.errors.append(f"{datasource_key}: Batch {batch_num} failed - {message}")
+                    # Include raw SOAP response (first 500 chars) for debugging
+                    raw_snippet = response.text[:500] if response.text else '(empty)'
+                    self.errors.append(
+                        f"{datasource_key}: Batch {batch_num} failed - {message}\n"
+                        f"  Raw response: {raw_snippet}"
+                    )
                     self._cancel_import(transaction_id)
                     return False
 
@@ -899,6 +910,12 @@ class BlueSyncService:
             raise
         except KeyboardInterrupt:
             self._cancel_import(transaction_id)
+            raise
+        except Exception:
+            # Always cancel on unexpected errors so Blue doesn't hold
+            # an orphaned transaction that blocks subsequent imports.
+            if transaction_id:
+                self._cancel_import(transaction_id)
             raise
 
     def _discover_block_name(self, datasource_id: str) -> Optional[str]:
