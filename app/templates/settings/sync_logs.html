@@ -122,7 +122,7 @@
                 <form action="{{ url_for('settings.trigger_full_sync') }}" method="post">
                     <button type="submit" class="btn btn-uk-primary w-100"
                             {% if sync_running %}disabled{% endif %}
-                            onclick="return confirm('Run full sync?\n\nThis will:\n1. Fetch from HANA\n2. Update local database\n3. Push to Explorance Blue\n\nNote: There is a 60s delay between each Blue datasource.')">
+                            onclick="return confirm('Run full sync?\n\nThis will:\n1. Fetch from HANA\n2. Update local database\n3. Push to Explorance Blue\n\nNote: There is a 5 min delay between each Blue datasource.')">
                         <i class="bi bi-arrow-repeat me-1"></i>Full Sync
                     </button>
                 </form>
@@ -207,7 +207,7 @@
                         Clear All
                     </button>
                     <small class="text-muted">
-                        <i class="bi bi-info-circle me-1"></i>60s delay between each
+                        <i class="bi bi-info-circle me-1"></i>5 min delay between each
                     </small>
                 </div>
             </form>
@@ -448,7 +448,7 @@ document.getElementById('blue-sync-form').addEventListener('submit', function(e)
         return false;
     }
     const names = Array.from(checkboxes).map(cb => cb.value.charAt(0).toUpperCase() + cb.value.slice(1));
-    const msg = 'Push the following to Explorance Blue?\n\n• ' + names.join('\n• ') + '\n\nNote: There is a 60s delay between each datasource.';
+    const msg = 'Push the following to Explorance Blue?\n\n• ' + names.join('\n• ') + '\n\nNote: There is a 5 min delay between each datasource.';
     if (!confirm(msg)) {
         e.preventDefault();
         return false;

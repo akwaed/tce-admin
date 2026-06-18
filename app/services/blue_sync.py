@@ -53,7 +53,7 @@ BATCH_SIZE = 1000
 
 # Delay between datasource imports (seconds)
 # This helps prevent timeouts on the Blue server
-IMPORT_DELAY_SECONDS = 60
+IMPORT_DELAY_SECONDS = 300
 
 # ============================================================================
 # DATASOURCE DEFINITIONS
@@ -108,7 +108,7 @@ DATASOURCES = {
     },
 }
 
-IMPORT_ORDER = ['users', 'courses', 'instructors', 'students']
+IMPORT_ORDER = ['courses', 'instructors', 'students', 'users']
 
 # ============================================================================
 # GLOBAL PROGRESS TRACKING
@@ -567,6 +567,15 @@ class BlueSyncService:
         to_push = datasources if datasources else IMPORT_ORDER
         to_push = [ds for ds in IMPORT_ORDER if ds in to_push]  # Maintain order
         self._parent_sync_log_id = parent_sync_log_id
+
+        # When pushing only Users for testing, wait 10 min so Blue can
+        # finish processing any previous large Users import still running.
+        if to_push == ['users'] and not dry_run:
+            _update_blue_progress(
+                datasource='users',
+                step='Waiting 10 min for previous Users import to clear...',
+            )
+            time.sleep(600)
 
         # Initialize progress
         with _blue_sync_lock:
