@@ -76,7 +76,8 @@ class HANADatasourceSync:
             'filename': 'Users',
             'order': 'USER_ID',
             'key': 'USER_ID',
-            'diff_keys': ['USER_ID']
+            'diff_keys': ['USER_ID'],
+            'exclude_columns': ['HASH'],
         }
     }
 
@@ -196,6 +197,13 @@ class HANADatasourceSync:
 
         # Get column info
         column_names = [col[0] for col in cursor.description]
+
+        # Pre-compute indices of columns to exclude from output (e.g. HASH blob)
+        exclude_cols = set(config.get('exclude_columns', []))
+        excluded_indices = frozenset(
+            i for i, c in enumerate(column_names) if c in exclude_cols
+        ) if exclude_cols else frozenset()
+
         key_index = column_names.index(config['key']) if 'key' in config else -1
         section_key_index = column_names.index('SECTION_KEY') if 'SECTION_KEY' in column_names else -1
         email_index = column_names.index('EMAIL') if 'EMAIL' in column_names else -1
@@ -205,7 +213,11 @@ class HANADatasourceSync:
         diff_key_cols = config.get('diff_keys') or ([config['key']] if 'key' in config else [])
         diff_key_indices = [column_names.index(c) for c in diff_key_cols if c in column_names]
 
-        result = [column_names]
+        # Build header, excluding unwanted columns
+        output_columns = [
+            c for i, c in enumerate(column_names) if i not in excluded_indices
+        ]
+        result = [output_columns]
         last_key = None
         new_rows_by_diff_key = {}
 
@@ -248,6 +260,9 @@ class HANADatasourceSync:
                 diff_key = '|'.join(string_row[c] for c in diff_key_cols)
                 new_rows_by_diff_key[diff_key] = string_row
 
+            # Strip excluded columns from the row before writing
+            if excluded_indices:
+                rowdata = [v for i, v in enumerate(rowdata) if i not in excluded_indices]
             result.append(rowdata)
             self.stats[table] += 1
 

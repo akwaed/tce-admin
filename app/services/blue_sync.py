@@ -66,9 +66,9 @@ DATASOURCES = {
         'csv_file': 'Users.csv',
         'block_name': None,
         'columns': [
-            'USER_ID', 'FIRST_NAME', 'LAST_NAME', 'EMAIL', 'SECONDARY_EMAIL',
+            'USER_ID', 'FIRSTNAME', 'LASTNAME', 'EMAIL',
         ],
-        'required': ['USER_ID', 'FIRST_NAME', 'LAST_NAME', 'EMAIL'],
+        'required': ['USER_ID', 'FIRSTNAME', 'LASTNAME', 'EMAIL'],
     },
     'courses': {
         'id': 'Data161',
@@ -94,7 +94,7 @@ DATASOURCES = {
         'csv_file': 'Instructor_Course.csv',
         'block_name': None,
         'columns': [
-            'SECTION_KEY', 'USER_ID', 'FIRST_NAME', 'LAST_NAME', 'EMAIL',
+            'SECTION_KEY', 'USER_ID', 'FIRSTNAME', 'LASTNAME', 'EMAIL',
         ],
         'required': ['SECTION_KEY', 'USER_ID'],
     },
