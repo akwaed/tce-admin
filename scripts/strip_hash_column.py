@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Strip the corrupted HASH column from Users.csv.
+"""Normalise Users.csv for Explorance Blue import.
 
-The HASH column contains Python memory-address representations
-('<memory at 0x...>') because the hdbcli driver cannot serialise
-the HANA HASH blob type.  This column is never pushed to Blue and
-is never read by any application code, so we drop it to save ~30 %
-disk space.
+1. Strip the corrupted HASH column (Python memory-address values).
+2. Rename FIRSTNAME → FIRST_NAME and LASTNAME → LAST_NAME so the
+   column names match the Blue Data144 datasource schema.
 
 Usage:
     python scripts/strip_hash_column.py
@@ -19,45 +17,74 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 USERS_PATH = PROJECT_ROOT / 'datasources' / 'Users.csv'
 
+# Columns to drop outright
+DROP_COLUMNS = {'HASH'}
+
+# Columns to rename: CSV name → Blue name
+RENAME_COLUMNS = {
+    'FIRSTNAME': 'FIRST_NAME',
+    'LASTNAME':  'LAST_NAME',
+}
+
+
 def main():
     if not USERS_PATH.exists():
         print(f"ERROR: {USERS_PATH} not found")
         sys.exit(1)
 
     original_size = USERS_PATH.stat().st_size
-    
+
     temp_path = USERS_PATH.with_suffix('.csv.tmp')
     rows_written = 0
-    dropped_col = None
+    dropped = []
+    renamed = {}
 
     with open(USERS_PATH, 'r', newline='', encoding='utf-8') as infile, \
          open(temp_path, 'w', newline='', encoding='utf-8') as outfile:
-        
+
         reader = csv.DictReader(infile)
-        
-        # Identify the HASH column and build output fieldnames
         all_fields = reader.fieldnames or []
-        hash_cols = [c for c in all_fields if c.upper() == 'HASH']
-        output_fields = [c for c in all_fields if c not in hash_cols]
-        
-        if not hash_cols:
-            print("No HASH column found — nothing to do.")
+
+        # Build output fieldnames: drop unwanted, rename where configured
+        output_fields = []
+        for col in all_fields:
+            if col.upper() in {c.upper() for c in DROP_COLUMNS}:
+                dropped.append(col)
+            elif col in RENAME_COLUMNS:
+                new_name = RENAME_COLUMNS[col]
+                output_fields.append(new_name)
+                renamed[col] = new_name
+            else:
+                output_fields.append(col)
+
+        if dropped:
+            print(f"Dropped: {', '.join(dropped)}")
+        if renamed:
+            for old, new in renamed.items():
+                print(f"Renamed: {old} → {new}")
+        if not dropped and not renamed:
+            print("Nothing to do.")
             return
-        
-        dropped_col = hash_cols[0]
-        print(f"Dropping column: {dropped_col}")
+
         print(f"Output columns ({len(output_fields)}): {', '.join(output_fields)}")
 
         writer = csv.DictWriter(outfile, fieldnames=output_fields, extrasaction='ignore')
         writer.writeheader()
 
         for row in reader:
+            # Apply renames
+            for old, new in RENAME_COLUMNS.items():
+                if old in row:
+                    row[new] = row.pop(old)
+            # Drop unwanted
+            for col in dropped:
+                row.pop(col, None)
             writer.writerow(row)
             rows_written += 1
 
     # Atomic replace
     os.replace(temp_path, USERS_PATH)
-    
+
     new_size = USERS_PATH.stat().st_size
     saved = original_size - new_size
     pct = (saved / original_size * 100) if original_size else 0
@@ -65,7 +92,11 @@ def main():
     print(f"\nDone.  {rows_written:,} rows written.")
     print(f"  Before: {original_size:>12,} bytes")
     print(f"  After:  {new_size:>12,} bytes")
-    print(f"  Saved:  {saved:>12,} bytes ({pct:.1f} %)")
+    if saved >= 0:
+        print(f"  Delta:  {saved:>12,} bytes ({pct:.1f} %)")
+    else:
+        print(f"  Delta: +{-saved:>11,} bytes ({-pct:.1f} %)")
+
 
 if __name__ == '__main__':
     main()
