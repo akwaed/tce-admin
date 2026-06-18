@@ -297,6 +297,19 @@ def soap_cancel_import(api_key: str, transaction_id: str) -> str:
    </soapenv:Header>
    <soapenv:Body>
       <tem:CancelImportRequest/>
+    </soapenv:Body>
+ </soapenv:Envelope>"""
+
+
+def soap_get_current_process(api_key: str) -> str:
+    """Build SOAP payload for GetCurrentImportingDataSourceProcess()."""
+    return f"""<?xml version="1.0" encoding="utf-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:tem="http://tempuri.org/">
+   <soapenv:Header>
+      <tem:APIKeyHeader>{api_key}</tem:APIKeyHeader>
+   </soapenv:Header>
+   <soapenv:Body>
+      <tem:BaseRequest/>
    </soapenv:Body>
 </soapenv:Envelope>"""
 
@@ -802,6 +815,13 @@ class BlueSyncService:
                 self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
             return True
 
+        # Clear any stale import from a previous failed attempt
+        if not dry_run:
+            cancelled = self._cancel_stale_import()
+            if cancelled:
+                import time
+                time.sleep(2)  # Brief pause for Blue to release the lock
+
         # Register import
         self._raise_if_cancelled(sync_log_id, parent_sync_log_id)
         _update_blue_progress(step='Registering import...')
@@ -951,6 +971,29 @@ class BlueSyncService:
         """Cancel an in-progress import."""
         payload = soap_cancel_import(self.api_key, transaction_id)
         call_soap(self.ws_url, payload, "CancelImport")
+
+    def _cancel_stale_import(self) -> bool:
+        """Check for and cancel any in-progress import blocking this datasource.
+
+        Returns True if a stale import was found and cancelled.
+        """
+        payload = soap_get_current_process(self.api_key)
+        try:
+            response = call_soap(self.ws_url, payload, "GetCurrentImportingDataSourceProcess", timeout=30)
+        except Exception:
+            return False  # Can't reach Blue — nothing we can do
+
+        if response.status_code != 200:
+            return False
+
+        # Extract the transaction ID of the running import (if any)
+        stale_tid = extract_value(response.text, "TransactionID")
+        if not stale_tid or stale_tid.strip() == '0':
+            return False  # No active import
+
+        # Cancel it
+        self._cancel_import(stale_tid)
+        return True
 
 
 def get_blue_sync_service(datasources_path: str = './datasources') -> BlueSyncService:
