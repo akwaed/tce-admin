@@ -245,7 +245,7 @@ def soap_push_data(api_key: str, transaction_id: str, block_name: str,
 '''
 
     return f"""<?xml version="1.0" encoding="utf-8"?>
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:tem="http://tempuri.org/d" xmlns:arr="http://schemas.microsoft.com/2003/10/Serialization/Arrays" xmlns:blue="http://schemas.datacontract.org/2004/07/Blue.Integration">
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:tem="http://tempuri.org/" xmlns:arr="http://schemas.microsoft.com/2003/10/Serialization/Arrays" xmlns:blue="http://schemas.datacontract.org/2004/07/Blue.Integration">
    <soapenv:Header>
       <tem:TransactionId>{transaction_id}</tem:TransactionId>
       <tem:DataBlockName>{block_name}</tem:DataBlockName>
@@ -836,6 +836,8 @@ class BlueSyncService:
         transaction_id = extract_value(response.text, "TransactionID")
         if not transaction_id:
             self.errors.append(f"{datasource_key}: Could not get transaction ID")
+            # Log raw RegisterImport response for debugging
+            self.errors.append(f"  RegisterImport raw: {response.text[:400]}")
             return False
 
         # Push data in batches
@@ -867,6 +869,7 @@ class BlueSyncService:
                     raw_snippet = response.text[:500] if response.text else '(empty)'
                     self.errors.append(
                         f"{datasource_key}: Batch {batch_num} failed - {message}\n"
+                        f"  TransactionID used: {transaction_id}\n"
                         f"  Raw response: {raw_snippet}"
                     )
                     self._cancel_import(transaction_id)
