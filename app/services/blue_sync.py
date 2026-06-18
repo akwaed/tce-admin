@@ -306,6 +306,7 @@ def soap_get_current_process(api_key: str) -> str:
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:tem="http://tempuri.org/">
    <soapenv:Header>
+      <tem:TransactionID>0</tem:TransactionID>
       <tem:APIKeyHeader>{api_key}</tem:APIKeyHeader>
    </soapenv:Header>
    <soapenv:Body>
@@ -984,10 +985,17 @@ class BlueSyncService:
             return False  # Can't reach Blue — nothing we can do
 
         if response.status_code != 200:
+            self.errors.append(f"GetCurrentImportingDataSourceProcess HTTP {response.status_code}: {response.text[:200]}")
             return False
 
         # Extract the transaction ID of the running import (if any)
         stale_tid = extract_value(response.text, "TransactionID")
+        progress = extract_value(response.text, "ProgressStatus")
+        self.errors.append(
+            f"GetCurrentImportingDataSourceProcess response: "
+            f"TransactionID={stale_tid}, ProgressStatus={progress}, "
+            f"raw={response.text[:300]}"
+        )
         if not stale_tid or stale_tid.strip() == '0':
             return False  # No active import
 
