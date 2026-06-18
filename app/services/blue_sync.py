@@ -66,9 +66,14 @@ DATASOURCES = {
         'csv_file': 'Users.csv',
         'block_name': None,
         'columns': [
-            'USER_ID', 'FIRSTNAME', 'LASTNAME', 'EMAIL',
+            'USER_ID', 'FIRST_NAME', 'LAST_NAME', 'EMAIL',
         ],
-        'required': ['USER_ID', 'FIRSTNAME', 'LASTNAME', 'EMAIL'],
+        'column_map': {
+            # CSV column name → Blue column name
+            'FIRSTNAME': 'FIRST_NAME',
+            'LASTNAME': 'LAST_NAME',
+        },
+        'required': ['USER_ID', 'FIRST_NAME', 'LAST_NAME', 'EMAIL'],
     },
     'courses': {
         'id': 'Data161',
@@ -334,8 +339,15 @@ def check_response(response: requests.Response, action: str) -> Tuple[bool, str,
     if is_success_match:
         is_success = is_success_match.group(1).lower() == 'true'
 
-    message_match = re.search(r'<[^>]*Message[^>]*>([^<]*)</[^>]*Message>', text)
-    message = message_match.group(1) if message_match else ""
+    # Extract the real Message value — skip HasWarningMessage which also
+    # matches the broad "Message" pattern and shadows the actual message.
+    message = ""
+    for m in re.finditer(r'<([^>]*)>([^<]+)</[^>]*>', text):
+        tag = m.group(1)
+        if 'Message' in tag and 'Warning' not in tag:
+            # Strip namespace prefix: <a:Message> → just the value
+            message = m.group(2)
+            break
     message = message.replace('&#xD;', '\n').replace('&#xA;', '\n')
 
     warning_match = re.search(r'<[^>]*HasWarningMessage[^>]*>(true|false)</[^>]*HasWarningMessage>',
@@ -783,7 +795,10 @@ class BlueSyncService:
         _update_blue_progress(step='Loading CSV...')
         if sync_log_id:
             self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
-        csv_columns, rows = self._load_csv(ds['csv_file'], columns)
+        csv_columns, rows = self._load_csv(
+            ds['csv_file'], columns,
+            column_map=ds.get('column_map'),
+        )
 
         if not rows:
             self.errors.append(f"{datasource_key}: No data to import")
@@ -896,26 +911,41 @@ class BlueSyncService:
 
         return extract_block_name(response.text)
 
-    def _load_csv(self, csv_file: str, expected_columns: List[str]) -> Tuple[List[str], List[List[str]]]:
-        """Load CSV file and prepare data for import."""
+    def _load_csv(self, csv_file: str, expected_columns: List[str],
+                  column_map: Optional[Dict[str, str]] = None) -> Tuple[List[str], List[List[str]]]:
+        """Load CSV file and prepare data for import.
+
+        Args:
+            csv_file:      Filename under datasources_path.
+            expected_columns: Blue column names to push.
+            column_map:    Optional dict mapping CSV column names → Blue column
+                           names (e.g. {'FIRSTNAME': 'FIRST_NAME'}).
+        """
         filepath = os.path.join(self.datasources_path, csv_file)
 
         if not os.path.exists(filepath):
             return [], []
 
+        if column_map is None:
+            column_map = {}
+
+        # Reverse map: Blue column → CSV column (identity for unmapped)
+        csv_of = {blue: column_map.get(blue, blue) for blue in expected_columns}
+
         rows = []
 
         with open(filepath, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
-            csv_columns = reader.fieldnames or []
+            csv_columns = set(reader.fieldnames or [])
 
-            # Use only columns that exist in both CSV and expected list
-            use_columns = [c for c in expected_columns if c in csv_columns]
+            # Only include Blue columns whose CSV counterpart exists
+            use_columns = [blue for blue in expected_columns if csv_of[blue] in csv_columns]
 
             for row in reader:
                 row_data = []
-                for col in use_columns:
-                    val = row.get(col, '')
+                for blue_col in use_columns:
+                    csv_col = csv_of[blue_col]
+                    val = row.get(csv_col, '')
                     row_data.append(val if val else '')
                 rows.append(row_data)
 
