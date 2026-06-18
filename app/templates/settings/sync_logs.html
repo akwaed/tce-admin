@@ -132,9 +132,36 @@
         <!-- Datasource to Blue with individual selection -->
         <div class="border-top pt-3">
             <h6 class="mb-3"><i class="bi bi-cloud-upload me-2"></i>Push to Explorance Blue</h6>
+
+            <!-- Individual quick-push buttons -->
+            <div class="row mb-2 g-2">
+                {% set datasource_items = [
+                    ('users',       'bi-people',        'Users',       'btn-outline-info'),
+                    ('courses',     'bi-book',          'Courses',     'btn-outline-success'),
+                    ('instructors', 'bi-person-badge',  'Instructors', 'btn-outline-warning'),
+                    ('students',    'bi-mortarboard',   'Students',    'btn-outline-secondary'),
+                ] %}
+                {% for ds_key, ds_icon, ds_label, ds_btn_class in datasource_items %}
+                <div class="col-6 col-md-3">
+                    <form action="{{ url_for('settings.trigger_blue_sync') }}" method="post" class="d-grid"
+                          onsubmit="return confirmQuickPush('{{ ds_label }}')">
+                        <input type="hidden" name="datasources" value="{{ ds_key }}">
+                        <button type="submit" class="btn {{ ds_btn_class }} btn-sm"
+                                {% if sync_running %}disabled{% endif %}
+                                title="Push only {{ ds_label }} to Blue">
+                            <i class="bi {{ ds_icon }} me-1"></i>Push {{ ds_label }}
+                        </button>
+                    </form>
+                </div>
+                {% endfor %}
+            </div>
+
+            <hr class="my-2">
+
+            <!-- Bulk push with checkbox selection -->
             <form action="{{ url_for('settings.trigger_blue_sync') }}" method="post" id="blue-sync-form">
-                <div class="row mb-3">
-                    <div class="col-md-3">
+                <div class="row mb-2">
+                    <div class="col-6 col-md-3">
                         <div class="form-check">
                             <input class="form-check-input ds-checkbox" type="checkbox" name="datasources" value="users" id="ds-users" checked>
                             <label class="form-check-label" for="ds-users">
@@ -142,7 +169,7 @@
                             </label>
                         </div>
                     </div>
-                    <div class="col-md-3">
+                    <div class="col-6 col-md-3">
                         <div class="form-check">
                             <input class="form-check-input ds-checkbox" type="checkbox" name="datasources" value="courses" id="ds-courses" checked>
                             <label class="form-check-label" for="ds-courses">
@@ -150,7 +177,7 @@
                             </label>
                         </div>
                     </div>
-                    <div class="col-md-3">
+                    <div class="col-6 col-md-3">
                         <div class="form-check">
                             <input class="form-check-input ds-checkbox" type="checkbox" name="datasources" value="instructors" id="ds-instructors" checked>
                             <label class="form-check-label" for="ds-instructors">
@@ -158,7 +185,7 @@
                             </label>
                         </div>
                     </div>
-                    <div class="col-md-3">
+                    <div class="col-6 col-md-3">
                         <div class="form-check">
                             <input class="form-check-input ds-checkbox" type="checkbox" name="datasources" value="students" id="ds-students" checked>
                             <label class="form-check-label" for="ds-students">
@@ -167,20 +194,20 @@
                         </div>
                     </div>
                 </div>
-                <div class="d-flex align-items-center">
-                    <button type="submit" class="btn btn-outline-primary me-2"
+                <div class="d-flex align-items-center flex-wrap gap-2">
+                    <button type="submit" class="btn btn-outline-primary"
                             {% if sync_running %}disabled{% endif %}
                             id="blue-sync-btn">
                         <i class="bi bi-cloud-upload me-1"></i>Push Selected to Blue
                     </button>
-                    <button type="button" class="btn btn-outline-secondary btn-sm me-2" onclick="selectAllDatasources()">
+                    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="selectAllDatasources()">
                         Select All
                     </button>
                     <button type="button" class="btn btn-outline-secondary btn-sm" onclick="clearAllDatasources()">
                         Clear All
                     </button>
-                    <small class="text-muted ms-3">
-                        <i class="bi bi-info-circle me-1"></i>60s delay between each datasource
+                    <small class="text-muted">
+                        <i class="bi bi-info-circle me-1"></i>60s delay between each
                     </small>
                 </div>
             </form>
@@ -382,6 +409,11 @@
 
 {% block extra_js %}
 <script>
+// Confirm a quick single-datasource push
+function confirmQuickPush(label) {
+    return confirm('Push only ' + label + ' to Explorance Blue?');
+}
+
 // Select/clear all datasources
 function selectAllDatasources() {
     document.querySelectorAll('.ds-checkbox').forEach(cb => cb.checked = true);

@@ -122,10 +122,33 @@
                     <form action="{{ url_for('settings.trigger_blue_sync') }}" method="post" class="d-inline">
                         <button type="submit" class="btn btn-outline-primary w-100"
                                 {% if not api_key_valid %}disabled{% endif %}
-                                onclick="return confirm('Push datasource files to Explorance Blue?')">
-                            <i class="bi bi-cloud-upload me-1"></i>Sync: Datasource to Blue
+                                onclick="return confirm('Push all datasource files to Explorance Blue?')">
+                            <i class="bi bi-cloud-upload me-1"></i>Sync: Datasource to Blue (All)
                         </button>
                     </form>
+
+                    <!-- Individual quick-push buttons -->
+                    <div class="row g-1">
+                        {% set ds_quick = [
+                            ('users',       'bi-people',        'Users',       'btn-outline-info btn-sm'),
+                            ('courses',     'bi-book',          'Courses',     'btn-outline-success btn-sm'),
+                            ('instructors', 'bi-person-badge',  'Instructors', 'btn-outline-warning btn-sm'),
+                            ('students',    'bi-mortarboard',   'Students',    'btn-outline-secondary btn-sm'),
+                        ] %}
+                        {% for ds_key, ds_icon, ds_label, ds_classes in ds_quick %}
+                        <div class="col-6">
+                            <form action="{{ url_for('settings.trigger_blue_sync') }}" method="post" class="d-inline">
+                                <input type="hidden" name="datasources" value="{{ ds_key }}">
+                                <button type="submit" class="btn {{ ds_classes }} w-100"
+                                        {% if not api_key_valid %}disabled{% endif %}
+                                        onclick="return confirm('Push only {{ ds_label }} to Blue?')"
+                                        title="Push {{ ds_label }}">
+                                    <i class="bi {{ ds_icon }} me-1"></i>{{ ds_label }}
+                                </button>
+                            </form>
+                        </div>
+                        {% endfor %}
+                    </div>
 
                     <form action="{{ url_for('settings.trigger_full_sync') }}" method="post" class="d-inline">
                         <button type="submit" class="btn btn-uk-primary w-100"
