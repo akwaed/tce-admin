@@ -337,7 +337,7 @@ def check_response(response: requests.Response, action: str) -> Tuple[bool, str,
     if is_success_match:
         is_success = is_success_match.group(1).lower() == 'true'
 
-    message_match = re.search(r'<[^>]*Message[^>]*>([^<]*)</[^>]*Message>', text)
+    message_match = re.search(r'<(?![^>]*Warning)[^>]*Message[^>]*>([^<]*)</[^>]*Message>', text)
     message = message_match.group(1) if message_match else ""
     message = message.replace('&#xD;', '\n').replace('&#xA;', '\n')
 
@@ -819,6 +819,15 @@ class BlueSyncService:
         if not transaction_id:
             self.errors.append(f"{datasource_key}: Could not get transaction ID")
             # Log raw RegisterImport response for debugging
+            self.errors.append(f"  RegisterImport raw: {response.text[:400]}")
+            return False
+
+        # Blue returns "0" when RegisterImport fails (e.g. datasource locked
+        # by another process).  Treat it as a registration failure.
+        if transaction_id.strip() == '0':
+            self.errors.append(
+                f"{datasource_key}: RegisterImport failed (transaction ID 0)"
+            )
             self.errors.append(f"  RegisterImport raw: {response.text[:400]}")
             return False
 
