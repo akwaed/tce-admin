@@ -40,6 +40,7 @@ from app import create_app
 from app.models import db
 from app.models.course import College, Course, Department, Instructor
 from app.models.sync_history import ChangeLog, SyncRun
+from app.models.settings import DataFileSyncEvent, BlueSyncDatasource
 
 
 def _count_rows(model):
@@ -68,6 +69,10 @@ def _ensure_indexes(inspector):
         ('change_log',  'ix_change_log_created_at',     'created_at'),
         ('sync_runs',   'ix_sync_runs_status',          'status'),
         ('sync_runs',   'ix_sync_runs_started_at',      'started_at'),
+        ('data_file_sync_events', 'ix_file_events_sync_log_id', 'sync_log_id'),
+        ('data_file_sync_events', 'ix_file_events_direction', 'direction'),
+        ('blue_sync_datasources', 'ix_blue_ds_import_order', 'import_order'),
+        ('blue_sync_datasources', 'ix_blue_ds_active', 'is_active'),
     ]
 
     created = []
@@ -85,6 +90,97 @@ def _ensure_indexes(inspector):
         print('Created indexes:', ', '.join(created))
     else:
         print('All performance indexes already present.')
+
+
+INITIAL_BLUE_DATASOURCES = [
+    {
+        'datasource_id': 'Data161',
+        'display_name': 'Courses',
+        'legacy_key': 'courses',
+        'block_name': '23_Courses',
+        'csv_file': 'Courses.csv',
+        'source_type': 'hana_csv',
+        'import_order': 1,
+        'is_system': True,
+        'wait_after_seconds': 300,
+        'columns': [
+            'SECTION_KEY', 'TITLE', 'CANVAS_SIS_ID', 'CRS_SECTION', 'PREFIX',
+            'CLASS', 'CLASS_ID', 'SECTION', 'SECTION_ID', 'ACADEMIC_YEAR',
+            'ACADEMIC_TERM_ID', 'ACADEMIC_TERM', 'SECTION_TITLE',
+            'SECTION_BEGIN_DATE', 'SECTION_END_DATE', 'SECTION_LENGTH_DAYS',
+            'TCE_INVITE', 'TCE_R1', 'TCE_R2', 'TCE_END_DATE', 'TCE_REPORT_DATE',
+            'CLASS_DEPARTMENT', 'CLASS_DEPARTMENT_ID', 'CLASS_COLLEGE',
+            'CLASS_COLLEGE_SHORT', 'CLASS_LEVEL', 'IS_CROSSLISTED',
+            'CROSSLISTED_ID', 'DISTANCE_LEARNING', 'IS_UK_CORE', 'UK_CORE_TYPE',
+            'SPEC_TYPE',
+        ],
+        'required_columns': ['SECTION_KEY', 'TITLE'],
+    },
+    {
+        'datasource_id': 'Data162',
+        'display_name': 'Course Instructors',
+        'legacy_key': 'instructors',
+        'block_name': None,
+        'csv_file': 'Instructor_Course.csv',
+        'source_type': 'hana_csv',
+        'import_order': 2,
+        'is_system': True,
+        'wait_after_seconds': 300,
+        'columns': ['SECTION_KEY', 'USER_ID', 'FIRST_NAME', 'LAST_NAME', 'EMAIL'],
+        'required_columns': ['SECTION_KEY', 'USER_ID'],
+    },
+    {
+        'datasource_id': 'Data163',
+        'display_name': 'Course Students',
+        'legacy_key': 'students',
+        'block_name': None,
+        'csv_file': 'Student_Course.csv',
+        'source_type': 'hana_csv',
+        'import_order': 3,
+        'is_system': True,
+        'wait_after_seconds': 300,
+        'columns': ['SECTION_KEY', 'USER_ID'],
+        'required_columns': ['SECTION_KEY', 'USER_ID'],
+    },
+    {
+        'datasource_id': 'Data144',
+        'display_name': 'Users',
+        'legacy_key': 'users',
+        'block_name': None,
+        'csv_file': 'Users.csv',
+        'source_type': 'hana_csv',
+        'import_order': 4,
+        'is_system': True,
+        'wait_after_seconds': 300,
+        'columns': ['USER_ID', 'FIRST_NAME', 'LAST_NAME', 'EMAIL', 'SECONDARY_EMAIL'],
+        'required_columns': ['USER_ID', 'FIRST_NAME', 'LAST_NAME', 'EMAIL'],
+    },
+]
+
+
+def _seed_blue_datasources():
+    """Insert the initial 4 HANA datasources if the table is empty."""
+    from datetime import datetime
+    now = datetime.utcnow()
+    for ds in INITIAL_BLUE_DATASOURCES:
+        row = BlueSyncDatasource(
+            datasource_id=ds['datasource_id'],
+            display_name=ds['display_name'],
+            legacy_key=ds['legacy_key'],
+            block_name=ds['block_name'],
+            csv_file=ds['csv_file'],
+            source_type=ds['source_type'],
+            import_order=ds['import_order'],
+            is_active=True,
+            is_system=ds['is_system'],
+            wait_after_seconds=ds['wait_after_seconds'],
+            columns=ds['columns'],
+            required_columns=ds.get('required_columns'),
+            created_at=now,
+            updated_at=now,
+        )
+        db.session.add(row)
+    db.session.commit()
 
 
 def main() -> int:
@@ -105,6 +201,8 @@ def main() -> int:
         sync_tables = {
             'sync_runs': SyncRun.__table__,
             'change_log': ChangeLog.__table__,
+            'data_file_sync_events': DataFileSyncEvent.__table__,
+            'blue_sync_datasources': BlueSyncDatasource.__table__,
         }
         created_tables = []
         for name, table in sync_tables.items():
@@ -128,6 +226,15 @@ def main() -> int:
         print(f'  departments : {_count_rows(Department):,}')
         print(f'  courses     : {_count_rows(Course):,}')
         print(f'  instructors : {_count_rows(Instructor):,}')
+
+        # Seed initial BlueSyncDatasource rows if the table is empty.
+        if inspector.has_table('blue_sync_datasources'):
+            existing = db.session.execute(
+                select(func.count()).select_from(BlueSyncDatasource)
+            ).scalar_one()
+            if existing == 0:
+                _seed_blue_datasources()
+                print('Seeded 4 initial Blue datasources.')
 
         if _is_postgres():
             try:

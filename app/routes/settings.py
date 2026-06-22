@@ -645,7 +645,21 @@ def sync_log_detail(log_id):
     """View detailed sync log information."""
     _mark_stale_running_logs()
     log = DataSyncLog.query.get_or_404(log_id)
-    return render_template('settings/sync_log_detail.html', log=log)
+    from app.models.settings import DataFileSyncEvent
+    file_events = DataFileSyncEvent.query.filter_by(sync_log_id=log_id)\
+        .order_by(DataFileSyncEvent.started_at).all()
+    return render_template('settings/sync_log_detail.html', log=log,
+                           file_events=file_events)
+
+
+@settings_bp.route('/sync-log/<int:log_id>/file-events')
+@super_admin_required
+def sync_log_file_events(log_id):
+    """JSON endpoint for file-level timeline events (used by auto-refresh)."""
+    from app.models.settings import DataFileSyncEvent
+    events = DataFileSyncEvent.query.filter_by(sync_log_id=log_id)\
+        .order_by(DataFileSyncEvent.started_at).all()
+    return jsonify([e.to_dict() for e in events])
 
 
 @settings_bp.route('/sync-logs/<int:log_id>/cancel', methods=['POST'])
@@ -1189,3 +1203,244 @@ def changes_entity_history(entity_type, entity_key):
         entity_key=entity_key,
         changes=changes,
     )
+
+
+# ==========================================================================
+# Blue Datasource Registry Routes
+# ==========================================================================
+
+@settings_bp.route('/blue-datasources')
+@super_admin_required
+def blue_datasources():
+    """Manage Blue datasource registry."""
+    from app.models.settings import BlueSyncDatasource
+    datasources = BlueSyncDatasource.query.order_by(
+        BlueSyncDatasource.import_order
+    ).all()
+    return render_template(
+        'settings/blue_datasources.html',
+        datasources=datasources,
+    )
+
+
+@settings_bp.route('/blue-datasources/add', methods=['POST'])
+@super_admin_required
+def blue_datasource_add():
+    """Add a new Blue datasource."""
+    from app.models.settings import BlueSyncDatasource
+
+    ds_id = request.form.get('datasource_id', '').strip()
+    display_name = request.form.get('display_name', '').strip()
+    csv_file = request.form.get('csv_file', '').strip()
+    source_type = request.form.get('source_type', 'hana_csv')
+    block_name = request.form.get('block_name', '').strip() or None
+    import_order = int(request.form.get('import_order', 99))
+    wait_seconds = int(request.form.get('wait_after_seconds', 300))
+    notes = request.form.get('notes', '').strip() or None
+    columns_text = request.form.get('columns_text', '').strip()
+    required_text = request.form.get('required_columns_text', '').strip()
+
+    if not ds_id or not display_name or not csv_file:
+        flash('Datasource ID, Display Name, and CSV File are required.', 'danger')
+        return redirect(url_for('settings.blue_datasources'))
+
+    if not ds_id.startswith('Data'):
+        flash('Datasource ID must start with "Data" (e.g. Data999).', 'danger')
+        return redirect(url_for('settings.blue_datasources'))
+
+    existing = BlueSyncDatasource.query.filter_by(
+        datasource_id=ds_id
+    ).first()
+    if existing:
+        flash(f'Datasource {ds_id} is already registered.', 'danger')
+        return redirect(url_for('settings.blue_datasources'))
+
+    # Auto-discover block_name and columns from Blue if empty
+    columns = None
+    if columns_text:
+        columns = [c.strip() for c in columns_text.splitlines() if c.strip()]
+    required_columns = None
+    if required_text:
+        required_columns = [c.strip() for c in required_text.splitlines() if c.strip()]
+
+    if not block_name or not columns:
+        api_key = SystemSetting.get(SystemSetting.BLUE_API_KEY)
+        ws_url = SystemSetting.get(
+            SystemSetting.BLUE_WS_URL,
+            'https://my-uky-ws-bc.bluera.com/BlueWebService.svc/file'
+        )
+        if api_key:
+            try:
+                from app.services.blue_discovery import (
+                    get_datablock_name, get_datasource_schema,
+                )
+                if not block_name:
+                    block_name = get_datablock_name(api_key, ws_url, ds_id)
+                if not columns:
+                    columns = get_datasource_schema(api_key, ws_url, ds_id)
+            except Exception as e:
+                flash(f'Could not auto-discover from Blue: {e}. Fill fields manually.', 'warning')
+
+    new_ds = BlueSyncDatasource(
+        datasource_id=ds_id,
+        display_name=display_name,
+        csv_file=csv_file,
+        source_type=source_type,
+        block_name=block_name,
+        columns=columns,
+        required_columns=required_columns,
+        import_order=import_order,
+        is_active=True,
+        is_system=False,
+        wait_after_seconds=wait_seconds,
+        notes=notes,
+        created_by_id=current_user.id if current_user.is_authenticated else None,
+    )
+    db.session.add(new_ds)
+    db.session.commit()
+    flash(f'Datasource {ds_id} added successfully.', 'success')
+    return redirect(url_for('settings.blue_datasources'))
+
+
+@settings_bp.route('/blue-datasources/<int:ds_id>/toggle', methods=['POST'])
+@super_admin_required
+def blue_datasource_toggle(ds_id):
+    """Toggle active status of a Blue datasource."""
+    from app.models.settings import BlueSyncDatasource
+    ds = BlueSyncDatasource.query.get_or_404(ds_id)
+    ds.is_active = not ds.is_active
+    ds.updated_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify({'ok': True, 'is_active': ds.is_active})
+
+
+@settings_bp.route('/blue-datasources/<int:ds_id>/delete', methods=['POST'])
+@super_admin_required
+def blue_datasource_delete(ds_id):
+    """Delete a Blue datasource (non-system only)."""
+    from app.models.settings import BlueSyncDatasource
+    ds = BlueSyncDatasource.query.get_or_404(ds_id)
+    if ds.is_system:
+        flash('System datasources cannot be deleted. Disable them instead.', 'danger')
+        return redirect(url_for('settings.blue_datasources'))
+    db.session.delete(ds)
+    db.session.commit()
+    flash(f'Datasource {ds.datasource_id} deleted.', 'success')
+    return redirect(url_for('settings.blue_datasources'))
+
+
+@settings_bp.route('/blue-datasources/<int:ds_id>/move', methods=['POST'])
+@super_admin_required
+def blue_datasource_move(ds_id):
+    """Move a datasource up or down in import order."""
+    from app.models.settings import BlueSyncDatasource
+    direction = request.form.get('direction', 'down')
+    ds = BlueSyncDatasource.query.get_or_404(ds_id)
+
+    # Find adjacent datasource
+    if direction == 'up':
+        neighbor = BlueSyncDatasource.query \
+            .filter(BlueSyncDatasource.import_order < ds.import_order) \
+            .order_by(BlueSyncDatasource.import_order.desc()).first()
+    else:
+        neighbor = BlueSyncDatasource.query \
+            .filter(BlueSyncDatasource.import_order > ds.import_order) \
+            .order_by(BlueSyncDatasource.import_order).first()
+
+    if neighbor:
+        ds_order = ds.import_order
+        ds.import_order = neighbor.import_order
+        neighbor.import_order = ds_order
+        ds.updated_at = datetime.utcnow()
+        neighbor.updated_at = datetime.utcnow()
+        db.session.commit()
+
+    return redirect(url_for('settings.blue_datasources'))
+
+
+@settings_bp.route('/blue-datasources/<int:ds_id>/edit', methods=['POST'])
+@super_admin_required
+def blue_datasource_edit(ds_id):
+    """Edit a Blue datasource's fields."""
+    from app.models.settings import BlueSyncDatasource
+    ds = BlueSyncDatasource.query.get_or_404(ds_id)
+
+    ds.display_name = request.form.get('display_name', ds.display_name)
+    ds.csv_file = request.form.get('csv_file', ds.csv_file)
+    ds.source_type = request.form.get('source_type', ds.source_type)
+    ds.block_name = request.form.get('block_name', '').strip() or None
+    ds.import_order = int(request.form.get('import_order', ds.import_order))
+    ds.wait_after_seconds = int(request.form.get(
+        'wait_after_seconds', ds.wait_after_seconds
+    ))
+    ds.notes = request.form.get('notes', '').strip() or None
+
+    columns_text = request.form.get('columns_text', '').strip()
+    if columns_text:
+        ds.columns = [c.strip() for c in columns_text.splitlines() if c.strip()]
+
+    required_text = request.form.get('required_columns_text', '').strip()
+    if required_text:
+        ds.required_columns = [c.strip() for c in required_text.splitlines() if c.strip()]
+
+    ds.updated_at = datetime.utcnow()
+    db.session.commit()
+    flash(f'Datasource {ds.datasource_id} updated.', 'success')
+    return redirect(url_for('settings.blue_datasources'))
+
+
+@settings_bp.route('/blue-datasources/discover')
+@super_admin_required
+def blue_datasource_discover():
+    """Discover available datasources from Blue API."""
+    api_key = SystemSetting.get(SystemSetting.BLUE_API_KEY)
+    ws_url = SystemSetting.get(
+        SystemSetting.BLUE_WS_URL,
+        'https://my-uky-ws-bc.bluera.com/BlueWebService.svc/file'
+    )
+    if not api_key:
+        return jsonify({'error': 'Blue API key not configured.'}), 400
+
+    from app.models.settings import BlueSyncDatasource
+    from app.services.blue_discovery import get_datasource_list
+
+    try:
+        discovered = get_datasource_list(api_key, ws_url)
+    except Exception as e:
+        return jsonify({'error': f'Blue API call failed: {e}'}), 500
+
+    # Mark already-registered datasources
+    registered_ids = {
+        ds.datasource_id for ds in BlueSyncDatasource.query.all()
+    }
+    for ds in discovered:
+        ds['registered'] = ds['datasource_id'] in registered_ids
+
+    return jsonify(discovered)
+
+
+@settings_bp.route('/blue-datasources/schema/<datasource_id>')
+@super_admin_required
+def blue_datasource_schema(datasource_id):
+    """Get schema and block name for a Blue datasource."""
+    api_key = SystemSetting.get(SystemSetting.BLUE_API_KEY)
+    ws_url = SystemSetting.get(
+        SystemSetting.BLUE_WS_URL,
+        'https://my-uky-ws-bc.bluera.com/BlueWebService.svc/file'
+    )
+    if not api_key:
+        return jsonify({'error': 'Blue API key not configured.'}), 400
+
+    from app.services.blue_discovery import (
+        get_datasource_schema, get_datablock_name,
+    )
+    try:
+        columns = get_datasource_schema(api_key, ws_url, datasource_id)
+        block_name = get_datablock_name(api_key, ws_url, datasource_id)
+        return jsonify({
+            'datasource_id': datasource_id,
+            'columns': columns,
+            'block_name': block_name,
+        })
+    except Exception as e:
+        return jsonify({'error': f'Blue API call failed: {e}'}), 500

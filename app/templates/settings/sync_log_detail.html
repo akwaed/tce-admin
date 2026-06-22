@@ -222,6 +222,19 @@
 </div>
 {% endif %}
 
+<!-- File-Level Timeline -->
+<div class="card mb-4" id="file-timeline-card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-clock-history me-2"></i>File-Level Timeline</span>
+        {% if log.status == 'running' %}
+        <span class="spinner-border spinner-border-sm text-primary" role="status"></span>
+        {% endif %}
+    </div>
+    <div class="card-body" id="file-timeline-body">
+        {% include 'settings/_file_timeline.html' %}
+    </div>
+</div>
+
 <!-- Summary Data -->
 {% if log.summary %}
 <div class="card mb-4">
@@ -258,4 +271,74 @@
         <i class="bi bi-arrow-left me-1"></i>Back to Sync Logs
     </a>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+{% if log.status == 'running' %}
+<script>
+(function() {
+    var logId = {{ log.id }};
+    var pollCount = 0;
+    var maxPolls = 1440; // 2 hours at 5s intervals
+
+    function refreshTimeline() {
+        pollCount++;
+        fetch('/settings/sync-log/' + logId + '/file-events')
+            .then(function(r) { return r.json(); })
+            .then(function(events) {
+                var tbody = document.getElementById('file-timeline-body');
+                if (!tbody) return;
+                var html = '<div class="table-responsive"><table class="table table-uk table-sm mb-0"><thead><tr>' +
+                    '<th>Time</th><th>Direction</th><th>File</th><th>Status</th>' +
+                    '<th class="text-end">Rows</th><th class="text-end">Added</th>' +
+                    '<th class="text-end">Updated</th><th class="text-end">Removed</th>' +
+                    '<th class="text-end">Elapsed</th></tr></thead><tbody>';
+
+                if (events.length === 0) {
+                    html += '<tr><td colspan="9" class="text-center text-muted">No file events yet...</td></tr>';
+                } else {
+                    events.forEach(function(e) {
+                        var dirBadge = e.direction === 'hana_pull'
+                            ? '<span class="badge bg-info">HANA PULL</span>'
+                            : '<span class="badge bg-primary">BLUE PUSH</span>';
+                        var statusBadge = e.status === 'success'
+                            ? '<span class="badge bg-success">' + e.status_icon + ' SUCCESS</span>'
+                            : e.status === 'failed'
+                            ? '<span class="badge bg-danger">' + e.status_icon + ' FAILED</span>'
+                            : e.status === 'running'
+                            ? '<span class="badge bg-warning text-dark">\u23F3 RUNNING</span>'
+                            : '<span class="badge bg-secondary">' + e.status + '</span>';
+                        var dsInfo = e.datasource_id ? ' \u2192 ' + e.datasource_id : '';
+                        html += '<tr>' +
+                            '<td class="text-nowrap">' + (e.started_at || '').substring(11, 19) + '</td>' +
+                            '<td>' + dirBadge + '</td>' +
+                            '<td>' + e.file_name + dsInfo + '</td>' +
+                            '<td>' + statusBadge + '</td>' +
+                            '<td class="text-end">' + (e.row_count || 0).toLocaleString() + '</td>' +
+                            '<td class="text-end text-success">' + (e.rows_added > 0 ? '+' + e.rows_added.toLocaleString() : '') + '</td>' +
+                            '<td class="text-end text-warning">' + (e.rows_updated > 0 ? '~' + e.rows_updated.toLocaleString() : '') + '</td>' +
+                            '<td class="text-end text-danger">' + (e.rows_removed > 0 ? '-' + e.rows_removed.toLocaleString() : '') + '</td>' +
+                            '<td class="text-end">' + (e.elapsed_display || '') + '</td>' +
+                            '</tr>';
+                    });
+                }
+                html += '</tbody></table></div>';
+                tbody.innerHTML = html;
+
+                // Stop polling if no running events and log may have completed
+                var allDone = events.length > 0 && events.every(function(e) { return e.status !== 'running'; });
+                if (allDone || pollCount >= maxPolls) {
+                    clearInterval(timer);
+                }
+            })
+            .catch(function() {
+                // Silently ignore fetch errors
+            });
+    }
+
+    // Initial load is server-rendered; poll every 5 seconds
+    var timer = setInterval(refreshTimeline, 5000);
+})();
+</script>
+{% endif %}
 {% endblock %}

@@ -1,0 +1,68 @@
+{% if file_events %}
+<div class="table-responsive">
+    <table class="table table-uk table-sm mb-0">
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Direction</th>
+                <th>File</th>
+                <th>Status</th>
+                <th class="text-end">Rows</th>
+                <th class="text-end">Added</th>
+                <th class="text-end">Updated</th>
+                <th class="text-end">Removed</th>
+                <th class="text-end">Elapsed</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for e in file_events %}
+            <tr>
+                <td class="text-nowrap">
+                    {{ e.started_at.strftime('%H:%M:%S') if e.started_at else '-' }}
+                </td>
+                <td>
+                    {% if e.direction == 'hana_pull' %}
+                    <span class="badge bg-info">HANA PULL</span>
+                    {% else %}
+                    <span class="badge bg-primary">BLUE PUSH</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {{ e.file_name }}
+                    {% if e.datasource_id %}<small class="text-muted"> → {{ e.datasource_id }}</small>{% endif %}
+                </td>
+                <td>
+                    {% if e.status == 'success' %}
+                    <span class="badge bg-success">{{ e.status_icon }} SUCCESS</span>
+                    {% elif e.status == 'failed' %}
+                    <span class="badge bg-danger">{{ e.status_icon }} FAILED</span>
+                    {% elif e.status == 'running' %}
+                    <span class="badge bg-warning text-dark">⏳ RUNNING</span>
+                    {% elif e.status == 'skipped' %}
+                    <span class="badge bg-secondary">⏩ SKIPPED</span>
+                    {% else %}
+                    <span class="badge bg-secondary">{{ e.status }}</span>
+                    {% endif %}
+                    {% if e.error_message %}
+                    <div class="small text-danger mt-1">{{ e.error_message[:200] }}</div>
+                    {% endif %}
+                </td>
+                <td class="text-end">{{ (e.row_count or 0)|int|default('', true) }}</td>
+                <td class="text-end text-success">
+                    {% if e.rows_added > 0 %}+{{ e.rows_added }}{% endif %}
+                </td>
+                <td class="text-end text-warning">
+                    {% if e.rows_updated > 0 %}~{{ e.rows_updated }}{% endif %}
+                </td>
+                <td class="text-end text-danger">
+                    {% if e.rows_removed > 0 %}-{{ e.rows_removed }}{% endif %}
+                </td>
+                <td class="text-end">{{ e.elapsed_display }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p class="text-muted mb-0">No file-level events recorded for this sync.</p>
+{% endif %}

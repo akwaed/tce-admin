@@ -29,9 +29,11 @@ LOCK_FILE="/tmp/tce-admin-sync.lock"
 DATASOURCES_DIR="$PROJECT_DIR/datasources"
 HANA_SCRIPT="$PROJECT_DIR/scripts/hana_sync.py"
 DB_SCRIPT="$PROJECT_DIR/scripts/db_sync.py"
+BLUE_CLI_SCRIPT="$PROJECT_DIR/scripts/blue_sync_cli.py"
 DRA_SCRIPT="$PROJECT_DIR/scripts/dra_sync.py"
 HANA_TIMEOUT_SECONDS="${HANA_TIMEOUT_SECONDS:-600}"
 DB_SYNC_TIMEOUT_SECONDS="${DB_SYNC_TIMEOUT_SECONDS:-900}"
+BLUE_SYNC_TIMEOUT_SECONDS="${BLUE_SYNC_TIMEOUT_SECONDS:-7200}"  # 2hr max for all datasources
 DRA_SYNC_TIMEOUT_SECONDS="${DRA_SYNC_TIMEOUT_SECONDS:-900}"
 
 # ---------------------------------------------------------------------------
@@ -95,7 +97,7 @@ OVERALL_START=$(date +%s)
 # ---------------------------------------------------------------------------
 # Step 1: HANA -> CSV
 # ---------------------------------------------------------------------------
-log "Step 1/3: Fetching data from SAP HANA..."
+log "Step 1/4: Fetching data from SAP HANA..."
 HANA_START=$(date +%s)
 
 set +e
@@ -113,12 +115,12 @@ if [ $HANA_EXIT -ne 0 ]; then
 fi
 
 HANA_END=$(date +%s)
-log "Step 1/3 complete in $(( HANA_END - HANA_START ))s."
+log "Step 1/4 complete in $(( HANA_END - HANA_START ))s."
 
 # ---------------------------------------------------------------------------
 # Step 2: CSV -> PostgreSQL
 # ---------------------------------------------------------------------------
-log "Step 2/3: Loading CSV data into PostgreSQL..."
+log "Step 2/4: Loading CSV data into PostgreSQL..."
 DB_START=$(date +%s)
 
 set +e
@@ -146,16 +148,35 @@ INSTRUCTORS=$(echo "$DB_JSON"    | python3 -c "import sys,json; d=json.load(sys.
 STUDENTS=$(echo "$DB_JSON"       | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('stats',{}).get('students_counted',0))" 2>/dev/null || echo "?")
 ELAPSED=$(echo "$DB_JSON"        | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d.get('elapsed_seconds',0),1))" 2>/dev/null || echo "?")
 
-log "Step 2/3 complete in $(( DB_END - DB_START ))s."
+log "Step 2/4 complete in $(( DB_END - DB_START ))s."
 log "  Courses  : +${COURSES_ADDED} added, ~${COURSES_UPDATED} updated"
 log "  Instructors: +${INSTRUCTORS} added"
 log "  Students counted: ${STUDENTS}"
 log "  DB sync took: ${ELAPSED}s"
 
 # ---------------------------------------------------------------------------
-# Step 3: DRA -> Explorance Blue
+# Step 3: Datasources -> Explorance Blue
 # ---------------------------------------------------------------------------
-log "Step 3/3: Pushing DRA data to Explorance Blue..."
+log "Step 3/4: Pushing datasources to Explorance Blue..."
+BLUE_START=$(date +%s)
+
+set +e
+run_with_timeout "$BLUE_SYNC_TIMEOUT_SECONDS" \
+    "$VENV_PYTHON" "$BLUE_CLI_SCRIPT" --scheduled
+BLUE_EXIT=$?
+set -e
+
+BLUE_END=$(date +%s)
+if [ $BLUE_EXIT -ne 0 ]; then
+    log "WARNING: Blue push failed (exit code $BLUE_EXIT). DB sync was successful."
+    # Non-fatal: DRA push continues
+fi
+log "Step 3/4 complete in $(( BLUE_END - BLUE_START ))s."
+
+# ---------------------------------------------------------------------------
+# Step 4: DRA -> Explorance Blue
+# ---------------------------------------------------------------------------
+log "Step 4/4: Pushing DRA data to Explorance Blue..."
 DRA_START=$(date +%s)
 
 set +e
@@ -173,7 +194,7 @@ if [ $DRA_EXIT -ne 0 ]; then
 fi
 
 DRA_END=$(date +%s)
-log "Step 3/3 complete in $(( DRA_END - DRA_START ))s."
+log "Step 4/4 complete in $(( DRA_END - DRA_START ))s."
 
 # ---------------------------------------------------------------------------
 # Done

@@ -298,3 +298,178 @@ class DataSyncLog(db.Model):
             'records_updated': self.records_updated,
             'records_failed': self.records_failed
         }
+
+
+class DataFileSyncEvent(db.Model):
+    """
+    Per-file granular sync event for timeline display.
+    Tracks each individual file pulled from HANA or pushed to Blue.
+    """
+    __tablename__ = 'data_file_sync_events'
+
+    id = db.Column(db.Integer, primary_key=True)
+    sync_log_id = db.Column(
+        db.Integer, db.ForeignKey('data_sync_logs.id', ondelete='CASCADE'),
+        nullable=True, index=True
+    )
+
+    # 'hana_pull' | 'blue_push'
+    direction = db.Column(db.String(20), nullable=False, index=True)
+
+    # e.g. 'Courses.csv', 'Users.csv'
+    file_name = db.Column(db.String(100), nullable=False)
+
+    # Blue datasource ID e.g. 'Data161' (null for HANA pulls)
+    datasource_id = db.Column(db.String(50), nullable=True)
+
+    started_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    completed_at = db.Column(db.DateTime, nullable=True)
+
+    # 'running' | 'success' | 'failed' | 'skipped'
+    status = db.Column(db.String(20), nullable=False, default='running')
+
+    row_count = db.Column(db.Integer, nullable=True)
+    rows_added = db.Column(db.Integer, nullable=True)
+    rows_updated = db.Column(db.Integer, nullable=True)
+    rows_removed = db.Column(db.Integer, nullable=True)
+    error_message = db.Column(db.Text, nullable=True)
+    elapsed_seconds = db.Column(db.Float, nullable=True)
+
+    # Relationship back to the parent sync log
+    sync_log = db.relationship('DataSyncLog', backref=db.backref(
+        'file_events', lazy='dynamic', cascade='all, delete-orphan'
+    ))
+
+    __table_args__ = (
+        db.Index('ix_file_events_direction_file', 'direction', 'file_name'),
+    )
+
+    def __repr__(self):
+        return f'<DataFileSyncEvent {self.direction} {self.file_name} {self.status}>'
+
+    @property
+    def direction_display(self):
+        return {
+            'hana_pull': 'HANA PULL',
+            'blue_push': 'BLUE PUSH',
+        }.get(self.direction, self.direction)
+
+    @property
+    def status_icon(self):
+        return {
+            'running': '⏳',
+            'success': '✅',
+            'failed': '❌',
+            'skipped': '⏩',
+        }.get(self.status, '❓')
+
+    @property
+    def elapsed_display(self):
+        if self.elapsed_seconds is None:
+            return ''
+        s = int(self.elapsed_seconds)
+        if s < 60:
+            return f'{s}s'
+        return f'{s // 60}m {s % 60}s'
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'sync_log_id': self.sync_log_id,
+            'direction': self.direction,
+            'direction_display': self.direction_display,
+            'file_name': self.file_name,
+            'datasource_id': self.datasource_id,
+            'started_at': self.started_at.isoformat() if self.started_at else None,
+            'completed_at': self.completed_at.isoformat() if self.completed_at else None,
+            'status': self.status,
+            'status_icon': self.status_icon,
+            'row_count': self.row_count,
+            'rows_added': self.rows_added,
+            'rows_updated': self.rows_updated,
+            'rows_removed': self.rows_removed,
+            'error_message': self.error_message,
+            'elapsed_seconds': self.elapsed_seconds,
+            'elapsed_display': self.elapsed_display,
+        }
+
+
+class BlueSyncDatasource(db.Model):
+    """
+    DB-driven registry of datasources pushed to Explorance Blue.
+    Replaces the hardcoded DATASOURCES dict in blue_sync.py.
+    """
+    __tablename__ = 'blue_sync_datasources'
+
+    id = db.Column(db.Integer, primary_key=True)
+    datasource_id = db.Column(db.String(50), nullable=False, unique=True)
+    # e.g. 'Data144', 'Data161', 'Data999'
+    display_name = db.Column(db.String(100), nullable=False)
+    # e.g. 'Users', 'Courses', 'Question Bank'
+
+    # Legacy key for backward-compatible lookups (e.g. 'users', 'courses')
+    legacy_key = db.Column(db.String(50), nullable=True, index=True)
+
+    block_name = db.Column(db.String(100), nullable=True)
+    # Blue DataBlockName; null = auto-discover via GetDataBlockInformation()
+
+    csv_file = db.Column(db.String(255), nullable=False)
+    # Relative to datasources/ dir, e.g. 'Courses.csv' or 'QB.xlsx'
+
+    source_type = db.Column(db.String(30), nullable=False, default='hana_csv')
+    # 'hana_csv' | 'generated_csv' | 'custom'
+
+    columns = db.Column(db.JSON, nullable=True)
+    # List of column name strings; null = auto-discover from Blue
+
+    required_columns = db.Column(db.JSON, nullable=True)
+    # Subset of columns that must be non-empty
+
+    import_order = db.Column(db.Integer, nullable=False, default=99)
+    # Lower = imported first; enforces dependency order
+
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+    # If False, skipped in the daily sync
+
+    is_system = db.Column(db.Boolean, nullable=False, default=False)
+    # Core HANA datasources — can be disabled but not deleted
+
+    wait_after_seconds = db.Column(db.Integer, nullable=False, default=300)
+    # Delay after this datasource push before the next one
+
+    notes = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(
+        db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    created_by_id = db.Column(db.Integer, db.ForeignKey('admins.id'), nullable=True)
+
+    created_by = db.relationship('Admin', foreign_keys=[created_by_id])
+
+    __table_args__ = (
+        db.Index('ix_blue_ds_import_order', 'import_order'),
+        db.Index('ix_blue_ds_active', 'is_active'),
+    )
+
+    def __repr__(self):
+        return f'<BlueSyncDatasource {self.datasource_id}: {self.display_name}>'
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'datasource_id': self.datasource_id,
+            'display_name': self.display_name,
+            'legacy_key': self.legacy_key,
+            'block_name': self.block_name,
+            'csv_file': self.csv_file,
+            'source_type': self.source_type,
+            'columns': self.columns,
+            'required_columns': self.required_columns,
+            'import_order': self.import_order,
+            'is_active': self.is_active,
+            'is_system': self.is_system,
+            'wait_after_seconds': self.wait_after_seconds,
+            'notes': self.notes,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }

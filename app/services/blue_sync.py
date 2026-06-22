@@ -137,6 +137,13 @@ def get_blue_sync_progress():
         return _blue_sync_progress.copy()
 
 
+def _get_wait_seconds(ds_obj) -> int:
+    """Get the wait-after-seconds for a datasource, with fallback."""
+    if hasattr(ds_obj, 'wait_after_seconds') and ds_obj.wait_after_seconds is not None:
+        return ds_obj.wait_after_seconds
+    return IMPORT_DELAY_SECONDS
+
+
 def _snapshot_blue_progress():
     """Return a copy of the current Blue sync progress."""
     with _blue_sync_lock:
@@ -564,13 +571,22 @@ class BlueSyncService:
             }
 
         # Determine which datasources to push
-        to_push = datasources if datasources else IMPORT_ORDER
-        to_push = [ds for ds in IMPORT_ORDER if ds in to_push]  # Maintain order
+        if datasources:
+            to_push = [self._resolve_datasource(key) for key in datasources]
+            # Sort by import_order to maintain dependency ordering
+            to_push.sort(key=lambda ds: ds.import_order if hasattr(ds, 'import_order') else 99)
+        else:
+            to_push = self._get_active_datasources()
         self._parent_sync_log_id = parent_sync_log_id
 
         # When pushing only Users for testing, wait 10 min so Blue can
         # finish processing any previous large Users import still running.
-        if to_push == ['users'] and not dry_run:
+        is_users_only = (
+            len(to_push) == 1
+            and hasattr(to_push[0], 'legacy_key')
+            and to_push[0].legacy_key == 'users'
+        )
+        if is_users_only and not dry_run:
             _update_blue_progress(
                 datasource='users',
                 step='Waiting 10 min for previous Users import to clear...',
@@ -619,7 +635,12 @@ class BlueSyncService:
         }
 
         try:
-            for idx, ds_key in enumerate(to_push, 1):
+            for idx, ds_obj in enumerate(to_push, 1):
+                # Resolve key for progress/results dict
+                ds_key = (ds_obj.legacy_key if hasattr(ds_obj, 'legacy_key') and ds_obj.legacy_key
+                          else ds_obj.datasource_id if hasattr(ds_obj, 'datasource_id')
+                          else ds_obj.display_name if hasattr(ds_obj, 'display_name')
+                          else str(ds_obj))
                 self._raise_if_cancelled(sync_log.id, parent_sync_log_id)
                 _update_blue_progress(
                     datasource=ds_key,
@@ -658,8 +679,9 @@ class BlueSyncService:
                     # Add delay between datasources to prevent timeouts
                     # Skip delay after the last datasource
                     if idx < len(to_push) and not dry_run:
+                        wait = _get_wait_seconds(ds_obj)
                         _update_blue_progress(
-                            step=f'Waiting {IMPORT_DELAY_SECONDS}s before next datasource...'
+                            step=f'Waiting {wait}s before next datasource...'
                         )
                         self._persist_sync_log_progress(
                             sync_log.id,
@@ -667,7 +689,7 @@ class BlueSyncService:
                             extra_summary={'parent_sync_log_id': parent_sync_log_id} if parent_sync_log_id else None,
                         )
                         self._sleep_with_cancel_checks(
-                            IMPORT_DELAY_SECONDS,
+                            wait,
                             sync_log_id=sync_log.id,
                             parent_sync_log_id=parent_sync_log_id,
                         )
@@ -691,8 +713,9 @@ class BlueSyncService:
 
                     # Also add delay after errors to give server time to recover
                     if idx < len(to_push):
+                        wait = _get_wait_seconds(ds_obj)
                         self._sleep_with_cancel_checks(
-                            IMPORT_DELAY_SECONDS,
+                            wait,
                             sync_log_id=sync_log.id,
                             parent_sync_log_id=parent_sync_log_id,
                         )
@@ -783,11 +806,108 @@ class BlueSyncService:
 
             raise
 
+    def _resolve_datasource(self, datasource_key: str):
+        """
+        Resolve a datasource by legacy key, datasource_id, or display_name.
+        Returns a BlueSyncDatasource object if found in DB, falls back to
+        the hardcoded DATASOURCES dict for backward compatibility.
+        """
+        from app.models.settings import BlueSyncDatasource
+        # Try DB lookup first (by legacy_key, datasource_id, or display_name)
+        db_ds = BlueSyncDatasource.query.filter(
+            (BlueSyncDatasource.legacy_key == datasource_key)
+            | (BlueSyncDatasource.datasource_id == datasource_key)
+            | (BlueSyncDatasource.display_name == datasource_key)
+        ).first()
+        if db_ds:
+            # Convert to a dict-like object for backward-compatible access
+            return db_ds
+
+        # Fall back to hardcoded dict
+        if datasource_key in DATASOURCES:
+            # Wrap in a simple namespace for attribute access
+            ds = DATASOURCES[datasource_key]
+            return type('_DS', (), {
+                'datasource_id': ds['id'],
+                'display_name': ds.get('name', datasource_key),
+                'block_name': ds.get('block_name'),
+                'csv_file': ds['csv_file'],
+                'columns': ds.get('columns', []),
+                'required_columns': ds.get('required', []),
+                'source_type': 'hana_csv',
+                'import_order': IMPORT_ORDER.index(datasource_key) if datasource_key in IMPORT_ORDER else 99,
+                'is_active': True,
+                'is_system': True,
+                'wait_after_seconds': IMPORT_DELAY_SECONDS,
+                'legacy_key': datasource_key,
+            })()
+        raise KeyError(f"Unknown datasource: {datasource_key}")
+
+    def _get_active_datasources(self) -> list:
+        """Load active datasources from DB ordered by import_order."""
+        from app.models.settings import BlueSyncDatasource
+        db_ds_list = BlueSyncDatasource.query \
+            .filter_by(is_active=True) \
+            .order_by(BlueSyncDatasource.import_order) \
+            .all()
+        if db_ds_list:
+            return db_ds_list
+        # Fall back to hardcoded order
+        return [self._resolve_datasource(k) for k in IMPORT_ORDER]
+
+    def _complete_file_event(self, file_event, status: str, row_count: int = 0,
+                             error_message: str = None, elapsed_seconds: float = None):
+        """Update a DataFileSyncEvent row on completion/failure."""
+        if file_event is None:
+            return
+        from app.models import db as _db
+        try:
+            file_event.status = status
+            file_event.completed_at = datetime.utcnow()
+            file_event.row_count = row_count
+            if error_message:
+                file_event.error_message = error_message[:500]
+            if elapsed_seconds is not None:
+                file_event.elapsed_seconds = round(elapsed_seconds, 2)
+            _db.session.commit()
+        except Exception:
+            _db.session.rollback()
+
     def _import_datasource(self, datasource_key: str, dry_run: bool = False,
                            sync_log_id: Optional[int] = None,
                            parent_sync_log_id: Optional[int] = None) -> bool:
         """Import a single datasource to Blue."""
-        ds = DATASOURCES[datasource_key]
+        ds = self._resolve_datasource(datasource_key)
+        ds_id = ds.datasource_id if hasattr(ds, 'datasource_id') else ds.get('id')
+        ds_name = ds.display_name if hasattr(ds, 'display_name') else ds.get('name')
+        ds_block = ds.block_name if hasattr(ds, 'block_name') else ds.get('block_name')
+        ds_csv = ds.csv_file if hasattr(ds, 'csv_file') else ds.get('csv_file')
+        ds_columns = ds.columns if hasattr(ds, 'columns') else ds.get('columns', [])
+        ds_required = ds.required_columns if hasattr(ds, 'required_columns') else ds.get('required', [])
+
+        # Create per-file event record
+        file_start = time.monotonic()
+        file_event = None
+        row_count = 0
+        error_msg = None
+        result = False
+
+        if sync_log_id:
+            from app.models import db as _db
+            from app.models.settings import DataFileSyncEvent
+            try:
+                file_event = DataFileSyncEvent(
+                    sync_log_id=sync_log_id,
+                    direction='blue_push',
+                    file_name=ds_csv,
+                    datasource_id=ds_id,
+                    status='running',
+                )
+                _db.session.add(file_event)
+                _db.session.commit()
+            except Exception:
+                _db.session.rollback()
+
 
         self._raise_if_cancelled(sync_log_id, parent_sync_log_id)
         _update_blue_progress(step='Discovering schema...')
@@ -795,13 +915,16 @@ class BlueSyncService:
             self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
 
         # Discover block name if not configured
-        block_name = ds.get('block_name')
-        columns = ds.get('columns', [])
+        block_name = ds_block
+        columns = list(ds_columns) if ds_columns else []
 
         if not block_name:
-            block_name = self._discover_block_name(ds['id'])
+            block_name = self._discover_block_name(ds_id)
             if not block_name:
-                self.errors.append(f"{datasource_key}: Could not discover block name")
+                error_msg = "Could not discover block name"
+                self.errors.append(f"{datasource_key}: {error_msg}")
+                self._complete_file_event(file_event, 'failed', 0, error_msg,
+                                          time.monotonic() - file_start)
                 return False
 
         # Load CSV
@@ -809,20 +932,26 @@ class BlueSyncService:
         _update_blue_progress(step='Loading CSV...')
         if sync_log_id:
             self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
-        csv_columns, rows = self._load_csv(ds['csv_file'], columns)
+        csv_columns, rows = self._load_csv(ds_csv, columns)
 
         if not rows:
-            self.errors.append(f"{datasource_key}: No data to import")
+            error_msg = "No data to import"
+            self.errors.append(f"{datasource_key}: {error_msg}")
+            self._complete_file_event(file_event, 'failed', 0, error_msg,
+                                      time.monotonic() - file_start)
             return False
 
-        self.stats['total_records'] += len(rows)
+        row_count = len(rows)
+        self.stats['total_records'] += row_count
         columns = csv_columns
 
         # Dry run - stop here
         if dry_run:
-            _update_blue_progress(step=f'Dry run: {len(rows)} rows validated')
+            _update_blue_progress(step=f'Dry run: {row_count} rows validated')
             if sync_log_id:
                 self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
+            self._complete_file_event(file_event, 'success', row_count,
+                                      elapsed_seconds=time.monotonic() - file_start)
             return True
 
         # Clear any stale import from a previous failed attempt
@@ -837,28 +966,36 @@ class BlueSyncService:
         _update_blue_progress(step='Registering import...')
         if sync_log_id:
             self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
-        payload = soap_register_import(self.api_key, ds['id'])
+        payload = soap_register_import(self.api_key, ds_id)
         response = call_soap(self.ws_url, payload, "RegisterImport")
 
         success, message, _ = check_response(response, "RegisterImport")
         if not success and message:
-            self.errors.append(f"{datasource_key}: RegisterImport failed - {message}")
+            error_msg = f"RegisterImport failed - {message}"
+            self.errors.append(f"{datasource_key}: {error_msg}")
+            self._complete_file_event(file_event, 'failed', 0, error_msg,
+                                      time.monotonic() - file_start)
             return False
 
         transaction_id = extract_value(response.text, "TransactionID")
         if not transaction_id:
-            self.errors.append(f"{datasource_key}: Could not get transaction ID")
-            # Log raw RegisterImport response for debugging
+            error_msg = "Could not get transaction ID"
+            self.errors.append(f"{datasource_key}: {error_msg}")
             self.errors.append(f"  RegisterImport raw: {response.text[:400]}")
+            self._complete_file_event(file_event, 'failed', 0, error_msg,
+                                      time.monotonic() - file_start)
             return False
 
         # Blue returns "0" when RegisterImport fails (e.g. datasource locked
         # by another process).  Treat it as a registration failure.
         if transaction_id.strip() == '0':
+            error_msg = "RegisterImport failed (transaction ID 0)"
             self.errors.append(
-                f"{datasource_key}: RegisterImport failed (transaction ID 0)"
+                f"{datasource_key}: {error_msg}"
             )
             self.errors.append(f"  RegisterImport raw: {response.text[:400]}")
+            self._complete_file_event(file_event, 'failed', 0, error_msg,
+                                      time.monotonic() - file_start)
             return False
 
         # Push data in batches
@@ -888,12 +1025,15 @@ class BlueSyncService:
                 if not success:
                     # Include raw SOAP response (first 500 chars) for debugging
                     raw_snippet = response.text[:500] if response.text else '(empty)'
+                    error_msg = f"Batch {batch_num} failed - {message}"
                     self.errors.append(
-                        f"{datasource_key}: Batch {batch_num} failed - {message}\n"
+                        f"{datasource_key}: {error_msg}\n"
                         f"  TransactionID used: {transaction_id}\n"
                         f"  Raw response: {raw_snippet}"
                     )
                     self._cancel_import(transaction_id)
+                    self._complete_file_event(file_event, 'failed', 0, error_msg,
+                                              time.monotonic() - file_start)
                     return False
 
             # Prepare for finalization
@@ -906,8 +1046,11 @@ class BlueSyncService:
 
             success, message, _ = check_response(response, "PrepareDataToFinzalizeImportV2")
             if not success:
-                self.errors.append(f"{datasource_key}: Validation failed - {message}")
+                error_msg = f"Validation failed - {message}"
+                self.errors.append(f"{datasource_key}: {error_msg}")
                 self._cancel_import(transaction_id)
+                self._complete_file_event(file_event, 'failed', 0, error_msg,
+                                          time.monotonic() - file_start)
                 return False
 
             # Finalize
@@ -920,24 +1063,36 @@ class BlueSyncService:
 
             success, message, _ = check_response(response, "FinalizeImport")
             if not success:
-                self.errors.append(f"{datasource_key}: Finalization failed - {message}")
+                error_msg = f"Finalization failed - {message}"
+                self.errors.append(f"{datasource_key}: {error_msg}")
+                self._complete_file_event(file_event, 'failed', 0, error_msg,
+                                          time.monotonic() - file_start)
                 return False
 
-            _update_blue_progress(step=f'Complete: {len(rows)} rows imported')
+            _update_blue_progress(step=f'Complete: {row_count} rows imported')
             if sync_log_id:
                 self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
+            self._complete_file_event(file_event, 'success', row_count,
+                                      elapsed_seconds=time.monotonic() - file_start)
             return True
 
         except SyncCancelledError:
+            self._complete_file_event(file_event, 'failed', 0, 'Sync cancelled',
+                                      time.monotonic() - file_start)
             if transaction_id:
                 self._cancel_import(transaction_id)
             raise
         except KeyboardInterrupt:
-            self._cancel_import(transaction_id)
+            self._complete_file_event(file_event, 'failed', 0, 'Keyboard interrupt',
+                                      time.monotonic() - file_start)
+            if transaction_id:
+                self._cancel_import(transaction_id)
             raise
-        except Exception:
+        except Exception as exc:
             # Always cancel on unexpected errors so Blue doesn't hold
             # an orphaned transaction that blocks subsequent imports.
+            self._complete_file_event(file_event, 'failed', 0, str(exc),
+                                      time.monotonic() - file_start)
             if transaction_id:
                 self._cancel_import(transaction_id)
             raise

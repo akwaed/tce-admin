@@ -9,13 +9,16 @@ from flask_login import login_required, current_user
 from app.models import db
 from app.models.admin import Admin, AdminAuditLog
 from app.models.question import QBAuditLog, QBBackup
-from app.models.course import College, Department, Course
+from app.models.course import College, Department, Course, Instructor
+from app.models.sync_history import ChangeLog, SyncRun
 from app.services.backup_service import get_backup_service
 from functools import wraps
 from datetime import datetime
 from collections import defaultdict
 import csv
 import io
+import re
+from sqlalchemy import text
 
 tracking_bp = Blueprint('tracking', __name__)
 
@@ -909,3 +912,56 @@ def dra_preview():
                            preview_data=preview_data,
                            errors=errors,
                            stats=stats)
+
+
+# ---------------------------------------------------------------------------
+# Course history search & detail
+# ---------------------------------------------------------------------------
+
+@tracking_bp.route('/course-history')
+@login_required
+def course_history_search():
+    """Search courses by code with fuzzy matching."""
+    q = request.args.get('q', '').strip()
+    results = []
+    if q:
+        results = _search_courses(q)
+    return render_template('tracking/course_history.html', q=q, results=results)
+
+
+@tracking_bp.route('/course-history/<path:section_key>')
+@login_required
+def course_history_detail(section_key):
+    """View change history for a specific course section."""
+    course = Course.query.get_or_404(section_key)
+    changes = _get_course_changes(section_key)
+    instructors = Instructor.query.filter_by(section_key=section_key).all()
+    related = Course.query.filter(
+        Course.class_id == course.class_id,
+        Course.section_key != section_key
+    ).order_by(Course.term_code.desc()).limit(20).all()
+    return render_template('tracking/course_history_detail.html',
+                           course=course, changes=changes,
+                           instructors=instructors, related=related)
+
+
+def _search_courses(q):
+    norm = re.sub(r'[\s\-]', '', q).lower()
+    return db.session.execute(text("""
+        SELECT section_key, class_code, section_id, section_title,
+               term_code, college_code, class_id
+        FROM courses
+        WHERE LOWER(REPLACE(REPLACE(class_code, ' ', ''), '-', '')) LIKE :prefix
+           OR LOWER(REPLACE(REPLACE(section_key, ' ', ''), '-', '')) LIKE :prefix
+        ORDER BY term_code DESC, class_code, section_id
+        LIMIT 100
+    """), {'prefix': f'%{norm}%'}).mappings().all()
+
+
+def _get_course_changes(section_key):
+    """Get all change log entries related to this course section."""
+    changes = ChangeLog.query.filter(
+        (ChangeLog.entity_key == section_key) |
+        (ChangeLog.entity_key.like(f'{section_key}|%'))
+    ).order_by(ChangeLog.created_at.desc()).limit(200).all()
+    return changes

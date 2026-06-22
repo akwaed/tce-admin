@@ -22,6 +22,7 @@ import csv
 import json
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -108,6 +109,8 @@ class HANADatasourceSync:
         #                           'added_keys': [...], 'updated_keys': [...],
         #                           'removed_keys': [...] } }
         self.file_stats = {}
+        # Per-file event timeline records, populated by _sync_table().
+        self.file_events = []
 
     def connect(self, host=None, port=None, user=None, password=None):
         """Connect to HANA database."""
@@ -176,12 +179,20 @@ class HANADatasourceSync:
             'success': len(self.errors) == 0,
             'stats': self.stats,
             'file_stats': self.file_stats,
+            'file_events': self.file_events,
             'errors': self.errors,
             'warnings': self.warnings,
         }
 
     def _sync_table(self, cursor, table, config, from_term, up_to_term):
         """Sync a single table to CSV, computing a diff against the prior file."""
+        table_start = time.monotonic()
+        table_started_at = datetime.utcnow()
+        filename = f"{config['filename']}.csv"
+        row_count = 0
+        status = 'failed'
+        error_msg = None
+
         sql = f"SELECT * FROM EXPLORANCE.{table} ORDER BY {config['order']}"
 
         try:
@@ -189,10 +200,38 @@ class HANADatasourceSync:
             rows = cursor.fetchall()
         except Exception as e:
             self.errors.append(f"Error querying {table}: {e}")
+            self.file_events.append({
+                'direction': 'hana_pull',
+                'file_name': filename,
+                'datasource_id': None,
+                'started_at': table_started_at.isoformat(),
+                'completed_at': datetime.utcnow().isoformat(),
+                'status': 'failed',
+                'row_count': 0,
+                'rows_added': 0,
+                'rows_updated': 0,
+                'rows_removed': 0,
+                'error_message': str(e),
+                'elapsed_seconds': round(time.monotonic() - table_start, 2),
+            })
             return
 
         if not rows:
             self.warnings.append(f"No rows returned for {table}")
+            self.file_events.append({
+                'direction': 'hana_pull',
+                'file_name': filename,
+                'datasource_id': None,
+                'started_at': table_started_at.isoformat(),
+                'completed_at': datetime.utcnow().isoformat(),
+                'status': 'success',
+                'row_count': 0,
+                'rows_added': 0,
+                'rows_updated': 0,
+                'rows_removed': 0,
+                'error_message': None,
+                'elapsed_seconds': round(time.monotonic() - table_start, 2),
+            })
             return
 
         # Get column info
@@ -267,17 +306,35 @@ class HANADatasourceSync:
             self.stats[table] += 1
 
         # Compute the diff against the existing CSV (if any) before overwriting.
-        filename = f"{config['filename']}.csv"
         self.file_stats[filename] = self._compute_diff(
             filename, diff_key_cols, diff_key_indices,
             column_names, new_rows_by_diff_key
         )
 
+        row_count = self.stats[table]
+
         # Write to CSV
         self._write_csv(config['filename'], result)
         diff = self.file_stats[filename]
-        print(f"  Wrote {self.stats[table]} rows to {filename} "
+        print(f"  Wrote {row_count} rows to {filename} "
               f"(+{diff['added']} ~{diff['updated']} -{diff['removed']})")
+
+        # Record per-file sync event
+        elapsed = round(time.monotonic() - table_start, 2)
+        self.file_events.append({
+            'direction': 'hana_pull',
+            'file_name': filename,
+            'datasource_id': None,
+            'started_at': table_started_at.isoformat(),
+            'completed_at': datetime.utcnow().isoformat(),
+            'status': 'success',
+            'row_count': row_count,
+            'rows_added': diff.get('added', 0),
+            'rows_updated': diff.get('updated', 0),
+            'rows_removed': diff.get('removed', 0),
+            'error_message': None,
+            'elapsed_seconds': elapsed,
+        })
 
     def _compute_diff(self, filename, diff_key_cols, diff_key_indices,
                       column_names, new_rows_by_diff_key):
@@ -474,6 +531,7 @@ def main():
             'output_path': str(sync.output_path),
             'stats': result['stats'],
             'file_stats': result['file_stats'],
+            'file_events': result.get('file_events', []),
             'errors': result['errors'],
             'warnings': result['warnings'],
             'records_processed': sum(result['stats'].values()),
@@ -538,6 +596,30 @@ def main():
                         log.status = DataSyncLog.STATUS_FAILED
                         log.complete(success=False)
                         log.errors = result['errors'][:50]
+
+                    # Bulk-insert DataFileSyncEvent rows
+                    from app.models.settings import DataFileSyncEvent
+                    def _safe_parse(iso_str):
+                        try:
+                            return datetime.fromisoformat(iso_str) if iso_str else None
+                        except Exception:
+                            return datetime.utcnow()
+                    for fe in result.get('file_events', []):
+                        _flask_db.session.add(DataFileSyncEvent(
+                            sync_log_id=log.id,
+                            direction=fe['direction'],
+                            file_name=fe['file_name'],
+                            datasource_id=fe.get('datasource_id'),
+                            started_at=_safe_parse(fe.get('started_at')),
+                            completed_at=_safe_parse(fe.get('completed_at')),
+                            status=fe['status'],
+                            row_count=fe.get('row_count'),
+                            rows_added=fe.get('rows_added'),
+                            rows_updated=fe.get('rows_updated'),
+                            rows_removed=fe.get('rows_removed'),
+                            error_message=fe.get('error_message'),
+                            elapsed_seconds=fe.get('elapsed_seconds'),
+                        ))
                     _flask_db.session.commit()
 
         return 0 if result['success'] else 1

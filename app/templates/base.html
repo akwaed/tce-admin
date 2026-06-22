@@ -351,17 +351,46 @@
                     </li>
                     {% endif %}
                     {% if current_user.is_super_admin() %}
-                    <li class="nav-item">
-                        <a class="nav-link {% if 'tracking' in request.endpoint %}active{% endif %}"
-                           href="{{ url_for('tracking.index') }}">
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle {% if 'tracking' in request.endpoint %}active{% endif %}"
+                           href="#" data-bs-toggle="dropdown">
                             <i class="bi bi-clock-history me-1"></i>Tracking
                         </a>
+                        <ul class="dropdown-menu">
+                            <li><a class="dropdown-item" href="{{ url_for('tracking.index') }}">
+                                <i class="bi bi-dashboard me-2"></i>Dashboard
+                            </a></li>
+                            <li><a class="dropdown-item" href="{{ url_for('tracking.admin_changes') }}">
+                                <i class="bi bi-people me-2"></i>Admin Changes
+                            </a></li>
+                            <li><a class="dropdown-item" href="{{ url_for('tracking.qb_changes') }}">
+                                <i class="bi bi-question-circle me-2"></i>QB/QM Changes
+                            </a></li>
+                            <li><a class="dropdown-item" href="{{ url_for('tracking.backups') }}">
+                                <i class="bi bi-archive me-2"></i>Backups
+                            </a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="{{ url_for('tracking.course_history_search') }}">
+                                <i class="bi bi-journal-text me-2"></i>Course History
+                            </a></li>
+                        </ul>
                     </li>
-                    <li class="nav-item">
-                        <a class="nav-link {% if 'settings' in request.endpoint %}active{% endif %}"
-                           href="{{ url_for('settings.index') }}">
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle {% if 'settings' in request.endpoint %}active{% endif %}"
+                           href="#" data-bs-toggle="dropdown">
                             <i class="bi bi-gear me-1"></i>Settings
                         </a>
+                        <ul class="dropdown-menu">
+                            <li><a class="dropdown-item" href="{{ url_for('settings.index') }}">
+                                <i class="bi bi-sliders me-2"></i>System Settings
+                            </a></li>
+                            <li><a class="dropdown-item" href="{{ url_for('settings.sync_logs') }}">
+                                <i class="bi bi-list-ul me-2"></i>Sync Logs
+                            </a></li>
+                            <li><a class="dropdown-item" href="{{ url_for('settings.blue_datasources') }}">
+                                <i class="bi bi-database-gear me-2"></i>Blue Datasources
+                            </a></li>
+                        </ul>
                     </li>
                     {% endif %}
                 </ul>
