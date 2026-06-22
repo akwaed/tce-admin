@@ -5,7 +5,9 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from flask import Blueprint, render_template, redirect, url_for
+import json
+import os
+from flask import Blueprint, render_template, redirect, url_for, request, jsonify
 from flask_login import login_required, current_user
 from app.models import db
 from app.models.admin import Admin
@@ -191,4 +193,85 @@ def dashboard():
     )
     stats['last_sync'] = last_sync.completed_at.strftime('%Y-%m-%d %H:%M') if last_sync else None
     
-    return render_template('dashboard.html', stats=stats)
+    show_tour = not current_user.tour_completed
+    return render_template('dashboard.html', stats=stats, show_tour=show_tour)
+
+
+@main_bp.route('/api/tour-complete', methods=['POST'])
+@login_required
+def api_tour_complete():
+    """Mark the interactive tour as completed for the current user."""
+    current_user.tour_completed = True
+    db.session.commit()
+    return jsonify({'ok': True})
+
+
+_DOC_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'doc_content.json')
+
+
+def _load_doc_content():
+    """Load documentation content from JSON, returning {} on any failure."""
+    try:
+        with open(_DOC_PATH, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _resolve_doc_role(user):
+    """Return the primary documentation role key for a user.
+
+    Roles are additive: qb_user sections are appended when has_qb_access
+    is True, and course_coordinator sections when is_course_coordinator.
+    """
+    if user.is_super_admin():
+        return 'super_admin'
+    if user.is_college_admin():
+        return 'college_admin'
+    return 'dept_admin'
+
+
+@main_bp.route('/documentation')
+@login_required
+def documentation():
+    """Role-based documentation page."""
+    content = _load_doc_content()
+    role_key = _resolve_doc_role(current_user)
+
+    sections = []
+    # Base role sections
+    role_data = content.get(role_key, {})
+    for section in role_data.get('sections', []):
+        sections.append(section)
+
+    # Course coordinator sections (additive)
+    if current_user.is_course_coordinator:
+        cc_data = content.get('course_coordinator', {})
+        for section in cc_data.get('sections', []):
+            sections.append(section)
+
+    # QB user sections (additive, only if has_qb_access)
+    if current_user.has_qb_access:
+        qb_data = content.get('qb_user', {})
+        for section in qb_data.get('sections', []):
+            sections.append(section)
+
+    # Determine who can add/edit/delete users for the contact note
+    can_manage_users = current_user.is_super_admin() or (
+        current_user.is_college_admin() and current_user.is_primary_contact
+    )
+    user_college = current_user.college_code or 'your college'
+
+    # Replace {{ user_college }} placeholders in content
+    for section in sections:
+        if 'content' in section:
+            section['content'] = section['content'].replace(
+                '{{ user_college }}', user_college)
+
+    return render_template(
+        'documentation.html',
+        sections=sections,
+        role_name=current_user.display_role,
+        can_manage_users=can_manage_users,
+        user_college=user_college,
+    )

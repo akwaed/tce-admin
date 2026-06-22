@@ -72,6 +72,9 @@ class Admin(UserMixin, db.Model):
     # Status
     is_active = db.Column(db.Boolean, default=True)
     
+    # Onboarding — set to False for all users so the tour shows on first login
+    tour_completed = db.Column(db.Boolean, default=False)
+    
     # Audit fields
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -103,9 +106,12 @@ class Admin(UserMixin, db.Model):
         role_names = {
             'super_admin': 'Super Administrator',
             'college_admin': 'College Administrator',
-            'dept_admin': 'Department Administrator'
+            'dept_admin': 'Department Administrator',
         }
-        return role_names.get(self.role, self.role)
+        base = role_names.get(self.role, self.role)
+        if self.is_course_coordinator:
+            return f'{base} (Course Coordinator)'
+        return base
     
     @property
     def scope_display(self):

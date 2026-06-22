@@ -1,0 +1,130 @@
+{
+  "super_admin": {
+    "sections": [
+      {
+        "title": "Welcome, Super Administrator",
+        "content": "As a <strong>Super Administrator</strong> you have full control over the UK TCE Admin System. You can manage all colleges, departments, and users; sync course data from SAP HANA; push datasources to Explorance Blue; approve question bank changes; and configure system-wide settings. This guide covers everything you need to know."
+      },
+      {
+        "title": "Dashboard & Key Metrics",
+        "content": "Your dashboard shows system-wide statistics: total colleges, departments, administrators, courses marked for TCE, zero-enrollment courses, student counts, and upcoming evaluation deadlines. Use these metrics to monitor evaluation coverage across the university."
+      },
+      {
+        "title": "Managing Administrators",
+        "content": "Navigate to <strong>Admin List</strong> to view, add, edit, or remove administrators. You can create Super Admins, College Admins, Department Admins, and Course Coordinators. Use the <strong>Import</strong> button to bulk-upload contacts from a CSV file, and <strong>Export</strong> to download the current list. Only primary TCE contacts and OFA staff can add, edit, or delete users. To add a user in your college, contact your college admin or email <a href='mailto:tce@uky.edu'>tce@uky.edu</a>."
+      },
+      {
+        "title": "Course Data Sync",
+        "content": "Course data is refreshed from SAP HANA via the sync scripts. Go to <strong>Settings → Sync Logs</strong> to trigger a HANA sync or a Blue push. The <strong>Full Sync</strong> option runs HANA pull → database update → Blue push in sequence. Monitor progress on the Sync Logs page with live progress bars."
+      },
+      {
+        "title": "Verification Reports",
+        "content": "The <strong>Verification</strong> page lists all courses with their TCE status: Marked, Not Marked, or Zero Enrollment. Filter by college, department, term, and TCE status. Export filtered results to CSV. Click any course to see instructor and student details."
+      },
+      {
+        "title": "Question Bank & Approval Workflow",
+        "content": "The <strong>Question Bank</strong> lets colleges manage evaluation questions. Department Admins submit proposed changes; College Admins or Super Admins approve or reject them. You can see all pending changes, review diffs, and finalize approvals. Use the tracking pages to audit changes over time."
+      },
+      {
+        "title": "Settings & Configuration",
+        "content": "Under <strong>Settings</strong> you can configure the Explorance Blue API key and web service URL, manage Blue datasource definitions, view sync logs, and adjust system parameters. The <strong>Blue Datasources</strong> page shows which datasources are mapped to which CSV files and their import order."
+      }
+    ]
+  },
+  "college_admin": {
+    "sections": [
+      {
+        "title": "Welcome, College Administrator",
+        "content": "As a <strong>College Administrator</strong> you manage TCE evaluation data for your college. You can view verification reports for all departments in your college, approve question bank changes submitted by department admins, and manage department-level administrators."
+      },
+      {
+        "title": "Your Dashboard",
+        "content": "Your dashboard is scoped to <strong>{{ user_college }}</strong>. The statistics shown reflect courses, departments, and admins within your college only. Use these numbers to track how many courses are marked for evaluation and identify departments with zero-enrollment sections."
+      },
+      {
+        "title": "Managing Department Admins",
+        "content": "Go to <strong>Admin List</strong> to see all administrators in your college. Primary College Contacts can add, edit, or remove Department Admins and Course Coordinators. To add a new user, contact your college's primary TCE contact or email <a href='mailto:tce@uky.edu'>tce@uky.edu</a>."
+      },
+      {
+        "title": "Verification Reports",
+        "content": "The <strong>Verification</strong> page shows all courses in your college. Filter by department, term, or TCE status. Click a course to see instructor names, student counts, and evaluation dates. Use the <strong>Export CSV</strong> button to download filtered data."
+      },
+      {
+        "title": "Approving Question Changes",
+        "content": "Department Admins can submit proposed changes to evaluation questions. As a College Admin, you review and approve or reject these changes. Go to <strong>Question Bank → Pending</strong> to see all outstanding submissions. Review each change carefully before approving — approved changes go live in the next Blue push."
+      },
+      {
+        "title": "Adding Users",
+        "content": "Only primary TCE contacts and OFA staff can add, edit, or delete users. If you need to add a Department Admin or Course Coordinator for your college, contact your college's primary TCE contact or email <a href='mailto:tce@uky.edu'>tce@uky.edu</a> with the user's LinkBlue ID, name, and required access level."
+      }
+    ]
+  },
+  "dept_admin": {
+    "sections": [
+      {
+        "title": "Welcome, Department Administrator",
+        "content": "As a <strong>Department Administrator</strong> you manage TCE evaluation data for your department. You can view verification reports for your department's courses, submit question bank changes for approval, and track the status of your submissions."
+      },
+      {
+        "title": "Your Dashboard",
+        "content": "Your dashboard is scoped to your department(s). The metrics show courses marked for TCE, zero-enrollment sections, student counts, and upcoming evaluation deadlines for your department only."
+      },
+      {
+        "title": "Verification Reports",
+        "content": "The <strong>Verification</strong> page lists your department's courses with their TCE status. You can filter by term and TCE status. Click any course to see instructor names, student counts, evaluation dates, and cross-listed course information. Items in <strong>bold</strong> have evaluation questions assigned."
+      },
+      {
+        "title": "Submitting Question Changes",
+        "content": "If you have Question Bank access, you can browse your department's evaluation questions and submit changes. Go to <strong>Question Bank → Browse</strong>, navigate to a course, and click <strong>Submit Change</strong>. Your submission goes to your College Admin for approval. Track the status on the <strong>Pending</strong> page."
+      },
+      {
+        "title": "Adding Users",
+        "content": "Only primary TCE contacts and OFA staff can add, edit, or delete users. To request a new Department Admin or Course Coordinator for your department, contact your college admin for <strong>{{ user_college }}</strong> or email <a href='mailto:tce@uky.edu'>tce@uky.edu</a>."
+      }
+    ]
+  },
+  "course_coordinator": {
+    "sections": [
+      {
+        "title": "Course Coordinator — Limited View",
+        "content": "As a <strong>Course Coordinator</strong> you can view TCE evaluation data only for the specific courses assigned to you. You cannot edit questions, submit changes, or manage other users. Your view is filtered to your assigned course prefix and number(s)."
+      },
+      {
+        "title": "Viewing Your Courses",
+        "content": "Go to <strong>Verification</strong> to see your assigned courses. The list is automatically filtered to show only courses matching your prefix and number. You can see student counts, instructor names, evaluation dates, and TCE status for each section."
+      },
+      {
+        "title": "What You Cannot Do",
+        "content": "As a Course Coordinator you do <strong>not</strong> have access to: adding or removing questions, submitting question bank changes, approving changes, managing other users, or accessing system settings. If you need additional access, contact your college admin for <strong>{{ user_college }}</strong> or email <a href='mailto:tce@uky.edu'>tce@uky.edu</a>."
+      }
+    ]
+  },
+  "qb_user": {
+    "sections": [
+      {
+        "title": "Question Bank Access",
+        "content": "You have <strong>Question Bank access</strong>, which means you can browse, add, and modify evaluation questions for courses in your department. This section explains how to use the Question Bank effectively."
+      },
+      {
+        "title": "Browsing Questions",
+        "content": "Go to <strong>Question Bank → Browse</strong>. Questions are organised hierarchically: College → Department → Course → Section. Use the term filter to switch between academic terms. Each course shows its assigned Instructor Questions and Course Questions in separate tabs."
+      },
+      {
+        "title": "Adding & Editing Questions",
+        "content": "To add a question, select a course and click <strong>Add Question</strong>. Choose the question type: <strong>Selection</strong> (multiple choice) or <strong>Comment</strong> (open-ended). Fill in the question text and options, then submit. Your change goes into a pending state until a College Admin or Super Admin approves it."
+      },
+      {
+        "title": "Tracking Your Submissions",
+        "content": "Go to <strong>Question Bank → Pending</strong> to see all your submitted changes. Each submission shows its status: Pending, Approved, or Rejected. You can also see changes submitted by other admins in your department on the <strong>All Pending</strong> tab."
+      },
+      {
+        "title": "Importing & Exporting",
+        "content": "Use the <strong>Import</strong> button to upload QB.xlsx or QM.xlsx files for bulk question management. Use <strong>Export</strong> to download the current question mappings for your department."
+      },
+      {
+        "title": "Best Practices",
+        "content": "<ul><li>Preview your changes before submitting — once approved, questions go live in the next Blue push.</li><li>Coordinate with instructors to ensure question text is accurate.</li><li>Use descriptive question IDs to make them easy to find later.</li><li>If you make a mistake, submit a correction — it will go through the same approval workflow.</li></ul>"
+      }
+    ]
+  }
+}

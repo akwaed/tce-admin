@@ -3,13 +3,13 @@
 {% block title %}Dashboard{% endblock %}
 
 {% block content %}
-<div class="page-header">
+<div class="page-header" data-tour="dashboard-header">
     <h1><i class="bi bi-speedometer2 me-2"></i>Dashboard</h1>
     <p class="text-muted mb-0">Welcome back, {{ current_user.first_name }}!</p>
 </div>
 
 <!-- Overview Stats -->
-<div class="row g-4 mb-4">
+<div class="row g-4 mb-4" data-tour="stats-cards">
     {% if current_user.is_super_admin() %}
     <div class="col-md-6 col-lg-3">
         <div class="card stat-card h-100">
@@ -188,7 +188,7 @@
 <div class="row g-4">
     <div class="col-md-6">
         <div class="card h-100">
-            <div class="card-header">
+            <div class="card-header" data-tour="quick-actions">
                 <i class="bi bi-lightning me-2"></i>Quick Actions
             </div>
             <div class="card-body">
@@ -298,5 +298,148 @@
         </ol>
     </div>
 </div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+{% if show_tour or request.args.get('start_tour') == '1' %}
+<script>
+(function() {
+    // Skip the tour on mobile — show a dismissible banner instead.
+    if (window.innerWidth < 768) {
+        var banner = document.createElement('div');
+        banner.className = 'alert alert-info alert-dismissible fade show m-3';
+        banner.setAttribute('role', 'alert');
+        banner.innerHTML = '<i class="bi bi-info-circle me-2"></i>' +
+            '<strong>New here?</strong> The guided tour works best on a desktop or tablet. ' +
+            '<a href="{{ url_for("main.documentation") }}">View the documentation</a> instead.' +
+            '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>';
+        document.querySelector('.main-content').prepend(banner);
+        return;
+    }
+
+    // Build tour steps dynamically so only elements that exist are targeted.
+    var steps = [];
+
+    // Step 1 — Dashboard header
+    steps.push({
+        element: document.querySelector('[data-tour="dashboard-header"]'),
+        title: 'Welcome to TCE Admin',
+        intro: 'This is your dashboard. It shows key metrics — courses marked for ' +
+               'evaluation, student counts, and upcoming TCE deadlines — scoped to ' +
+               'your {{ current_user.display_role }} access level.',
+        position: 'bottom'
+    });
+
+    // Step 2 — Stats cards
+    var statsEl = document.querySelector('[data-tour="stats-cards"]');
+    if (statsEl) {
+        steps.push({
+            element: statsEl,
+            title: 'Key Metrics',
+            intro: 'These cards give you an at-a-glance view of your scope. ' +
+                   '{% if current_user.is_super_admin() %}As a Super Admin you see ' +
+                   'everything across all colleges.{% elif current_user.is_college_admin() %}' +
+                   'As a College Admin these numbers are filtered to {{ current_user.college_code }}.{% else %}' +
+                   'These numbers reflect your department(s).{% endif %}',
+            position: 'bottom'
+        });
+    }
+
+    // Step 3 — Navigation bar
+    var navEl = document.querySelector('[data-tour="nav-bar"]');
+    if (navEl) {
+        var navIntro = 'The navigation bar gives you access to different sections. ';
+        {% if current_user.has_dashboard_access %}
+        navIntro += '<strong>Verification</strong> shows course evaluation status. ';
+        {% endif %}
+        {% if current_user.is_super_admin() or current_user.has_static_report_access %}
+        navIntro += '<strong>Reports</strong> lets you export data. ';
+        {% endif %}
+        {% if current_user.can_manage_qb() %}
+        navIntro += '<strong>Question Bank</strong> is for managing evaluation questions. ';
+        {% endif %}
+        navIntro += '<strong>Documentation</strong> has detailed help for your role.';
+        steps.push({
+            element: navEl,
+            title: 'Navigation',
+            intro: navIntro,
+            position: 'bottom'
+        });
+    }
+
+    // Step 4 — Quick Actions
+    var quickEl = document.querySelector('[data-tour="quick-actions"]');
+    if (quickEl) {
+        var qaIntro = 'Quick Actions let you jump to common tasks. ';
+        {% if current_user.is_super_admin() %}
+        qaIntro += 'As a Super Admin you can sync data, manage administrators, ' +
+                   'and access everything in the system.';
+        {% elif current_user.is_college_admin() %}
+        qaIntro += 'You can view verification reports for your college and approve ' +
+                   'question changes submitted by department admins.';
+        {% elif current_user.is_course_coordinator %}
+        qaIntro += 'You can view courses assigned to you. Your view is filtered ' +
+                   'to your specific course prefix and number(s).';
+        {% elif current_user.can_manage_qb() %}
+        qaIntro += 'You can browse and submit changes to the Question Bank for ' +
+                   'your department.';
+        {% else %}
+        qaIntro += 'You can view verification reports for your department.';
+        {% endif %}
+        steps.push({
+            element: quickEl,
+            title: 'Quick Actions',
+            intro: qaIntro,
+            position: 'left'
+        });
+    }
+
+    // Step 5 — Documentation link (always show)
+    steps.push({
+        element: document.querySelector('[data-tour="nav-bar"]'),
+        title: 'Need Help?',
+        intro: 'Check the <strong>Documentation</strong> link in the nav bar for ' +
+               'detailed guides tailored to your role. You can also click ' +
+               '<strong>Take the Tour</strong> in the user menu anytime to see this again.',
+        position: 'bottom'
+    });
+
+    // Filter out any steps whose element is null (element not in DOM)
+    steps = steps.filter(function(s) { return s.element !== null; });
+
+    if (steps.length === 0) return;
+
+    function initTour() {
+        var tour = introJs();
+        tour.setOptions({
+            steps: steps,
+            exitOnOverlayClick: false,
+            showProgress: true,
+            showBullets: true,
+            keyboardNavigation: true,
+            disableInteraction: false,
+            scrollToElement: true
+        });
+
+        tour.oncomplete(function() {
+            fetch('{{ url_for("main.api_tour_complete") }}', { method: 'POST' });
+        });
+
+        tour.onexit(function() {
+            // Mark completed even if they exit early so it doesn't loop.
+            fetch('{{ url_for("main.api_tour_complete") }}', { method: 'POST' });
+        });
+
+        tour.start();
+    }
+
+    // Expose globally so "Take the Tour" button on any page can call it.
+    window.initTour = initTour;
+
+    // Auto-start on first login or when ?start_tour=1 is in the URL.
+    initTour();
+})();
+</script>
 {% endif %}
 {% endblock %}
