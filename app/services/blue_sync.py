@@ -609,21 +609,8 @@ class BlueSyncService:
             to_push = self._get_active_datasources()
         self._parent_sync_log_id = parent_sync_log_id
 
-        # When pushing only Users for testing, wait 10 min so Blue can
-        # finish processing any previous large Users import still running.
-        is_users_only = (
-            len(to_push) == 1
-            and hasattr(to_push[0], 'legacy_key')
-            and to_push[0].legacy_key == 'users'
-        )
-        if is_users_only and not dry_run:
-            _update_blue_progress(
-                datasource='users',
-                step='Waiting 10 min for previous Users import to clear...',
-            )
-            time.sleep(600)
-
-        # Initialize progress
+        # Initialize progress (must happen before any wait so the frontend
+        # can show a progress bar immediately).
         with _blue_sync_lock:
             started_at = datetime.utcnow().isoformat()
             _blue_sync_progress = {
@@ -641,7 +628,8 @@ class BlueSyncService:
                 'results': {}
             }
 
-        # Create sync log
+        # Create sync log BEFORE any long-running wait so the polling
+        # endpoint returns running=True and the frontend shows progress.
         sync_log = DataSyncLog(
             sync_type=DataSyncLog.TYPE_DATASOURCE_TO_BLUE,
             status=DataSyncLog.STATUS_RUNNING,
@@ -663,6 +651,29 @@ class BlueSyncService:
             'datasources_success': 0,
             'datasources_failed': 0
         }
+
+        # When pushing only Users for testing, wait 10 min so Blue can
+        # finish processing any previous large Users import still running.
+        is_users_only = (
+            len(to_push) == 1
+            and hasattr(to_push[0], 'legacy_key')
+            and to_push[0].legacy_key == 'users'
+        )
+        if is_users_only and not dry_run:
+            _update_blue_progress(
+                datasource='users',
+                step='Waiting 10 min for previous Users import to clear...',
+            )
+            self._persist_sync_log_progress(
+                sync_log.id,
+                dry_run=dry_run,
+                extra_summary={'parent_sync_log_id': parent_sync_log_id} if parent_sync_log_id else None,
+            )
+            # Sleep in 30-second increments so the frontend elapsed timer
+            # stays current and cancel requests are honoured.
+            for _ in range(20):
+                self._raise_if_cancelled(sync_log.id, parent_sync_log_id)
+                time.sleep(30)
 
         try:
             for idx, ds_obj in enumerate(to_push, 1):
@@ -864,6 +875,8 @@ class BlueSyncService:
                 'csv_file': ds['csv_file'],
                 'columns': ds.get('columns', []),
                 'required_columns': ds.get('required', []),
+                'column_renames': ds.get('column_renames', {}),
+                'batch_size': ds.get('batch_size', None),
                 'source_type': 'hana_csv',
                 'import_order': IMPORT_ORDER.index(datasource_key) if datasource_key in IMPORT_ORDER else 99,
                 'is_active': True,
@@ -914,14 +927,8 @@ class BlueSyncService:
         ds_csv = ds.csv_file if hasattr(ds, 'csv_file') else ds.get('csv_file')
         ds_columns = ds.columns if hasattr(ds, 'columns') else ds.get('columns', [])
         ds_required = ds.required_columns if hasattr(ds, 'required_columns') else ds.get('required', [])
-        ds_column_renames = (
-            ds.column_renames if hasattr(ds, 'column_renames')
-            else ds.get('column_renames', {})
-        )
-        ds_batch_size = (
-            ds.batch_size if hasattr(ds, 'batch_size')
-            else ds.get('batch_size', None)
-        ) or BATCH_SIZE
+        ds_column_renames = getattr(ds, 'column_renames', None) or {}
+        ds_batch_size = getattr(ds, 'batch_size', None) or BATCH_SIZE
 
         # Create per-file event record
         file_start = time.monotonic()
@@ -1204,6 +1211,7 @@ class BlueSyncService:
         """Check for and cancel any in-progress import blocking this datasource.
 
         Returns True if a stale import was found and cancelled.
+        Does NOT log to self.errors when no stale import exists.
         """
         payload = soap_get_current_process(self.api_key)
         try:
@@ -1212,21 +1220,24 @@ class BlueSyncService:
             return False  # Can't reach Blue — nothing we can do
 
         if response.status_code != 200:
-            self.errors.append(f"GetCurrentImportingDataSourceProcess HTTP {response.status_code}: {response.text[:200]}")
+            self.errors.append(
+                f"GetCurrentImportingDataSourceProcess HTTP "
+                f"{response.status_code}: {response.text[:200]}"
+            )
             return False
 
         # Extract the transaction ID of the running import (if any)
         stale_tid = extract_value(response.text, "TransactionID")
         progress = extract_value(response.text, "ProgressStatus")
+        if not stale_tid or stale_tid.strip() == '0':
+            return False  # No active import — nothing to do, no error to log
+
+        # A stale import exists — cancel it and log the event
         self.errors.append(
             f"GetCurrentImportingDataSourceProcess response: "
             f"TransactionID={stale_tid}, ProgressStatus={progress}, "
             f"raw={response.text[:300]}"
         )
-        if not stale_tid or stale_tid.strip() == '0':
-            return False  # No active import
-
-        # Cancel it
         self._cancel_import(stale_tid)
         return True
 
