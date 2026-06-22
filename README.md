@@ -73,12 +73,6 @@ python run.py
 
 Then open http://127.0.0.1:5000 in your browser.
 
-### Default Login
-
-- **Username:** `tceadmin`
-- **Password:** `UK_TCE_2025!`
-
-> ⚠️ Change the default password in production by setting the `SUPER_ADMIN_PASSWORD` environment variable.
 
 ## Production Setup (Azure)
 
