@@ -150,13 +150,30 @@ def list_courses():
                 query = query.filter(db.or_(*status_conditions))
 
     if search:
-        query = query.filter(
-            db.or_(
-                Course.class_code.ilike(f'%{search}%'),
-                Course.section_title.ilike(f'%{search}%'),
-                Course.section_id.ilike(f'%{search}%')
-            )
-        )
+        # Build multiple search patterns so whitespace differences don't
+        # prevent matches.  E.g. "Cs 215" should match "CS  215" and
+        # "cs215" should match section_key "CS215-014".
+        search = ' '.join(search.split())  # collapse internal whitespace
+        patterns = [search]
+
+        if ' ' in search:
+            # Replace spaces with SQL wildcards so "CS 215" matches "CS  215"
+            patterns.append(search.replace(' ', '%'))
+        nospace = search.replace(' ', '')
+        if nospace != search:
+            # No-spaces variant so "CS215" matches section_key "CS215-014"
+            patterns.append(nospace)
+
+        search_conditions = []
+        for p in patterns:
+            search_conditions.extend([
+                Course.class_code.ilike(f'%{p}%'),
+                Course.section_title.ilike(f'%{p}%'),
+                Course.section_id.ilike(f'%{p}%'),
+                Course.section_key.ilike(f'%{p}%'),
+            ])
+
+        query = query.filter(db.or_(*search_conditions))
     
     # Get total count before pagination
     total_count = query.count()
@@ -465,13 +482,28 @@ def export_courses():
                 query = query.filter(db.or_(*status_conditions))
 
     if search:
-        query = query.filter(
-            db.or_(
-                Course.class_code.ilike(f'%{search}%'),
-                Course.section_title.ilike(f'%{search}%'),
-                Course.section_id.ilike(f'%{search}%')
-            )
-        )
+        # Build multiple search patterns so whitespace differences don't
+        # prevent matches.  E.g. "Cs 215" should match "CS  215" and
+        # "cs215" should match section_key "CS215-014".
+        search = ' '.join(search.split())  # collapse internal whitespace
+        patterns = [search]
+
+        if ' ' in search:
+            patterns.append(search.replace(' ', '%'))
+        nospace = search.replace(' ', '')
+        if nospace != search:
+            patterns.append(nospace)
+
+        search_conditions = []
+        for p in patterns:
+            search_conditions.extend([
+                Course.class_code.ilike(f'%{p}%'),
+                Course.section_title.ilike(f'%{p}%'),
+                Course.section_id.ilike(f'%{p}%'),
+                Course.section_key.ilike(f'%{p}%'),
+            ])
+
+        query = query.filter(db.or_(*search_conditions))
 
     courses = query.order_by(Course.college_code, Course.class_code).all()
     
