@@ -262,11 +262,34 @@ def documentation():
     )
     user_college = current_user.college_code or 'your college'
 
-    # Replace {{ user_college }} placeholders in content
+    # Find the primary TCE contact for the user's college
+    primary_contact_name = None
+    primary_contact_email = None
+    if current_user.college_code:
+        primary = Admin.query.filter_by(
+            college_code=current_user.college_code,
+            is_primary_contact=True,
+            is_active=True,
+        ).first()
+        if primary:
+            primary_contact_name = primary.full_name
+            primary_contact_email = primary.email or primary.linkblue + '@uky.edu'
+    if not primary_contact_name:
+        primary_contact_name = 'your college\'s primary TCE contact'
+    if not primary_contact_email:
+        primary_contact_email = 'tce@uky.edu'
+
+    # Replace placeholders in content
+    replacements = {
+        '{{ user_college }}': user_college,
+        '{{ primary_contact_name }}': primary_contact_name,
+        '{{ primary_contact_email }}': primary_contact_email,
+    }
     for section in sections:
         if 'content' in section:
-            section['content'] = section['content'].replace(
-                '{{ user_college }}', user_college)
+            for placeholder, value in replacements.items():
+                section['content'] = section['content'].replace(
+                    placeholder, value)
 
     return render_template(
         'documentation.html',

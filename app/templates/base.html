@@ -467,15 +467,184 @@
     <!-- Intro.js (loaded globally so "Take the Tour" works from any page) -->
     <script src="https://cdn.jsdelivr.net/npm/intro.js@7.2.0/intro.min.js"></script>
     <script>
-    // Global tour launcher — redirects to dashboard and starts the tour.
-    // Called from the user dropdown "Take the Tour" link on any page.
+    // Global tour launcher — starts the appropriate page tour based on
+    // where the user is. Called from the user dropdown "Take the Tour" link.
     function startTour() {
-        if (window.location.pathname.indexOf('/dashboard') === -1) {
-            window.location.href = '{{ url_for("main.dashboard") }}?start_tour=1';
-        } else {
-            // Already on dashboard — trigger the tour inline
-            if (typeof initTour === 'function') initTour();
+        // If a page-specific tour function exists, use it.
+        if (typeof initPageTour === 'function') {
+            initPageTour();
+            return;
         }
+        // Fallback: go to dashboard and start the dashboard tour.
+        window.location.href = '{{ url_for("main.dashboard") }}?start_tour=1';
+    }
+
+    // Page-specific tour builder — detects current page and shows relevant steps.
+    function initPageTour() {
+        if (window.innerWidth < 768) return; // skip on mobile
+        var path = window.location.pathname;
+        var steps = [];
+
+        {% if current_user.is_authenticated %}
+        // ── Verification page ──
+        if (path.indexOf('/verification') !== -1 && path.indexOf('/sync') === -1 && path.indexOf('/user-lookup') === -1) {
+            steps.push({
+                element: document.querySelector('.page-header') || document.querySelector('h1'),
+                title: 'Verification Reports',
+                intro: 'This page shows all courses in your scope with their TCE evaluation status. ' +
+                       '<br><br><strong>Marked</strong> (green) = flagged for evaluation. ' +
+                       '<strong>Not Marked</strong> (grey) = not flagged. ' +
+                       '<strong>Zero Enrollment</strong> (amber) = marked but no students. ' +
+                       'Items in <strong>bold</strong> have evaluation questions assigned.',
+                position: 'bottom'
+            });
+            var filterRow = document.querySelector('form[action*="verification"] .row') ||
+                            document.querySelector('.card-body form .row');
+            if (filterRow) {
+                steps.push({
+                    element: filterRow,
+                    title: 'Filters & Search',
+                    intro: 'Use these dropdowns to filter by <strong>College</strong>, <strong>Department</strong>, ' +
+                           'and <strong>Term</strong>. Check boxes to filter by TCE status. ' +
+                           'The <strong>search bar</strong> finds courses by code, title, or section — ' +
+                           'try "CS 215" or "cs215-014". Click <strong>Export CSV</strong> to download the current view.',
+                    position: 'bottom'
+                });
+            }
+        }
+
+        // ── Reports page ──
+        if (path.indexOf('/reports') !== -1) {
+            steps.push({
+                element: document.querySelector('.page-header') || document.querySelector('h1'),
+                title: 'Static Reports',
+                intro: 'The Reports page generates static CSV or Excel snapshots of current TCE data. ' +
+                       'Use these to share evaluation coverage with department heads, save for unit records, ' +
+                       'or perform offline analysis.',
+                position: 'bottom'
+            });
+            var reportForm = document.querySelector('form[action*="reports"]') || document.querySelector('.card-body form');
+            if (reportForm) {
+                steps.push({
+                    element: reportForm,
+                    title: 'Report Filters',
+                    intro: 'Select a <strong>College</strong>, <strong>Department</strong>, <strong>Term</strong>, ' +
+                           'and <strong>TCE Status</strong> to narrow the report. Choose <strong>CSV</strong> or ' +
+                           '<strong>Excel</strong> format, then click <strong>Generate Report</strong> to download.',
+                    position: 'bottom'
+                });
+            }
+        }
+
+        // ── Admin List page ──
+        if (path.indexOf('/admin') !== -1 && path.indexOf('/add') === -1 && path.indexOf('/edit') === -1) {
+            steps.push({
+                element: document.querySelector('.page-header') || document.querySelector('h1'),
+                title: 'Admin List',
+                intro: 'This page shows all administrators in your scope. ' +
+                       '{% if current_user.is_super_admin() or (current_user.is_college_admin() and current_user.is_primary_contact) %}' +
+                       'Use <strong>Add</strong> to create new admins, <strong>Import</strong> to bulk-upload from CSV, ' +
+                       'and <strong>Export</strong> to download the list. Click any admin to edit or view details.' +
+                       '{% else %}' +
+                       'You can view administrators in your scope. To add or modify users, contact ' +
+                       'your college\'s primary TCE contact or email tce@uky.edu.' +
+                       '{% endif %}',
+                position: 'bottom'
+            });
+            var addBtn = document.querySelector('a[href*="add"]') || document.querySelector('.btn-uk-primary');
+            if (addBtn && steps.length > 0) {
+                steps.push({
+                    element: addBtn,
+                    title: 'Access Flags',
+                    intro: 'When adding an admin, you set their <strong>access flags</strong>: ' +
+                           '<br><strong>D</strong> = Dashboard & Verification. ' +
+                           '<strong>S</strong> = Static Reports. ' +
+                           '<strong>QB</strong> = Question Bank. ' +
+                           '<strong>CC</strong> = Course Coordinator (limited to specific courses). ' +
+                           '<br>The <strong>Level Type</strong> controls whether they see course data (Subject Viewer) ' +
+                           'or aggregated reports (Report Viewer).',
+                    position: 'left'
+                });
+            }
+        }
+
+        // ── Question Bank page ──
+        {% if current_user.can_manage_qb() %}
+        if (path.indexOf('/questions') !== -1) {
+            steps.push({
+                element: document.querySelector('.page-header') || document.querySelector('h1'),
+                title: 'Question Bank',
+                intro: 'The Question Bank manages evaluation questions for courses in your scope. ' +
+                       'Questions are organised as <strong>College → Department → Course → Section</strong>. ' +
+                       'All levels start collapsed — click each level to drill down.',
+                position: 'bottom'
+            });
+            var qbTree = document.querySelector('.qb-hierarchy') || document.querySelector('.accordion') ||
+                         document.querySelector('.card-body');
+            if (qbTree) {
+                steps.push({
+                    element: qbTree,
+                    title: 'Drilling Down to Questions',
+                    intro: '<strong>Click a college</strong> to see its departments. ' +
+                           '<strong>Click a department</strong> to see its courses. ' +
+                           '<strong>Click a course</strong> to see its sections. ' +
+                           '<strong>Click a section</strong> to see its assigned questions. ' +
+                           'Each course has <strong>Instructor Questions</strong> and <strong>Course Questions</strong> tabs. ' +
+                           '{% if not current_user.is_super_admin() and not current_user.is_primary_contact %}' +
+                           '<br><br>Your changes are submitted for approval by your primary TCE contact ' +
+                           'and are <strong>not final</strong> until approved.' +
+                           '{% else %}' +
+                           '<br><br>As a primary contact, you <strong>approve or reject</strong> changes submitted ' +
+                           'by department admins. Check <strong>Pending</strong> for submissions awaiting your review.' +
+                           '{% endif %}',
+                    position: 'right'
+                });
+            }
+            var addBtn = document.querySelector('a[href*="add"]') || document.querySelector('button .bi-plus') ||
+                         document.querySelector('.btn-success');
+            if (addBtn && steps.length >= 2) {
+                steps.push({
+                    element: addBtn,
+                    title: 'Add, Modify & Delete',
+                    intro: 'Use <strong>Add Question</strong> to create new questions (Selection or Comment type). ' +
+                           'Click the <strong>pencil icon</strong> to edit an existing question. ' +
+                           'Click the <strong>trash icon</strong> to delete. ' +
+                           'All changes go through the approval workflow.',
+                    position: 'left'
+                });
+            }
+        }
+        {% endif %}
+
+        // ── Admin Add page ──
+        if (path.indexOf('/admin/add') !== -1 || path.indexOf('/admin/edit') !== -1) {
+            steps.push({
+                element: document.querySelector('.page-header') || document.querySelector('h1'),
+                title: 'Adding an Administrator',
+                intro: 'Fill in the user\'s LinkBlue, name, and email. ' +
+                       'Select their <strong>Role</strong>, <strong>College</strong>, and <strong>Department(s)</strong>. ' +
+                       'For Course Coordinators, check the box and set the course prefix/number. ' +
+                       'Under <strong>Access Settings</strong>, enable the features they need.',
+                position: 'bottom'
+            });
+        }
+        {% endif %}
+
+        // Filter out null-element steps
+        steps = steps.filter(function(s) { return s.element !== null; });
+        if (steps.length === 0) return;
+
+        var tour = introJs();
+        tour.setOptions({
+            steps: steps,
+            exitOnOverlayClick: false,
+            showProgress: true,
+            showBullets: true,
+            keyboardNavigation: true,
+            disableInteraction: false,
+            scrollToElement: true
+        });
+        tour.start();
     }
     </script>
     

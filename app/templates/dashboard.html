@@ -371,21 +371,19 @@
     // Step 4 — Quick Actions
     var quickEl = document.querySelector('[data-tour="quick-actions"]');
     if (quickEl) {
-        var qaIntro = 'Quick Actions let you jump to common tasks. ';
+        var qaIntro = 'Quick Actions give you one-click access to common tasks.<br><br>';
+        {% if current_user.has_dashboard_access %}
+        qaIntro += '<strong>View Verification Reports</strong> — see TCE status for all courses in your scope. ';
+        {% endif %}
         {% if current_user.is_super_admin() %}
-        qaIntro += 'As a Super Admin you can sync data, manage administrators, ' +
-                   'and access everything in the system.';
-        {% elif current_user.is_college_admin() %}
-        qaIntro += 'You can view verification reports for your college and approve ' +
-                   'question changes submitted by department admins.';
-        {% elif current_user.is_course_coordinator %}
-        qaIntro += 'You can view courses assigned to you. Your view is filtered ' +
-                   'to your specific course prefix and number(s).';
-        {% elif current_user.can_manage_qb() %}
-        qaIntro += 'You can browse and submit changes to the Question Bank for ' +
-                   'your department.';
-        {% else %}
-        qaIntro += 'You can view verification reports for your department.';
+        qaIntro += '<strong>Sync Course Data</strong> — pull fresh data from SAP HANA. ';
+        qaIntro += '<strong>Manage Administrators</strong> — add, edit, or remove users. ';
+        {% endif %}
+        {% if current_user.can_manage_qb() %}
+        qaIntro += '<strong>Manage Question Bank</strong> — browse, add, and submit evaluation questions. ';
+        {% endif %}
+        {% if current_user.is_course_coordinator %}
+        qaIntro += 'As a Course Coordinator, you can view courses assigned to you by prefix and number. ';
         {% endif %}
         steps.push({
             element: quickEl,
@@ -395,13 +393,46 @@
         });
     }
 
-    // Step 5 — Documentation link (always show)
+    // Step 5 — Verification deep-dive
+    {% if current_user.has_dashboard_access %}
+    steps.push({
+        element: document.querySelector('[data-tour="nav-bar"]'),
+        title: 'Verification Reports',
+        intro: 'Click <strong>Verification</strong> in the nav bar to see your courses. ' +
+               'Courses are listed with their TCE status: ' +
+               '<strong>Marked</strong> (green), <strong>Not Marked</strong> (grey), ' +
+               '<strong>Zero Enrollment</strong> (amber). ' +
+               'Use filters and the search bar to find specific courses. ' +
+               'Once you\'re on that page, click <strong>Take the Tour</strong> in the user menu ' +
+               'for a walkthrough of the filters.',
+        position: 'bottom'
+    });
+    {% endif %}
+
+    // Step 6 — Admin List and Reports
+    steps.push({
+        element: document.querySelector('[data-tour="nav-bar"]'),
+        title: 'Admin List & Reports',
+        intro: '<strong>Admin List</strong> shows all administrators in your scope with their access flags ' +
+               '(D, S, QB, CC). ' +
+               '<strong>Reports</strong> generates static CSV or Excel snapshots of current TCE data ' +
+               'for sharing or unit records. ' +
+               '{% if current_user.can_manage_qb() %}' +
+               '<strong>Question Bank</strong> is where you browse and manage evaluation questions — ' +
+               'courses load collapsed, click to drill down to sections and questions.' +
+               '{% endif %}',
+        position: 'bottom'
+    });
+
+    // Step 7 — Documentation link (always show)
     steps.push({
         element: document.querySelector('[data-tour="nav-bar"]'),
         title: 'Need Help?',
         intro: 'Check the <strong>Documentation</strong> link in the nav bar for ' +
-               'detailed guides tailored to your role. You can also click ' +
-               '<strong>Take the Tour</strong> in the user menu anytime to see this again.',
+               'detailed guides tailored to your role — including how to add users, ' +
+               'understand TCE status flags, and manage questions. ' +
+               'Click <strong>Take the Tour</strong> in the user menu anytime to see this again, ' +
+               'or visit any page and click Take the Tour for a page-specific walkthrough.',
         position: 'bottom'
     });
 
