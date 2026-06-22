@@ -365,7 +365,7 @@
 {% block extra_js %}
 <script>
 // ---- Datasource data (from server, for edit modal population) ----
-const datasourcesData = {{ datasources | map(attribute='to_dict') | list | tojson }};
+const datasourcesData = {{ datasources | map('to_dict') | list | tojson }};
 
 // ---- Toggle active status ----
 document.querySelectorAll('.toggle-active-link').forEach(function(link) {
