@@ -66,9 +66,17 @@ DATASOURCES = {
         'csv_file': 'Users.csv',
         'block_name': None,
         'columns': [
-            'USER_ID', 'FIRST_NAME', 'LAST_NAME', 'EMAIL', 'SECONDARY_EMAIL',
+            # Blue schema expects FIRSTNAME_1 / LASTNAME_1 (Bug 1 fix)
+            'USER_ID', 'FIRSTNAME_1', 'LASTNAME_1', 'EMAIL', 'SECONDARY_EMAIL',
         ],
-        'required': ['USER_ID', 'FIRST_NAME', 'LAST_NAME', 'EMAIL'],
+        'required': ['USER_ID', 'FIRSTNAME_1', 'LASTNAME_1', 'EMAIL'],
+        # CSV columns FIRSTNAME/LASTNAME are renamed to match Blue's schema
+        'column_renames': {
+            'FIRSTNAME': 'FIRSTNAME_1',
+            'LASTNAME': 'LASTNAME_1',
+        },
+        # Smaller batches for the largest datasource (138k+ rows)
+        'batch_size': 500,
     },
     'courses': {
         'id': 'Data161',
@@ -326,13 +334,35 @@ def soap_get_current_process(api_key: str) -> str:
 # API HELPERS
 # ============================================================================
 
-def call_soap(ws_url: str, payload: str, action: str, timeout: int = 180) -> requests.Response:
-    """Make a SOAP API call to Blue."""
+# Per-action SOAP timeouts (Bug 2 fix).
+# PrepareDataToFinalizeImportV2 needs 600 s for large datasets (e.g. 138k Users).
+# FinalizeImport gets 300 s.  Register/push/cancel stay at their previous defaults.
+ACTION_TIMEOUTS = {
+    'RegisterImport': 30,
+    'PushObjectDataV2': 180,
+    'PrepareDataToFinzalizeImportV2': 600,
+    'FinalizeImport': 300,
+    'CancelImport': 30,
+    'GetCurrentImportingDataSourceProcess': 30,
+    'GetDataBlockInformation': 30,
+}
+
+
+def call_soap(ws_url: str, payload: str, action: str,
+              timeout: Optional[int] = None) -> requests.Response:
+    """Make a SOAP API call to Blue.
+
+    If *timeout* is None the per-action default from ACTION_TIMEOUTS is used,
+    falling back to 180 s for unknown actions.
+    """
+    if timeout is None:
+        timeout = ACTION_TIMEOUTS.get(action, 180)
     headers = {
         'Content-Type': 'text/xml; charset=UTF-8',
         'SOAPAction': f'http://tempuri.org/IBlueWebService/{action}',
     }
-    return requests.post(ws_url, headers=headers, data=payload.encode('utf-8'), timeout=timeout)
+    return requests.post(ws_url, headers=headers,
+                         data=payload.encode('utf-8'), timeout=timeout)
 
 
 
@@ -884,6 +914,14 @@ class BlueSyncService:
         ds_csv = ds.csv_file if hasattr(ds, 'csv_file') else ds.get('csv_file')
         ds_columns = ds.columns if hasattr(ds, 'columns') else ds.get('columns', [])
         ds_required = ds.required_columns if hasattr(ds, 'required_columns') else ds.get('required', [])
+        ds_column_renames = (
+            ds.column_renames if hasattr(ds, 'column_renames')
+            else ds.get('column_renames', {})
+        )
+        ds_batch_size = (
+            ds.batch_size if hasattr(ds, 'batch_size')
+            else ds.get('batch_size', None)
+        ) or BATCH_SIZE
 
         # Create per-file event record
         file_start = time.monotonic()
@@ -932,7 +970,8 @@ class BlueSyncService:
         _update_blue_progress(step='Loading CSV...')
         if sync_log_id:
             self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
-        csv_columns, rows = self._load_csv(ds_csv, columns)
+        csv_columns, rows = self._load_csv(ds_csv, columns,
+                                           column_renames=ds_column_renames)
 
         if not rows:
             error_msg = "No data to import"
@@ -999,16 +1038,16 @@ class BlueSyncService:
             return False
 
         # Push data in batches
-        total_batches = (len(rows) + BATCH_SIZE - 1) // BATCH_SIZE
+        total_batches = (len(rows) + ds_batch_size - 1) // ds_batch_size
         _update_blue_progress(step='Pushing data...', total_batches=total_batches)
         if sync_log_id:
             self._persist_sync_log_progress(sync_log_id, dry_run=dry_run)
 
         try:
-            for i in range(0, len(rows), BATCH_SIZE):
+            for i in range(0, len(rows), ds_batch_size):
                 self._raise_if_cancelled(sync_log_id, parent_sync_log_id)
-                batch = rows[i:i + BATCH_SIZE]
-                batch_num = (i // BATCH_SIZE) + 1
+                batch = rows[i:i + ds_batch_size]
+                batch_num = (i // ds_batch_size) + 1
 
                 _update_blue_progress(
                     step=f'Pushing batch {batch_num}/{total_batches}...',
@@ -1107,26 +1146,50 @@ class BlueSyncService:
 
         return extract_block_name(response.text)
 
-    def _load_csv(self, csv_file: str, expected_columns: List[str]) -> Tuple[List[str], List[List[str]]]:
-        """Load CSV file and prepare data for import."""
+    def _load_csv(self, csv_file: str, expected_columns: List[str],
+                  column_renames: Optional[Dict[str, str]] = None) -> Tuple[List[str], List[List[str]]]:
+        """Load CSV file and prepare data for import.
+
+        Args:
+            csv_file: CSV filename (relative to datasources_path).
+            expected_columns: Blue column names in desired output order.
+            column_renames: Optional mapping from CSV column names to Blue
+                column names (e.g. {'FIRSTNAME': 'FIRSTNAME_1'}).
+
+        Returns:
+            (output_column_names, list_of_row_value_lists)
+        """
         filepath = os.path.join(self.datasources_path, csv_file)
 
         if not os.path.exists(filepath):
             return [], []
 
+        column_renames = column_renames or {}
         rows = []
+
+        # Build a reverse map: Blue column name → CSV column name
+        reverse_map: Dict[str, str] = {}
+        for csv_col, blue_col in column_renames.items():
+            reverse_map[blue_col] = csv_col
 
         with open(filepath, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             csv_columns = reader.fieldnames or []
 
-            # Use only columns that exist in both CSV and expected list
-            use_columns = [c for c in expected_columns if c in csv_columns]
+            # Determine which expected Blue columns we can fill from the CSV,
+            # accounting for column renames.
+            use_columns: List[str] = []
+            for bc in expected_columns:
+                # The CSV column we need to read for this Blue column
+                csv_source = reverse_map.get(bc, bc)
+                if csv_source in csv_columns:
+                    use_columns.append(bc)
 
             for row in reader:
                 row_data = []
-                for col in use_columns:
-                    val = row.get(col, '')
+                for bc in use_columns:
+                    csv_source = reverse_map.get(bc, bc)
+                    val = row.get(csv_source, '')
                     row_data.append(val if val else '')
                 rows.append(row_data)
 
