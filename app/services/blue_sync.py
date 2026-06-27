@@ -11,10 +11,12 @@ Datasources:
   3. Instructor_Course.csv -> Data162 (Course Instructors)
   4. Student_Course.csv  -> Data163 (Course Students)
 
-IMPORTANT: Import order matters! Blue requires:
-  - Users must be imported BEFORE instructor/student relationships
-  - Courses must be imported BEFORE instructor/student relationships
-  - Recommended order: Users -> Courses -> Instructors -> Students
+IMPORTANT (Requirement D):
+  - Users.csv (Data144, the heaviest) MUST be pushed LAST after all others.
+  - At least 3-minute (180s) gap between start of each non-Users push.
+  - See push_all() + IMPORT_ORDER + MIN_NON_USERS_GAP_SECONDS.
+  (The 3 bug fixes from scripts/push_users_to_blue.py are replicated here:
+   column rename, 600s Prepare timeout, HASH column omission.)
 
 API Workflow (per datasource):
   1. GetDataBlockInformation() - Get block name and schema
@@ -54,6 +56,10 @@ BATCH_SIZE = 1000
 # Delay between datasource imports (seconds)
 # This helps prevent timeouts on the Blue server
 IMPORT_DELAY_SECONDS = 300
+# Business rule (Requirement D): minimum gap between starts of non-Users
+# datasource pushes to avoid overloading Blue. Users.csv (Data144) is
+# always pushed *last*.
+MIN_NON_USERS_GAP_SECONDS = 180
 
 # ============================================================================
 # DATASOURCE DEFINITIONS
@@ -607,6 +613,22 @@ class BlueSyncService:
             to_push.sort(key=lambda ds: ds.import_order if hasattr(ds, 'import_order') else 99)
         else:
             to_push = self._get_active_datasources()
+
+        # Enforce Requirement D: Users.csv (Data144 / legacy 'users') is ALWAYS last.
+        # Even if DB import_order or selection puts it earlier, move it to the end.
+        # This prevents earlier datasources (stuck or not) from blocking it forever
+        # in a single run (errors in the loop are already caught and we proceed).
+        users_ds = None
+        others = []
+        for ds in to_push:
+            lkey = getattr(ds, 'legacy_key', None)
+            did = getattr(ds, 'datasource_id', None)
+            if lkey == 'users' or did == 'Data144':
+                users_ds = ds
+            else:
+                others.append(ds)
+        # Keep relative order of others (already sorted or from ordered query)
+        to_push = others + ([users_ds] if users_ds else [])
         self._parent_sync_log_id = parent_sync_log_id
 
         # Initialize progress (must happen before any wait so the frontend
@@ -721,6 +743,11 @@ class BlueSyncService:
                     # Skip delay after the last datasource
                     if idx < len(to_push) and not dry_run:
                         wait = _get_wait_seconds(ds_obj)
+                        # Enforce >= 3 min gap between non-Users pushes (Requirement D)
+                        ds_key_for_gap = (getattr(ds_obj, 'legacy_key', None) or
+                                          getattr(ds_obj, 'datasource_id', None) or '')
+                        if ds_key_for_gap != 'users' and ds_key_for_gap != 'Data144':
+                            wait = max(wait, MIN_NON_USERS_GAP_SECONDS)
                         _update_blue_progress(
                             step=f'Waiting {wait}s before next datasource...'
                         )
@@ -755,6 +782,11 @@ class BlueSyncService:
                     # Also add delay after errors to give server time to recover
                     if idx < len(to_push):
                         wait = _get_wait_seconds(ds_obj)
+                        # Enforce >= 3 min gap between non-Users pushes (Requirement D)
+                        ds_key_for_gap = (getattr(ds_obj, 'legacy_key', None) or
+                                          getattr(ds_obj, 'datasource_id', None) or '')
+                        if ds_key_for_gap != 'users' and ds_key_for_gap != 'Data144':
+                            wait = max(wait, MIN_NON_USERS_GAP_SECONDS)
                         self._sleep_with_cancel_checks(
                             wait,
                             sync_log_id=sync_log.id,
@@ -1004,7 +1036,6 @@ class BlueSyncService:
         if not dry_run:
             cancelled = self._cancel_stale_import()
             if cancelled:
-                import time
                 time.sleep(2)  # Brief pause for Blue to release the lock
 
         # Register import

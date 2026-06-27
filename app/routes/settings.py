@@ -99,6 +99,12 @@ def _mark_stale_running_logs():
             continue
         elif process_pid and not process_alive:
             stale_message = 'Sync process exited without updating its log.'
+            # Record the detection time separately so that duration (which uses
+            # completed_at) does not misleadingly become "time until noticed"
+            # for externally killed processes (Bug A). UI duration will still
+            # reflect start->completed, but summary now documents the latency.
+            summary.setdefault('process_exited_without_log_update', True)
+            summary['detected_exit_at'] = now.isoformat()
         elif log.started_at and log.started_at < PROCESS_STARTED_AT:
             stale_message = 'Sync interrupted by application restart.'
             completed_at = PROCESS_STARTED_AT
@@ -1217,9 +1223,11 @@ def blue_datasources():
     datasources = BlueSyncDatasource.query.order_by(
         BlueSyncDatasource.import_order
     ).all()
+    datasources_json = [d.to_dict() for d in datasources]
     return render_template(
         'settings/blue_datasources.html',
         datasources=datasources,
+        datasources_json=datasources_json,
     )
 
 

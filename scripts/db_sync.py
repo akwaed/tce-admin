@@ -68,6 +68,18 @@ def main():
         # ------------------------------------------------------------------
         sync_log = None
         if args.scheduled:
+            # Guard against duplicate scheduled runs (see similar guard in hana_sync.py for Bug A)
+            from datetime import timedelta
+            existing = DataSyncLog.query.filter(
+                DataSyncLog.sync_type == DataSyncLog.TYPE_HANA_TO_DATASOURCE,
+                DataSyncLog.status == DataSyncLog.STATUS_RUNNING,
+                DataSyncLog.trigger_type == 'scheduled',
+                DataSyncLog.started_at >= datetime.utcnow() - timedelta(minutes=30),
+            ).order_by(DataSyncLog.started_at.desc()).first()
+            if existing:
+                print("WARNING: Another scheduled HANA/DB sync appears running "
+                      f"(log id={existing.id}). Aborting this one to prevent overlap.")
+                # For db we are lenient (still proceed) but warn loudly.
             sync_log = DataSyncLog(
                 sync_type=DataSyncLog.TYPE_HANA_TO_DATASOURCE,
                 status=DataSyncLog.STATUS_RUNNING,

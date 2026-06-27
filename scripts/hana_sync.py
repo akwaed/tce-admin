@@ -469,10 +469,25 @@ def main():
     sync_log_id = None
     if args.scheduled:
         from app import create_app
+        from datetime import datetime, timedelta
         app = create_app(os.environ.get('FLASK_ENV', 'production'))
         with app.app_context():
             from app.models import db as flask_db
             from app.models.settings import DataSyncLog
+            # Guard against duplicate/overlapping scheduled HANA triggers (Bug A).
+            # If another scheduled HANA run is already active (started <30m ago), abort.
+            existing = DataSyncLog.query.filter(
+                DataSyncLog.sync_type == DataSyncLog.TYPE_HANA_TO_DATASOURCE,
+                DataSyncLog.status == DataSyncLog.STATUS_RUNNING,
+                DataSyncLog.trigger_type == 'scheduled',
+                DataSyncLog.started_at >= datetime.utcnow() - timedelta(minutes=30),
+            ).order_by(DataSyncLog.started_at.desc()).first()
+            if existing:
+                print("WARNING: Another scheduled HANA sync appears to be running "
+                      f"(log id={existing.id}, started {existing.started_at}). "
+                      "Aborting this invocation to avoid overlap/HANA resource contention.")
+                return 0  # treat as non-fatal skip for cron
+
             sync_log = DataSyncLog(
                 sync_type=DataSyncLog.TYPE_HANA_TO_DATASOURCE,
                 status=DataSyncLog.STATUS_RUNNING,
