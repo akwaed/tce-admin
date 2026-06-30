@@ -21,6 +21,30 @@ import subprocess
 import sys
 
 UTC = timezone.utc
+
+
+def _ensure_aware_utc(dt):
+    """Return a timezone-aware UTC datetime.
+    Treats naive datetimes as UTC (for legacy rows stored before the aware-UTC change).
+    """
+    if dt is None:
+        return None
+    if getattr(dt, 'tzinfo', None) is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
+
+
+def _for_db_storage(dt):
+    """Return a naive datetime for storage in DateTime columns (naive = UTC convention).
+    Strips tzinfo so we don't mix aware/naive on the DB side.
+    """
+    if dt is None:
+        return None
+    if getattr(dt, 'tzinfo', None) is not None:
+        return dt.replace(tzinfo=None)
+    return dt
+
+
 from app.services.sync_control import (
     SyncCancelledError,
     is_process_running,
@@ -79,9 +103,7 @@ def _mark_stale_running_logs():
         summary = log.summary or {}
         age_seconds = None
         if log.started_at:
-            started = log.started_at
-            if getattr(started, 'tzinfo', None) is None:
-                started = started.replace(tzinfo=UTC)
+            started = _ensure_aware_utc(log.started_at)
             age_seconds = max((now - started).total_seconds(), 0)
 
         process_pid = summary.get('process_pid')
@@ -110,9 +132,10 @@ def _mark_stale_running_logs():
             # reflect start->completed, but summary now documents the latency.
             summary.setdefault('process_exited_without_log_update', True)
             summary['detected_exit_at'] = now.isoformat()
-        elif log.started_at and log.started_at < PROCESS_STARTED_AT:
-            stale_message = 'Sync interrupted by application restart.'
-            completed_at = PROCESS_STARTED_AT
+        elif log.started_at:
+            if _ensure_aware_utc(log.started_at) < _ensure_aware_utc(PROCESS_STARTED_AT):
+                stale_message = 'Sync interrupted by application restart.'
+                completed_at = PROCESS_STARTED_AT
         elif exceeded_runtime:
             stale_message = (
                 f'Sync exceeded the {SYNC_MAX_RUNTIME_SECONDS // 60} minute '
@@ -128,7 +151,7 @@ def _mark_stale_running_logs():
         log.summary = summary
         log.status = DataSyncLog.STATUS_FAILED
         if not log.completed_at:
-            log.completed_at = completed_at
+            log.completed_at = _for_db_storage(completed_at)
         errors = log.errors
         if stale_message not in errors:
             errors.append(stale_message)
@@ -167,9 +190,7 @@ def _build_sync_status_payload(running_log):
     elapsed_seconds = None
     if running_log.started_at:
         now_for_elapsed = datetime.now(UTC)
-        started = running_log.started_at
-        if started and getattr(started, 'tzinfo', None) is None:
-            started = started.replace(tzinfo=UTC)
+        started = _ensure_aware_utc(running_log.started_at)
         elapsed_seconds = (now_for_elapsed - started).total_seconds() if started else None
 
     detail_message = ''
@@ -897,7 +918,7 @@ def trigger_hana_sync():
                 summary['pipeline_message'] = str(e)
                 log.summary = _merge_cancel_summary(log, summary)
 
-            log.completed_at = datetime.now(UTC)
+            log.completed_at = _for_db_storage(datetime.now(UTC))
             db.session.commit()
 
     thread = threading.Thread(target=run_hana_sync, args=(sync_log.id,))
@@ -1031,7 +1052,7 @@ def trigger_full_sync():
                     summary['pipeline_phase'] = 'failed'
                     summary['pipeline_message'] = 'HANA sync step failed.'
                     log.summary = _merge_cancel_summary(log, summary)
-                    log.completed_at = datetime.now(UTC)
+                    log.completed_at = _for_db_storage(datetime.now(UTC))
                     db.session.commit()
                     return
 
@@ -1063,7 +1084,7 @@ def trigger_full_sync():
                     summary['pipeline_phase'] = 'failed'
                     summary['pipeline_message'] = f'CSV->DB sync failed: {db_error}'
                     log.summary = _merge_cancel_summary(log, summary)
-                    log.completed_at = datetime.now(UTC)
+                    log.completed_at = _for_db_storage(datetime.now(UTC))
                     db.session.commit()
                     return
 
@@ -1152,7 +1173,7 @@ def trigger_full_sync():
                 summary['pipeline_message'] = str(e)
                 log.summary = _merge_cancel_summary(log, summary)
 
-            log.completed_at = datetime.now(UTC)
+            log.completed_at = _for_db_storage(datetime.now(UTC))
             db.session.commit()
 
     thread = threading.Thread(target=run_full_sync, args=(sync_log.id,))
@@ -1358,7 +1379,7 @@ def blue_datasource_toggle(ds_id):
     from app.models.settings import BlueSyncDatasource
     ds = BlueSyncDatasource.query.get_or_404(ds_id)
     ds.is_active = not ds.is_active
-    ds.updated_at = datetime.now(UTC)
+    ds.updated_at = _for_db_storage(datetime.now(UTC))
     db.session.commit()
     return jsonify({'ok': True, 'is_active': ds.is_active})
 
@@ -1400,8 +1421,8 @@ def blue_datasource_move(ds_id):
         ds_order = ds.import_order
         ds.import_order = neighbor.import_order
         neighbor.import_order = ds_order
-        ds.updated_at = datetime.now(UTC)
-        neighbor.updated_at = datetime.now(UTC)
+        ds.updated_at = _for_db_storage(datetime.now(UTC))
+        neighbor.updated_at = _for_db_storage(datetime.now(UTC))
         db.session.commit()
 
     return redirect(url_for('settings.blue_datasources'))
@@ -1447,7 +1468,7 @@ def blue_datasource_edit(ds_id):
         except Exception:
             flash('Invalid column_renames; kept previous value.', 'warning')
 
-    ds.updated_at = datetime.now(UTC)
+    ds.updated_at = _for_db_storage(datetime.now(UTC))
     db.session.commit()
     flash(f'Datasource {ds.datasource_id} updated.', 'success')
     return redirect(url_for('settings.blue_datasources'))

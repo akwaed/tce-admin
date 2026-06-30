@@ -170,7 +170,7 @@ class BackupService:
 
         # Soft delete in database
         backup.is_deleted = True
-        backup.deleted_at = datetime.now(UTC)
+        backup.deleted_at = datetime.now(UTC).replace(tzinfo=None)
         backup.deleted_by_id = admin.id if admin else None
 
         # Log the deletion

@@ -266,7 +266,7 @@ class CourseSyncService:
         db.session.remove()
 
         started = time.monotonic()
-        started_at = datetime.now(UTC)
+        started_at = datetime.now(UTC).replace(tzinfo=None)
 
         conn = _get_raw_pg_connection()
         conn.autocommit = False  # we manage transactions explicitly
@@ -574,7 +574,7 @@ class CourseSyncService:
         # Snapshot existing courses in the sync window.
         existing = self._snapshot_existing_courses(conn, self._csv_terms)
 
-        now_dt = datetime.now(UTC)
+        now_dt = datetime.now(UTC).replace(tzinfo=None)
         to_upsert = []
 
         for row in rows:
@@ -834,7 +834,7 @@ class CourseSyncService:
             return
 
         _update_progress(f'Upserting {len(users_data):,} users...', 2)
-        now_dt = datetime.now(UTC)
+        now_dt = datetime.now(UTC).replace(tzinfo=None)
         rows = [
             (uid, first_name or None, last_name or None, email or None, now_dt)
             for uid, (first_name, last_name, email) in users_data.items()
@@ -900,7 +900,7 @@ class CourseSyncService:
             total_deleted += cur.rowcount or 0
         conn.commit()
 
-        now_dt = datetime.now(UTC)
+        now_dt = datetime.now(UTC).replace(tzinfo=None)
         new_pairs = {}
         courses_with_instructors = set()
 
@@ -1099,7 +1099,7 @@ class CourseSyncService:
 
         missing_user_ids = sorted({user_id for _, user_id in enrollments if user_id not in self._users_cache})
         if missing_user_ids:
-            fallback_rows = [(user_id, None, None, None, datetime.now(UTC)) for user_id in missing_user_ids]
+            fallback_rows = [(user_id, None, None, None, datetime.now(UTC).replace(tzinfo=None)) for user_id in missing_user_ids]
             _execute_values(
                 cur,
                 'INSERT INTO course_users (user_id, first_name, last_name, email, last_synced) VALUES %s '
@@ -1107,7 +1107,7 @@ class CourseSyncService:
                 fallback_rows,
             )
 
-        rows = [(section_key, user_id, datetime.now(UTC)) for section_key, user_id in enrollments]
+        rows = [(section_key, user_id, datetime.now(UTC).replace(tzinfo=None)) for section_key, user_id in enrollments]
         if rows:
             sql = 'INSERT INTO student_enrollments (section_key, user_id, last_synced) VALUES %s'
             for i in range(0, len(rows), BATCH_SIZE):

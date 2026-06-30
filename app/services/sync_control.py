@@ -189,5 +189,5 @@ def mark_sync_cancelled(log, message='Sync cancelled by user.'):
     summary['pipeline_message'] = message
     log.summary = summary
     log.status = DataSyncLog.STATUS_CANCELLED
-    log.completed_at = datetime.now(UTC)
+    log.completed_at = datetime.now(UTC).replace(tzinfo=None)
     return log

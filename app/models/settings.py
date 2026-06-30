@@ -47,7 +47,7 @@ class SystemSetting(db.Model):
                 setting.description = description
             if admin:
                 setting.updated_by_id = admin.id
-            setting.updated_at = datetime.now(UTC)
+            setting.updated_at = datetime.now(UTC).replace(tzinfo=None)
         else:
             setting = cls(
                 key=key,
@@ -94,7 +94,7 @@ class DataSyncLog(db.Model):
     status = db.Column(db.String(20), nullable=False, default='running')
 
     # Timestamps
-    started_at = db.Column(db.DateTime, default=datetime.utcnow)
+    started_at = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
     completed_at = db.Column(db.DateTime)
 
     # Who triggered the sync (null for automated)
@@ -275,12 +275,12 @@ class DataSyncLog(db.Model):
     def complete(self, success=True):
         """Mark sync as completed."""
         self.status = self.STATUS_COMPLETED if success else self.STATUS_FAILED
-        self.completed_at = datetime.now(UTC)
+        self.completed_at = datetime.now(UTC).replace(tzinfo=None)
 
     def fail(self, error_message=None):
         """Mark sync as failed."""
         self.status = self.STATUS_FAILED
-        self.completed_at = datetime.now(UTC)
+        self.completed_at = datetime.now(UTC).replace(tzinfo=None)
         if error_message:
             self.add_error(error_message)
 
@@ -329,7 +329,7 @@ class DataFileSyncEvent(db.Model):
     # Blue datasource ID e.g. 'Data161' (null for HANA pulls)
     datasource_id = db.Column(db.String(50), nullable=True)
 
-    started_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    started_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(UTC).replace(tzinfo=None))
     completed_at = db.Column(db.DateTime, nullable=True)
 
     # 'running' | 'success' | 'failed' | 'skipped'
@@ -449,9 +449,10 @@ class BlueSyncDatasource(db.Model):
     # Delay after this datasource push before the next one
 
     notes = db.Column(db.Text, nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
     updated_at = db.Column(
-        db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        onupdate=lambda: datetime.now(UTC).replace(tzinfo=None)
     )
     created_by_id = db.Column(db.Integer, db.ForeignKey('admins.id'), nullable=True)
 

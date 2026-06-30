@@ -797,7 +797,7 @@ class BlueSyncService:
             # Update sync log
             all_success = self.stats['datasources_failed'] == 0
             sync_log.status = DataSyncLog.STATUS_COMPLETED if all_success else DataSyncLog.STATUS_FAILED
-            sync_log.completed_at = datetime.now(UTC)
+            sync_log.completed_at = datetime.now(UTC).replace(tzinfo=None)
             sync_log.blue_results = self.results
             sync_log.records_processed = self.stats['total_records']
             sync_log.errors = self.errors[:50]
@@ -939,7 +939,7 @@ class BlueSyncService:
         from app.models import db as _db
         try:
             file_event.status = status
-            file_event.completed_at = datetime.now(UTC)
+            file_event.completed_at = datetime.now(UTC).replace(tzinfo=None)
             file_event.row_count = row_count
             # For Blue pushes, rows_added represents records successfully pushed
             if file_event.direction == 'blue_push' and status == 'success':
