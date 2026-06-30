@@ -152,16 +152,22 @@ INITIAL_BLUE_DATASOURCES = [
         'import_order': 4,
         'is_system': True,
         'wait_after_seconds': 300,
-        'columns': ['USER_ID', 'FIRST_NAME', 'LAST_NAME', 'EMAIL', 'SECONDARY_EMAIL'],
-        'required_columns': ['USER_ID', 'FIRST_NAME', 'LAST_NAME', 'EMAIL'],
+        'columns': ['USER_ID', 'FIRSTNAME_1', 'LASTNAME_1', 'EMAIL', 'SECONDARY_EMAIL'],
+        'required_columns': ['USER_ID', 'FIRSTNAME_1', 'LASTNAME_1', 'EMAIL'],
+        # Bug fix port: remap CSV FIRSTNAME/LASTNAME -> Blue's _1 names
+        'column_renames': {
+            'FIRSTNAME': 'FIRSTNAME_1',
+            'LASTNAME': 'LASTNAME_1',
+        },
     },
 ]
 
 
 def _seed_blue_datasources():
     """Insert the initial 4 HANA datasources if the table is empty."""
-    from datetime import datetime
-    now = datetime.utcnow()
+    from datetime import datetime, timezone
+UTC = timezone.utc
+    now = datetime.now(UTC)
     for ds in INITIAL_BLUE_DATASOURCES:
         row = BlueSyncDatasource(
             datasource_id=ds['datasource_id'],
@@ -176,6 +182,7 @@ def _seed_blue_datasources():
             wait_after_seconds=ds['wait_after_seconds'],
             columns=ds['columns'],
             required_columns=ds.get('required_columns'),
+            column_renames=ds.get('column_renames'),
             created_at=now,
             updated_at=now,
         )

@@ -42,7 +42,7 @@
                     Step {{ running_summary.get('pipeline_step', 1) }}/{{ running_summary.get('pipeline_total_steps', 1) }}
                 </span>
                 <small class="text-muted">
-                    Started {{ running_log.started_at.strftime('%Y-%m-%d %H:%M:%S') }}
+                    Started {{ running_log.started_at | ny_str('%Y-%m-%d %H:%M:%S %Z') }}
                 </small>
                 {% endif %}
             </div>
@@ -288,8 +288,8 @@
                     {% for log in logs %}
                     <tr>
                         <td>
-                            <span class="text-nowrap">{{ log.started_at.strftime('%Y-%m-%d') }}</span><br>
-                            <small class="text-muted">{{ log.started_at.strftime('%H:%M:%S') }}</small>
+                            <span class="text-nowrap">{{ log.started_at | ny_str('%Y-%m-%d') }}</span><br>
+                            <small class="text-muted">{{ log.started_at | ny_str('%H:%M:%S %Z') }}</small>
                         </td>
                         <td>
                             {% if log.sync_type == 'hana_to_datasource' %}

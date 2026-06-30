@@ -32,7 +32,8 @@ import os
 import threading
 import time
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 
 from app.models import db
 from app.services.sync_control import SyncCancelledError, raise_if_sync_cancelled
@@ -85,7 +86,7 @@ def _reset_progress():
             'step_number': 0,
             'total_steps': 5,
             'records_processed': 0,
-            'started_at': datetime.utcnow().isoformat(),
+            'started_at': datetime.now(UTC).isoformat(),
             'error': None,
         })
 
@@ -265,7 +266,7 @@ class CourseSyncService:
         db.session.remove()
 
         started = time.monotonic()
-        started_at = datetime.utcnow()
+        started_at = datetime.now(UTC)
 
         conn = _get_raw_pg_connection()
         conn.autocommit = False  # we manage transactions explicitly
@@ -454,7 +455,7 @@ class CourseSyncService:
              WHERE id = %s
             """,
             (
-                datetime.utcnow(),
+                datetime.now(UTC),
                 status,
                 self.stats['courses_added'],
                 self.stats['courses_updated'],
@@ -490,7 +491,7 @@ class CourseSyncService:
     def _flush_change_buffer(self, conn):
         if not self._change_buffer:
             return
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         rows = [
             (self.sync_run_id, now,
              et, ek, ct, fn, ov, nv, dl)
@@ -573,7 +574,7 @@ class CourseSyncService:
         # Snapshot existing courses in the sync window.
         existing = self._snapshot_existing_courses(conn, self._csv_terms)
 
-        now_dt = datetime.utcnow()
+        now_dt = datetime.now(UTC)
         to_upsert = []
 
         for row in rows:
@@ -833,7 +834,7 @@ class CourseSyncService:
             return
 
         _update_progress(f'Upserting {len(users_data):,} users...', 2)
-        now_dt = datetime.utcnow()
+        now_dt = datetime.now(UTC)
         rows = [
             (uid, first_name or None, last_name or None, email or None, now_dt)
             for uid, (first_name, last_name, email) in users_data.items()
@@ -899,7 +900,7 @@ class CourseSyncService:
             total_deleted += cur.rowcount or 0
         conn.commit()
 
-        now_dt = datetime.utcnow()
+        now_dt = datetime.now(UTC)
         new_pairs = {}
         courses_with_instructors = set()
 
@@ -1098,7 +1099,7 @@ class CourseSyncService:
 
         missing_user_ids = sorted({user_id for _, user_id in enrollments if user_id not in self._users_cache})
         if missing_user_ids:
-            fallback_rows = [(user_id, None, None, None, datetime.utcnow()) for user_id in missing_user_ids]
+            fallback_rows = [(user_id, None, None, None, datetime.now(UTC)) for user_id in missing_user_ids]
             _execute_values(
                 cur,
                 'INSERT INTO course_users (user_id, first_name, last_name, email, last_synced) VALUES %s '
@@ -1106,7 +1107,7 @@ class CourseSyncService:
                 fallback_rows,
             )
 
-        rows = [(section_key, user_id, datetime.utcnow()) for section_key, user_id in enrollments]
+        rows = [(section_key, user_id, datetime.now(UTC)) for section_key, user_id in enrollments]
         if rows:
             sql = 'INSERT INTO student_enrollments (section_key, user_id, last_synced) VALUES %s'
             for i in range(0, len(rows), BATCH_SIZE):

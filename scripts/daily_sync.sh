@@ -10,8 +10,14 @@
 # Usage:
 #   bash /var/www/tce-admin/scripts/daily_sync.sh
 #
-# Cron (runs as ofa-user at 3:00 AM every day):
+# Cron (runs as ofa-user at 3:00 AM *system time* (UTC on prod VM) every day):
 #   0 3 * * * /var/www/tce-admin/scripts/daily_sync.sh >> /var/log/tce-sync.log 2>&1
+#
+# To interpret 3am as America/New_York (for DST safety):
+#   crontab -e
+#   Add at top: TZ=America/New_York
+#   Then keep: 0 3 * * * ...
+# (This is a manual crontab edit on the VM, not a git-tracked file.)
 #
 # Log rotation (add to /etc/logrotate.d/tce-sync):
 #   /var/log/tce-sync.log { daily rotate 30 compress missingok notifempty }

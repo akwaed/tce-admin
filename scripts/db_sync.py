@@ -29,7 +29,8 @@ import json
 import os
 import signal
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -74,7 +75,7 @@ def main():
                 DataSyncLog.sync_type == DataSyncLog.TYPE_HANA_TO_DATASOURCE,
                 DataSyncLog.status == DataSyncLog.STATUS_RUNNING,
                 DataSyncLog.trigger_type == 'scheduled',
-                DataSyncLog.started_at >= datetime.utcnow() - timedelta(minutes=30),
+                DataSyncLog.started_at >= datetime.now(UTC) - timedelta(minutes=30),
             ).order_by(DataSyncLog.started_at.desc()).first()
             if existing:
                 print("WARNING: Another scheduled HANA/DB sync appears running "
@@ -92,20 +93,25 @@ def main():
                 'pipeline_total_steps': 1,
                 'pipeline_message': 'Scheduled: Syncing CSV datasources into the database...',
                 'process_pid': os.getpid(),
-                'process_started_at': datetime.utcnow().isoformat(),
+                'process_started_at': datetime.now(UTC).isoformat(),
             }
             db.session.add(sync_log)
             db.session.commit()
+            sync_log_id = sync_log.id  # capture ID; the sync service does db.session.remove() which detaches prior objects
+        else:
+            sync_log_id = None
 
+        if args.scheduled:
+            # Register signal handlers using safe re-query by ID (object may be detached later)
             def handle_stop_signal(signum, _frame):
-                current_log = DataSyncLog.query.get(sync_log.id)
+                current_log = db.session.get(DataSyncLog, sync_log_id) if sync_log_id else None
                 if current_log and current_log.status == DataSyncLog.STATUS_RUNNING:
                     summary = current_log.summary
                     summary['pipeline_phase'] = 'failed'
                     summary['pipeline_message'] = f'Scheduled sync terminated by signal {signum}.'
                     current_log.summary = summary
                     current_log.status = DataSyncLog.STATUS_FAILED
-                    current_log.completed_at = datetime.utcnow()
+                    current_log.completed_at = datetime.now(UTC)
                     errors = current_log.errors
                     errors.append(f'Scheduled sync terminated by signal {signum}.')
                     current_log.errors = errors[:50]
@@ -117,39 +123,42 @@ def main():
 
         service = CourseSyncService(ds_path)
         try:
-            result = service.sync_all(sync_log_id=sync_log.id if sync_log else None)
+            result = service.sync_all(sync_log_id=sync_log_id)
 
-            if sync_log:
-                stats = result.get('stats', {})
-                sync_log.status = DataSyncLog.STATUS_COMPLETED
-                sync_log.records_processed = (
-                    stats.get('courses_added', 0)
-                    + stats.get('courses_updated', 0)
-                    + stats.get('instructors_added', 0)
-                    + stats.get('students_counted', 0)
-                )
-                sync_log.complete(success=True)
-                sync_log.summary = {
-                    'pipeline_phase': 'done',
-                    'pipeline_step': 1,
-                    'pipeline_total_steps': 1,
-                    'pipeline_message': 'Scheduled sync completed successfully.',
-                    'courses_added': stats.get('courses_added', 0),
-                    'courses_updated': stats.get('courses_updated', 0),
-                    'courses_removed': stats.get('courses_removed', 0),
-                    'instructors_added': stats.get('instructors_added', 0),
-                    'students_counted': stats.get('students_counted', 0),
-                    'elapsed_seconds': result.get('elapsed_seconds', 0),
-                }
-                db.session.commit()
-                result['sync_log_id'] = sync_log.id
+            if sync_log_id:
+                # Re-fetch after sync_all (which calls db.session.remove()) to get an attached instance
+                sync_log = db.session.get(DataSyncLog, sync_log_id)
+                if sync_log:
+                    stats = result.get('stats', {})
+                    sync_log.status = DataSyncLog.STATUS_COMPLETED
+                    sync_log.records_processed = (
+                        stats.get('courses_added', 0)
+                        + stats.get('courses_updated', 0)
+                        + stats.get('instructors_added', 0)
+                        + stats.get('students_counted', 0)
+                    )
+                    sync_log.complete(success=True)
+                    sync_log.summary = {
+                        'pipeline_phase': 'done',
+                        'pipeline_step': 1,
+                        'pipeline_total_steps': 1,
+                        'pipeline_message': 'Scheduled sync completed successfully.',
+                        'courses_added': stats.get('courses_added', 0),
+                        'courses_updated': stats.get('courses_updated', 0),
+                        'courses_removed': stats.get('courses_removed', 0),
+                        'instructors_added': stats.get('instructors_added', 0),
+                        'students_counted': stats.get('students_counted', 0),
+                        'elapsed_seconds': result.get('elapsed_seconds', 0),
+                    }
+                    db.session.commit()
+                    result['sync_log_id'] = sync_log.id
 
             print(json.dumps(result, default=str))
             sys.exit(0)
 
         except SyncCancelledError as e:
-            if sync_log:
-                current_log = DataSyncLog.query.get(sync_log.id)
+            if sync_log_id:
+                current_log = db.session.get(DataSyncLog, sync_log_id)
                 if current_log:
                     mark_sync_cancelled(current_log, str(e))
                     errors = current_log.errors
@@ -163,27 +172,29 @@ def main():
                 'errors': [str(e)],
                 'stats': {},
                 'elapsed_seconds': 0,
-                'sync_log_id': sync_log.id if sync_log else None,
+                'sync_log_id': sync_log_id,
             }))
             sys.exit(1)
 
         except Exception as e:
-            if sync_log:
-                sync_log.status = DataSyncLog.STATUS_FAILED
-                sync_log.complete(success=False)
-                sync_log.summary = {
-                    'pipeline_phase': 'error',
-                    'pipeline_message': f'Scheduled sync failed: {e}',
-                    'error': str(e),
-                }
-                db.session.commit()
+            if sync_log_id:
+                current_log = db.session.get(DataSyncLog, sync_log_id)
+                if current_log:
+                    current_log.status = DataSyncLog.STATUS_FAILED
+                    current_log.complete(success=False)
+                    current_log.summary = {
+                        'pipeline_phase': 'error',
+                        'pipeline_message': f'Scheduled sync failed: {e}',
+                        'error': str(e),
+                    }
+                    db.session.commit()
 
             print(json.dumps({
                 'success': False,
                 'errors': [str(e)],
                 'stats': {},
                 'elapsed_seconds': 0,
-                'sync_log_id': sync_log.id if sync_log else None,
+                'sync_log_id': sync_log_id,
             }))
             sys.exit(1)
 

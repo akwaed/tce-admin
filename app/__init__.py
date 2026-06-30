@@ -9,6 +9,21 @@ from app.models import db
 from flask_session import Session
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+UTC = timezone.utc
+NY_TZ = ZoneInfo("America/New_York")
+
+
+def _to_ny(dt):
+    """Convert a (naive=UTC or aware) datetime to America/New_York for display."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(NY_TZ)
+
 # After db.init_app(app) and login_manager.init_app(app), add:
 #Session(app)
 login_manager = LoginManager()
@@ -136,5 +151,23 @@ def create_app(config_name='default'):
             'UK_BLACK': app.config['UK_BLACK'],
             'DATA_REFRESH_NOTE': app.config['DATA_REFRESH_NOTE']
         }
-    
+
+    # Timezone helpers (store UTC, display America/New_York)
+    @app.template_filter('to_ny')
+    def to_ny_filter(dt):
+        return _to_ny(dt)
+
+    @app.template_filter('ny_str')
+    def ny_str_filter(dt, fmt='%Y-%m-%d %H:%M:%S %Z'):
+        dt_ny = _to_ny(dt)
+        return dt_ny.strftime(fmt) if dt_ny else ''
+
+    @app.context_processor
+    def inject_tz_helpers():
+        return {
+            'to_ny': _to_ny,
+            'UTC': UTC,
+            'NY_TZ': NY_TZ,
+        }
+
     return app

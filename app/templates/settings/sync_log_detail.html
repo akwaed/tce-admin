@@ -56,11 +56,11 @@
                     </tr>
                     <tr>
                         <td><strong>Started At:</strong></td>
-                        <td>{{ log.started_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                        <td>{{ log.started_at | ny_str('%Y-%m-%d %H:%M:%S %Z') }}</td>
                     </tr>
                     <tr>
                         <td><strong>Completed At:</strong></td>
-                        <td>{{ log.completed_at.strftime('%Y-%m-%d %H:%M:%S') if log.completed_at else '-' }}</td>
+                        <td>{{ log.completed_at | ny_str('%Y-%m-%d %H:%M:%S %Z') if log.completed_at else '-' }}</td>
                     </tr>
                     <tr>
                         <td><strong>Duration:</strong></td>
@@ -315,9 +315,9 @@
                             '<td>' + e.file_name + dsInfo + '</td>' +
                             '<td>' + statusBadge + '</td>' +
                             '<td class="text-end">' + (e.row_count || 0).toLocaleString() + '</td>' +
-                            '<td class="text-end text-success">' + (e.rows_added > 0 ? '+' + e.rows_added.toLocaleString() : '') + '</td>' +
-                            '<td class="text-end text-warning">' + (e.rows_updated > 0 ? '~' + e.rows_updated.toLocaleString() : '') + '</td>' +
-                            '<td class="text-end text-danger">' + (e.rows_removed > 0 ? '-' + e.rows_removed.toLocaleString() : '') + '</td>' +
+                            '<td class="text-end text-success">' + ((e.rows_added || 0) > 0 ? '+' + (e.rows_added || 0).toLocaleString() : '') + '</td>' +
+                            '<td class="text-end text-warning">' + ((e.rows_updated || 0) > 0 ? '~' + (e.rows_updated || 0).toLocaleString() : '') + '</td>' +
+                            '<td class="text-end text-danger">' + ((e.rows_removed || 0) > 0 ? '-' + (e.rows_removed || 0).toLocaleString() : '') + '</td>' +
                             '<td class="text-end">' + (e.elapsed_display || '') + '</td>' +
                             '</tr>';
                     });

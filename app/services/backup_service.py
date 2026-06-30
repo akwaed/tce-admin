@@ -4,7 +4,8 @@ Handles automatic and manual backups with timestamp tracking
 """
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from app.models import db
 from app.models.question import QBBackup, QBAuditLog
 
@@ -49,7 +50,7 @@ class BackupService:
         Returns:
             QBBackup record if exists, None otherwise
         """
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         today_end = today_start.replace(hour=23, minute=59, second=59, microsecond=999999)
 
         existing = QBBackup.query.filter(
@@ -89,7 +90,7 @@ class BackupService:
                 # Return existing backup instead of creating a new one
                 return existing_backup
 
-        timestamp = datetime.utcnow()
+        timestamp = datetime.now(UTC)
         backup_filename = self._get_backup_filename(backup_type, timestamp)
         backup_path = os.path.join(self.backups_path, backup_filename)
 
@@ -169,7 +170,7 @@ class BackupService:
 
         # Soft delete in database
         backup.is_deleted = True
-        backup.deleted_at = datetime.utcnow()
+        backup.deleted_at = datetime.now(UTC)
         backup.deleted_by_id = admin.id if admin else None
 
         # Log the deletion

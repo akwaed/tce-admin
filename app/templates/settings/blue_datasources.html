@@ -232,6 +232,12 @@
                             <div class="form-text">Subset of columns that must be non-empty.</div>
                         </div>
                     </div>
+                    <div class="mb-3">
+                        <label for="ma-renames" class="form-label">Column Renames (optional)</label>
+                        <textarea class="form-control" id="ma-renames" name="column_renames_text" rows="2"
+                                  placeholder='e.g. FIRSTNAME=FIRSTNAME_1&#10;LASTNAME=LASTNAME_1  or JSON {"FIRSTNAME":"FIRSTNAME_1"}'></textarea>
+                        <div class="form-text">For Users.csv: map FIRSTNAME/LASTNAME to Blue&#39;s FIRSTNAME_1/LASTNAME_1.</div>
+                    </div>
                     <div class="row">
                         <div class="col-md-4 mb-3">
                             <label for="ma-import-order" class="form-label">Import Order</label>
@@ -319,6 +325,11 @@
                             <textarea class="form-control" id="edit-required-columns"
                                       name="required_columns_text" rows="4"></textarea>
                         </div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="edit-renames" class="form-label">Column Renames (optional)</label>
+                        <textarea class="form-control" id="edit-renames" name="column_renames_text" rows="2"></textarea>
+                        <div class="form-text">Map e.g. FIRSTNAME=FIRSTNAME_1 for Users datasource.</div>
                     </div>
                     <div class="row">
                         <div class="col-md-4 mb-3">
@@ -421,6 +432,12 @@ document.querySelectorAll('.edit-ds-btn').forEach(function(btn) {
         document.getElementById('edit-block-name').value = ds.block_name || '';
         document.getElementById('edit-columns').value = (ds.columns || []).join('\n');
         document.getElementById('edit-required-columns').value = (ds.required_columns || []).join('\n');
+        var ren = ds.column_renames || {};
+        if (ren && typeof ren === 'object' && !Array.isArray(ren)) {
+            document.getElementById('edit-renames').value = Object.keys(ren).map(function(k){ return k + '=' + ren[k]; }).join('\n');
+        } else {
+            document.getElementById('edit-renames').value = '';
+        }
         document.getElementById('edit-import-order').value = ds.import_order;
         document.getElementById('edit-wait-seconds').value = ds.wait_after_seconds;
         document.getElementById('edit-notes').value = ds.notes || '';

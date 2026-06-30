@@ -2,7 +2,8 @@
 System Settings and Data Sync Logging Models
 For managing Explorance Blue API integration and unified sync logging
 """
-from datetime import datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from app.models import db
 import json
 
@@ -46,7 +47,7 @@ class SystemSetting(db.Model):
                 setting.description = description
             if admin:
                 setting.updated_by_id = admin.id
-            setting.updated_at = datetime.utcnow()
+            setting.updated_at = datetime.now(UTC)
         else:
             setting = cls(
                 key=key,
@@ -229,7 +230,13 @@ class DataSyncLog(db.Model):
         """Calculate sync duration."""
         if not self.completed_at or not self.started_at:
             return None
-        return self.completed_at - self.started_at
+        ca = self.completed_at
+        sa = self.started_at
+        if getattr(sa, 'tzinfo', None) is None:
+            sa = sa.replace(tzinfo=UTC)
+        if getattr(ca, 'tzinfo', None) is None:
+            ca = ca.replace(tzinfo=UTC)
+        return ca - sa
 
     @property
     def duration_display(self):
@@ -268,12 +275,12 @@ class DataSyncLog(db.Model):
     def complete(self, success=True):
         """Mark sync as completed."""
         self.status = self.STATUS_COMPLETED if success else self.STATUS_FAILED
-        self.completed_at = datetime.utcnow()
+        self.completed_at = datetime.now(UTC)
 
     def fail(self, error_message=None):
         """Mark sync as failed."""
         self.status = self.STATUS_FAILED
-        self.completed_at = datetime.utcnow()
+        self.completed_at = datetime.now(UTC)
         if error_message:
             self.add_error(error_message)
 
@@ -328,10 +335,10 @@ class DataFileSyncEvent(db.Model):
     # 'running' | 'success' | 'failed' | 'skipped'
     status = db.Column(db.String(20), nullable=False, default='running')
 
-    row_count = db.Column(db.Integer, nullable=True)
-    rows_added = db.Column(db.Integer, nullable=True)
-    rows_updated = db.Column(db.Integer, nullable=True)
-    rows_removed = db.Column(db.Integer, nullable=True)
+    row_count = db.Column(db.Integer, nullable=True, default=0)
+    rows_added = db.Column(db.Integer, nullable=True, default=0)
+    rows_updated = db.Column(db.Integer, nullable=True, default=0)
+    rows_removed = db.Column(db.Integer, nullable=True, default=0)
     error_message = db.Column(db.Text, nullable=True)
     elapsed_seconds = db.Column(db.Float, nullable=True)
 
@@ -425,6 +432,10 @@ class BlueSyncDatasource(db.Model):
     required_columns = db.Column(db.JSON, nullable=True)
     # Subset of columns that must be non-empty
 
+    column_renames = db.Column(db.JSON, nullable=True)
+    # Optional map e.g. {"FIRSTNAME": "FIRSTNAME_1", "LASTNAME": "LASTNAME_1"}
+    # Applied during CSV load before sending to Blue (Bug fix port from push_users_to_blue.py)
+
     import_order = db.Column(db.Integer, nullable=False, default=99)
     # Lower = imported first; enforces dependency order
 
@@ -465,6 +476,7 @@ class BlueSyncDatasource(db.Model):
             'source_type': self.source_type,
             'columns': self.columns,
             'required_columns': self.required_columns,
+            'column_renames': self.column_renames,
             'import_order': self.import_order,
             'is_active': self.is_active,
             'is_system': self.is_system,

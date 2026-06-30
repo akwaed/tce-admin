@@ -11,7 +11,7 @@ from app.models.sync_history import SyncRun, ChangeLog
 from app.services.blue_sync import get_blue_sync_service, get_blue_sync_progress
 from app.services.course_sync import get_sync_progress
 from functools import wraps
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import tempfile
 import threading
@@ -19,6 +19,8 @@ import time
 import os
 import subprocess
 import sys
+
+UTC = timezone.utc
 from app.services.sync_control import (
     SyncCancelledError,
     is_process_running,
@@ -32,7 +34,7 @@ from app.services.sync_control import (
 )
 
 settings_bp = Blueprint('settings', __name__)
-PROCESS_STARTED_AT = datetime.utcnow()
+PROCESS_STARTED_AT = datetime.now(UTC)
 SYNC_MAX_RUNTIME_SECONDS = int(os.environ.get('SYNC_MAX_RUNTIME_SECONDS', '3600'))
 
 
@@ -71,13 +73,16 @@ def _mark_stale_running_logs():
         return
 
     changed = False
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
 
     for log in running_logs:
         summary = log.summary or {}
         age_seconds = None
         if log.started_at:
-            age_seconds = max((now - log.started_at).total_seconds(), 0)
+            started = log.started_at
+            if getattr(started, 'tzinfo', None) is None:
+                started = started.replace(tzinfo=UTC)
+            age_seconds = max((now - started).total_seconds(), 0)
 
         process_pid = summary.get('process_pid')
         process_alive = is_process_running(process_pid) if process_pid else False
@@ -161,7 +166,11 @@ def _build_sync_status_payload(running_log):
     summary = running_log.summary or {}
     elapsed_seconds = None
     if running_log.started_at:
-        elapsed_seconds = (datetime.utcnow() - running_log.started_at).total_seconds()
+        now_for_elapsed = datetime.now(UTC)
+        started = running_log.started_at
+        if started and getattr(started, 'tzinfo', None) is None:
+            started = started.replace(tzinfo=UTC)
+        elapsed_seconds = (now_for_elapsed - started).total_seconds() if started else None
 
     detail_message = ''
     datasource_name = summary.get('current_datasource_name')
@@ -239,7 +248,7 @@ def _run_cancellable_subprocess(command, cwd, timeout, sync_log_id=None):
         if log:
             summary = log.summary or {}
             summary['process_pid'] = process.pid
-            summary['process_started_at'] = datetime.utcnow().isoformat()
+            summary['process_started_at'] = datetime.now(UTC).isoformat()
             summary['process_command'] = ' '.join(command)
             log.summary = summary
             db.session.commit()
@@ -888,7 +897,7 @@ def trigger_hana_sync():
                 summary['pipeline_message'] = str(e)
                 log.summary = _merge_cancel_summary(log, summary)
 
-            log.completed_at = datetime.utcnow()
+            log.completed_at = datetime.now(UTC)
             db.session.commit()
 
     thread = threading.Thread(target=run_hana_sync, args=(sync_log.id,))
@@ -1022,7 +1031,7 @@ def trigger_full_sync():
                     summary['pipeline_phase'] = 'failed'
                     summary['pipeline_message'] = 'HANA sync step failed.'
                     log.summary = _merge_cancel_summary(log, summary)
-                    log.completed_at = datetime.utcnow()
+                    log.completed_at = datetime.now(UTC)
                     db.session.commit()
                     return
 
@@ -1054,7 +1063,7 @@ def trigger_full_sync():
                     summary['pipeline_phase'] = 'failed'
                     summary['pipeline_message'] = f'CSV->DB sync failed: {db_error}'
                     log.summary = _merge_cancel_summary(log, summary)
-                    log.completed_at = datetime.utcnow()
+                    log.completed_at = datetime.now(UTC)
                     db.session.commit()
                     return
 
@@ -1091,9 +1100,23 @@ def trigger_full_sync():
                         raise SyncCancelledError(
                             blue_result.get('message') or 'Sync cancelled by user.'
                         )
-                    summary['pipeline_phase'] = 'complete'
-                    summary['pipeline_message'] = 'Full pipeline completed successfully.'
-                    log.status = DataSyncLog.STATUS_COMPLETED
+                    # Propagate Blue result into parent Full Sync status (fixes status-agg bug)
+                    summary['blue_sync'] = {
+                        'success': blue_result.get('success', False),
+                        'sync_log_id': blue_result.get('sync_log_id'),
+                        'datasources_success': (blue_result.get('stats') or {}).get('datasources_success', 0),
+                        'datasources_failed': (blue_result.get('stats') or {}).get('datasources_failed', 0),
+                        'results': blue_result.get('results', {}),
+                    }
+                    if blue_result.get('success'):
+                        summary['pipeline_phase'] = 'complete'
+                        summary['pipeline_message'] = 'Full pipeline completed successfully.'
+                        log.status = DataSyncLog.STATUS_COMPLETED
+                    else:
+                        errors.append('Blue push step failed (see child Datasource to Blue log).')
+                        summary['pipeline_phase'] = 'failed'
+                        summary['pipeline_message'] = 'Full sync: Blue push failed.'
+                        log.status = DataSyncLog.STATUS_FAILED
                 except SyncCancelledError as cancel_exc:
                     summary['pipeline_phase'] = 'cancelled'
                     summary['pipeline_message'] = str(cancel_exc)
@@ -1129,7 +1152,7 @@ def trigger_full_sync():
                 summary['pipeline_message'] = str(e)
                 log.summary = _merge_cancel_summary(log, summary)
 
-            log.completed_at = datetime.utcnow()
+            log.completed_at = datetime.now(UTC)
             db.session.commit()
 
     thread = threading.Thread(target=run_full_sync, args=(sync_log.id,))
@@ -1271,6 +1294,23 @@ def blue_datasource_add():
     if required_text:
         required_columns = [c.strip() for c in required_text.splitlines() if c.strip()]
 
+    column_renames = None
+    renames_text = request.form.get('column_renames_text', '').strip()
+    if renames_text:
+        try:
+            # Accept JSON or simple KEY=VAL lines
+            if renames_text.startswith('{'):
+                import json as _json
+                column_renames = _json.loads(renames_text)
+            else:
+                column_renames = {}
+                for line in renames_text.splitlines():
+                    if '=' in line:
+                        k, v = line.split('=', 1)
+                        column_renames[k.strip()] = v.strip()
+        except Exception:
+            flash('Invalid column_renames format (use JSON or KEY=VAL lines).', 'warning')
+
     if not block_name or not columns:
         api_key = SystemSetting.get(SystemSetting.BLUE_API_KEY)
         ws_url = SystemSetting.get(
@@ -1297,6 +1337,7 @@ def blue_datasource_add():
         block_name=block_name,
         columns=columns,
         required_columns=required_columns,
+        column_renames=column_renames,
         import_order=import_order,
         is_active=True,
         is_system=False,
@@ -1317,7 +1358,7 @@ def blue_datasource_toggle(ds_id):
     from app.models.settings import BlueSyncDatasource
     ds = BlueSyncDatasource.query.get_or_404(ds_id)
     ds.is_active = not ds.is_active
-    ds.updated_at = datetime.utcnow()
+    ds.updated_at = datetime.now(UTC)
     db.session.commit()
     return jsonify({'ok': True, 'is_active': ds.is_active})
 
@@ -1359,8 +1400,8 @@ def blue_datasource_move(ds_id):
         ds_order = ds.import_order
         ds.import_order = neighbor.import_order
         neighbor.import_order = ds_order
-        ds.updated_at = datetime.utcnow()
-        neighbor.updated_at = datetime.utcnow()
+        ds.updated_at = datetime.now(UTC)
+        neighbor.updated_at = datetime.now(UTC)
         db.session.commit()
 
     return redirect(url_for('settings.blue_datasources'))
@@ -1391,7 +1432,22 @@ def blue_datasource_edit(ds_id):
     if required_text:
         ds.required_columns = [c.strip() for c in required_text.splitlines() if c.strip()]
 
-    ds.updated_at = datetime.utcnow()
+    renames_text = request.form.get('column_renames_text', '').strip()
+    if renames_text:
+        try:
+            if renames_text.startswith('{'):
+                import json as _json
+                ds.column_renames = _json.loads(renames_text)
+            else:
+                ds.column_renames = {}
+                for line in renames_text.splitlines():
+                    if '=' in line:
+                        k, v = line.split('=', 1)
+                        ds.column_renames[k.strip()] = v.strip()
+        except Exception:
+            flash('Invalid column_renames; kept previous value.', 'warning')
+
+    ds.updated_at = datetime.now(UTC)
     db.session.commit()
     flash(f'Datasource {ds.datasource_id} updated.', 'success')
     return redirect(url_for('settings.blue_datasources'))

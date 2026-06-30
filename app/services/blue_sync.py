@@ -34,7 +34,8 @@ import re
 import os
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from typing import Dict, List, Tuple, Optional, Any
 from flask import current_app
 from app.services.sync_control import (
@@ -184,7 +185,7 @@ def _update_blue_progress(datasource='', step='', ds_num=0, batch=0, total_batch
             _blue_sync_progress['error'] = error
         if result:
             _blue_sync_progress['results'][datasource] = result
-        _blue_sync_progress['updated_at'] = datetime.utcnow().isoformat()
+        _blue_sync_progress['updated_at'] = datetime.now(UTC).isoformat()
 
 
 # ============================================================================
@@ -634,7 +635,7 @@ class BlueSyncService:
         # Initialize progress (must happen before any wait so the frontend
         # can show a progress bar immediately).
         with _blue_sync_lock:
-            started_at = datetime.utcnow().isoformat()
+            started_at = datetime.now(UTC).isoformat()
             _blue_sync_progress = {
                 'running': True,
                 'current_datasource': '',
@@ -796,7 +797,7 @@ class BlueSyncService:
             # Update sync log
             all_success = self.stats['datasources_failed'] == 0
             sync_log.status = DataSyncLog.STATUS_COMPLETED if all_success else DataSyncLog.STATUS_FAILED
-            sync_log.completed_at = datetime.utcnow()
+            sync_log.completed_at = datetime.now(UTC)
             sync_log.blue_results = self.results
             sync_log.records_processed = self.stats['total_records']
             sync_log.errors = self.errors[:50]
@@ -819,7 +820,7 @@ class BlueSyncService:
             with _blue_sync_lock:
                 _blue_sync_progress['running'] = False
                 _blue_sync_progress['current_step'] = 'Complete'
-                _blue_sync_progress['updated_at'] = datetime.utcnow().isoformat()
+                _blue_sync_progress['updated_at'] = datetime.now(UTC).isoformat()
 
             return {
                 'success': all_success,
@@ -849,7 +850,7 @@ class BlueSyncService:
                 _blue_sync_progress['running'] = False
                 _blue_sync_progress['current_step'] = 'Cancelled'
                 _blue_sync_progress['error'] = None
-                _blue_sync_progress['updated_at'] = datetime.utcnow().isoformat()
+                _blue_sync_progress['updated_at'] = datetime.now(UTC).isoformat()
 
             return {
                 'success': False,
@@ -875,7 +876,7 @@ class BlueSyncService:
             with _blue_sync_lock:
                 _blue_sync_progress['running'] = False
                 _blue_sync_progress['error'] = str(e)
-                _blue_sync_progress['updated_at'] = datetime.utcnow().isoformat()
+                _blue_sync_progress['updated_at'] = datetime.now(UTC).isoformat()
 
             raise
 
@@ -938,8 +939,11 @@ class BlueSyncService:
         from app.models import db as _db
         try:
             file_event.status = status
-            file_event.completed_at = datetime.utcnow()
+            file_event.completed_at = datetime.now(UTC)
             file_event.row_count = row_count
+            # For Blue pushes, rows_added represents records successfully pushed
+            if file_event.direction == 'blue_push' and status == 'success':
+                file_event.rows_added = row_count
             if error_message:
                 file_event.error_message = error_message[:500]
             if elapsed_seconds is not None:
@@ -960,6 +964,12 @@ class BlueSyncService:
         ds_columns = ds.columns if hasattr(ds, 'columns') else ds.get('columns', [])
         ds_required = ds.required_columns if hasattr(ds, 'required_columns') else ds.get('required', [])
         ds_column_renames = getattr(ds, 'column_renames', None) or {}
+        # Ported fix from push_users_to_blue.py: ensure Users remap even if DB config missing it
+        if not ds_column_renames:
+            lkey = getattr(ds, 'legacy_key', None)
+            did = getattr(ds, 'datasource_id', None)
+            if lkey == 'users' or did == 'Data144':
+                ds_column_renames = {'FIRSTNAME': 'FIRSTNAME_1', 'LASTNAME': 'LASTNAME_1'}
         ds_batch_size = getattr(ds, 'batch_size', None) or BATCH_SIZE
 
         # Create per-file event record
@@ -979,6 +989,10 @@ class BlueSyncService:
                     file_name=ds_csv,
                     datasource_id=ds_id,
                     status='running',
+                    row_count=0,
+                    rows_added=0,
+                    rows_updated=0,
+                    rows_removed=0,
                 )
                 _db.session.add(file_event)
                 _db.session.commit()
@@ -1222,6 +1236,10 @@ class BlueSyncService:
                 csv_source = reverse_map.get(bc, bc)
                 if csv_source in csv_columns:
                     use_columns.append(bc)
+
+            # Ported fix: explicitly drop HASH (contains corrupted mem addr strings)
+            if 'HASH' in use_columns:
+                use_columns = [c for c in use_columns if c != 'HASH']
 
             for row in reader:
                 row_data = []

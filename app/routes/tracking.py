@@ -13,7 +13,8 @@ from app.models.course import College, Department, Course, Instructor
 from app.models.sync_history import ChangeLog, SyncRun
 from app.services.backup_service import get_backup_service
 from functools import wraps
-from datetime import datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from collections import defaultdict
 import csv
 import io
@@ -394,7 +395,7 @@ def qb_changes():
 
     # Quick filter takes precedence over date filters
     if quick_filter:
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         if quick_filter == '48h':
             from_date = now - timedelta(hours=48)
             query = query.filter(QBAuditLog.timestamp >= from_date)

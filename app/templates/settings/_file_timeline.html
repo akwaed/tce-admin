@@ -18,7 +18,7 @@
             {% for e in file_events %}
             <tr>
                 <td class="text-nowrap">
-                    {{ e.started_at.strftime('%H:%M:%S') if e.started_at else '-' }}
+                    {{ e.started_at | ny_str('%H:%M:%S %Z') if e.started_at else '-' }}
                 </td>
                 <td>
                     {% if e.direction == 'hana_pull' %}
@@ -49,13 +49,13 @@
                 </td>
                 <td class="text-end">{{ (e.row_count or 0)|int|default('', true) }}</td>
                 <td class="text-end text-success">
-                    {% if e.rows_added > 0 %}+{{ e.rows_added }}{% endif %}
+                    {% if (e.rows_added or 0) > 0 %}+{{ e.rows_added }}{% endif %}
                 </td>
                 <td class="text-end text-warning">
-                    {% if e.rows_updated > 0 %}~{{ e.rows_updated }}{% endif %}
+                    {% if (e.rows_updated or 0) > 0 %}~{{ e.rows_updated }}{% endif %}
                 </td>
                 <td class="text-end text-danger">
-                    {% if e.rows_removed > 0 %}-{{ e.rows_removed }}{% endif %}
+                    {% if (e.rows_removed or 0) > 0 %}-{{ e.rows_removed }}{% endif %}
                 </td>
                 <td class="text-end">{{ e.elapsed_display }}</td>
             </tr>

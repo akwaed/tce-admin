@@ -10,7 +10,8 @@ import json
 import os
 import signal
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 
 from app.models import db
 from app.models.settings import DataSyncLog
@@ -166,7 +167,7 @@ def request_sync_cancellation(sync_log_id, requested_by=None, reason=None):
     if summary.get('cancel_requested'):
         return log
 
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(UTC).isoformat()
     summary['cancel_requested'] = True
     summary['cancel_requested_at'] = now
     if requested_by is not None:
@@ -188,5 +189,5 @@ def mark_sync_cancelled(log, message='Sync cancelled by user.'):
     summary['pipeline_message'] = message
     log.summary = summary
     log.status = DataSyncLog.STATUS_CANCELLED
-    log.completed_at = datetime.utcnow()
+    log.completed_at = datetime.now(UTC)
     return log

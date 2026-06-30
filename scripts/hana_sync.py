@@ -23,7 +23,8 @@ import json
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from pathlib import Path
 
 # Repository root and default datasource directory.
@@ -187,7 +188,7 @@ class HANADatasourceSync:
     def _sync_table(self, cursor, table, config, from_term, up_to_term):
         """Sync a single table to CSV, computing a diff against the prior file."""
         table_start = time.monotonic()
-        table_started_at = datetime.utcnow()
+        table_started_at = datetime.now(UTC)
         filename = f"{config['filename']}.csv"
         row_count = 0
         status = 'failed'
@@ -205,7 +206,7 @@ class HANADatasourceSync:
                 'file_name': filename,
                 'datasource_id': None,
                 'started_at': table_started_at.isoformat(),
-                'completed_at': datetime.utcnow().isoformat(),
+                'completed_at': datetime.now(UTC).isoformat(),
                 'status': 'failed',
                 'row_count': 0,
                 'rows_added': 0,
@@ -223,7 +224,7 @@ class HANADatasourceSync:
                 'file_name': filename,
                 'datasource_id': None,
                 'started_at': table_started_at.isoformat(),
-                'completed_at': datetime.utcnow().isoformat(),
+                'completed_at': datetime.now(UTC).isoformat(),
                 'status': 'success',
                 'row_count': 0,
                 'rows_added': 0,
@@ -326,7 +327,7 @@ class HANADatasourceSync:
             'file_name': filename,
             'datasource_id': None,
             'started_at': table_started_at.isoformat(),
-            'completed_at': datetime.utcnow().isoformat(),
+            'completed_at': datetime.now(UTC).isoformat(),
             'status': 'success',
             'row_count': row_count,
             'rows_added': diff.get('added', 0),
@@ -469,7 +470,8 @@ def main():
     sync_log_id = None
     if args.scheduled:
         from app import create_app
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone as _tz
+        _UTC = _tz.utc
         app = create_app(os.environ.get('FLASK_ENV', 'production'))
         with app.app_context():
             from app.models import db as flask_db
@@ -480,7 +482,7 @@ def main():
                 DataSyncLog.sync_type == DataSyncLog.TYPE_HANA_TO_DATASOURCE,
                 DataSyncLog.status == DataSyncLog.STATUS_RUNNING,
                 DataSyncLog.trigger_type == 'scheduled',
-                DataSyncLog.started_at >= datetime.utcnow() - timedelta(minutes=30),
+                DataSyncLog.started_at >= datetime.now(_UTC) - timedelta(minutes=30),
             ).order_by(DataSyncLog.started_at.desc()).first()
             if existing:
                 print("WARNING: Another scheduled HANA sync appears to be running "
@@ -503,7 +505,7 @@ def main():
                     'writing datasource CSV files...'
                 ),
                 'process_pid': os.getpid(),
-                'process_started_at': datetime.utcnow().isoformat(),
+                'process_started_at': datetime.now(_UTC).isoformat(),
             }
             flask_db.session.add(sync_log)
             flask_db.session.commit()
@@ -618,7 +620,7 @@ def main():
                         try:
                             return datetime.fromisoformat(iso_str) if iso_str else None
                         except Exception:
-                            return datetime.utcnow()
+                            return datetime.now(UTC)
                     for fe in result.get('file_events', []):
                         _flask_db.session.add(DataFileSyncEvent(
                             sync_log_id=log.id,
@@ -652,7 +654,7 @@ def main():
                 with _app.app_context():
                     from app.models import db as _flask_db
                     from app.models.settings import DataSyncLog
-                    log = DataSyncLog.query.get(sync_log_id)
+                    log = flask_db.session.get(DataSyncLog, sync_log_id)
                     if log:
                         log.status = DataSyncLog.STATUS_FAILED
                         log.complete(success=False)
