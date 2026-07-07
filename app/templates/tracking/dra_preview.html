@@ -15,9 +15,27 @@
             <h1><i class="bi bi-file-earmark-spreadsheet me-2"></i>DRA Export Preview</h1>
             <p class="text-muted mb-0">Preview and download Data Relationship Assignment file for Explorance Blue</p>
         </div>
-        <a href="{{ url_for('tracking.export_dra') }}" class="btn btn-success btn-lg">
+        <a href="{{ url_for('tracking.export_dra', layout=layout) }}" class="btn btn-success btn-lg">
             <i class="bi bi-download me-2"></i>Download DRA CSV
         </a>
+    </div>
+</div>
+
+<!-- Layout Toggle -->
+<div class="card mb-3 border-info">
+    <div class="card-body py-2">
+        <div class="d-flex align-items-center flex-wrap">
+            <span class="me-3 fw-bold"><i class="bi bi-toggles me-1"></i>College Node ID Layout:</span>
+            <div class="btn-group" role="group" aria-label="College Node ID layout toggle">
+                <a href="?layout=old" class="btn btn-sm {% if layout == 'old' %}btn-primary{% else %}btn-outline-primary{% endif %}">
+                    <i class="bi bi-circle me-1"></i>Old Codes
+                </a>
+                <a href="?layout=new" class="btn btn-sm {% if layout == 'new' %}btn-primary{% else %}btn-outline-primary{% endif %}">
+                    <i class="bi bi-circle-fill me-1"></i>New Codes
+                </a>
+            </div>
+            <small class="text-muted ms-3">Temporary toggle — "New Codes" translates old college Node IDs to the updated codes.</small>
+        </div>
     </div>
 </div>
 
@@ -125,7 +143,7 @@
 
 <!-- Download Actions -->
 <div class="mt-4 text-center">
-    <a href="{{ url_for('tracking.export_dra') }}" class="btn btn-success btn-lg">
+    <a href="{{ url_for('tracking.export_dra', layout=layout) }}" class="btn btn-success btn-lg">
         <i class="bi bi-download me-2"></i>Download DRA CSV File
     </a>
     <a href="{{ url_for('tracking.index') }}" class="btn btn-outline-secondary btn-lg ms-2">

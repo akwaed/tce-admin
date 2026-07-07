@@ -23,6 +23,34 @@ from sqlalchemy import text
 
 tracking_bp = Blueprint('tracking', __name__)
 
+# ---------------------------------------------------------------------------
+# DRA College Code Mapping (temporary — new college codes)
+# ---------------------------------------------------------------------------
+_dra_mapping = None  # lazy-loaded cache
+
+
+def _load_dra_mapping():
+    """Load old→new college Node Id mapping from dra_mapping_file.csv."""
+    global _dra_mapping
+    if _dra_mapping is not None:
+        return _dra_mapping
+
+    import os
+    mapping_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+        'datasources', 'dra_mapping_file.csv',
+    )
+    _dra_mapping = {}
+    if os.path.exists(mapping_path):
+        with open(mapping_path, 'r', encoding='utf-8-sig') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                new_id = (row.get('New Node Id') or '').strip()
+                old_id = (row.get('Node Id') or '').strip()
+                if new_id and old_id and new_id != old_id:
+                    _dra_mapping[old_id] = new_id
+    return _dra_mapping
+
 
 def super_admin_required(f):
     """Decorator for super admin only routes"""
@@ -55,10 +83,16 @@ def _resolve_college_code_from_courses(college_value):
     return college.code if college else None
 
 
-def get_college_source_for_dra(admin):
-    """Return the C4 source value from CLASS_COLLEGE_SHORT."""
+def get_college_source_for_dra(admin, use_new_codes=False):
+    """Return the C4 source value from CLASS_COLLEGE_SHORT.
+
+    When *use_new_codes* is True the value is translated through
+    dra_mapping_file.csv so the new college Node Id is emitted.
+    """
     college_code = _resolve_college_code_from_courses(admin.college_code)
     if college_code:
+        if use_new_codes:
+            college_code = _load_dra_mapping().get(college_code, college_code)
         return college_code, None
 
     if admin.college_code:
@@ -680,6 +714,9 @@ def export_dra():
     - Falls back to legacy course_prefix/course_number fields
     - Supports wildcard (prefix-only) assignments that match all courses with that prefix
     """
+    # Determine layout: 'old' (default) or 'new' college codes
+    use_new_codes = request.args.get('layout') == 'new'
+
     # Get all active admins with S flag (excluding super admins who don't have DRA assignments)
     admins = Admin.query.filter(
         Admin.is_active == True,
@@ -715,7 +752,7 @@ def export_dra():
             elif admin.contact_type == 'College' or admin.role == 'college_admin':
                 # College-level contact
                 target_type = 'C4'
-                college_source, college_error = get_college_source_for_dra(admin)
+                college_source, college_error = get_college_source_for_dra(admin, use_new_codes=use_new_codes)
                 if college_error:
                     errors.append(college_error)
                     continue
@@ -821,6 +858,9 @@ def dra_preview():
     Only includes admins with the S flag (has_static_report_access = True)
     Handles multiple course assignments and wildcard prefixes.
     """
+    # Determine layout: 'old' (default) or 'new' college codes
+    use_new_codes = request.args.get('layout') == 'new'
+
     # Get all active admins with S flag (excluding super admins)
     admins = Admin.query.filter(
         Admin.is_active == True,
@@ -867,7 +907,7 @@ def dra_preview():
 
             elif admin.contact_type == 'College' or admin.role == 'college_admin':
                 target_type = 'C4'
-                college_source, college_error = get_college_source_for_dra(admin)
+                college_source, college_error = get_college_source_for_dra(admin, use_new_codes=use_new_codes)
                 if college_error:
                     errors.append(college_error)
                     continue
@@ -912,7 +952,8 @@ def dra_preview():
     return render_template('tracking/dra_preview.html',
                            preview_data=preview_data,
                            errors=errors,
-                           stats=stats)
+                           stats=stats,
+                           layout=request.args.get('layout', 'old'))
 
 
 # ---------------------------------------------------------------------------
