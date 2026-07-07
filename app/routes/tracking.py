@@ -30,7 +30,7 @@ _dra_mapping = None  # lazy-loaded cache
 
 
 def _load_dra_mapping():
-    """Load old→new college Node Id mapping from dra_mapping_file.csv."""
+    """Load new→old college Node Id mapping from dra_mapping_file.csv."""
     global _dra_mapping
     if _dra_mapping is not None:
         return _dra_mapping
@@ -48,7 +48,7 @@ def _load_dra_mapping():
                 new_id = (row.get('New Node Id') or '').strip()
                 old_id = (row.get('Node Id') or '').strip()
                 if new_id and old_id and new_id != old_id:
-                    _dra_mapping[old_id] = new_id
+                    _dra_mapping[new_id] = old_id
     return _dra_mapping
 
 
@@ -86,12 +86,13 @@ def _resolve_college_code_from_courses(college_value):
 def get_college_source_for_dra(admin, use_new_codes=False):
     """Return the C4 source value from CLASS_COLLEGE_SHORT.
 
-    When *use_new_codes* is True the value is translated through
-    dra_mapping_file.csv so the new college Node Id is emitted.
+    When *use_new_codes* is False (default / "Old Codes" layout), the value
+    is translated through dra_mapping_file.csv so the old college Node Id is
+    emitted.  When True ("New Codes" layout), the code is used as-is.
     """
     college_code = _resolve_college_code_from_courses(admin.college_code)
     if college_code:
-        if use_new_codes:
+        if not use_new_codes:
             college_code = _load_dra_mapping().get(college_code, college_code)
         return college_code, None
 
