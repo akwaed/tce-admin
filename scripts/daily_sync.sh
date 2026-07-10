@@ -10,14 +10,17 @@
 # Usage:
 #   bash /var/www/tce-admin/scripts/daily_sync.sh
 #
-# Cron (runs as ofa-user at 3:00 AM *system time* (UTC on prod VM) every day):
-#   0 3 * * * /var/www/tce-admin/scripts/daily_sync.sh >> /var/log/tce-sync.log 2>&1
+# Cron — Blue push is step 3 of this same script (via blue_sync_cli.py).
+# Preferred schedule: 4:00 AM America/New_York so HANA→DB→Blue runs after
+# overnight source systems settle. DST-safe form (manual crontab on VM):
 #
-# To interpret 3am as America/New_York (for DST safety):
 #   crontab -e
-#   Add at top: TZ=America/New_York
-#   Then keep: 0 3 * * * ...
-# (This is a manual crontab edit on the VM, not a git-tracked file.)
+#   Add at top of crontab:
+#     TZ=America/New_York
+#   Then:
+#     0 4 * * * /var/www/tce-admin/scripts/daily_sync.sh >> /var/log/tce-sync.log 2>&1
+#
+# (Crontab is a manual edit on the VM, not tracked in git.)
 #
 # Log rotation (add to /etc/logrotate.d/tce-sync):
 #   /var/log/tce-sync.log { daily rotate 30 compress missingok notifempty }

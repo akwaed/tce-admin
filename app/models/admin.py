@@ -3,7 +3,8 @@ Admin User Model
 Handles TCE administrators at various levels (Super Admin, College Admin, Department Admin)
 Also includes AdminAuditLog for tracking admin changes
 """
-from datetime import datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from app.models import db
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import UserMixin
@@ -76,8 +77,8 @@ class Admin(UserMixin, db.Model):
     tour_completed = db.Column(db.Boolean, default=False)
     
     # Audit fields
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None), onupdate=lambda: datetime.now(UTC).replace(tzinfo=None))
     created_by_id = db.Column(db.Integer, db.ForeignKey('admins.id'))
     
     # Relationships
@@ -463,7 +464,7 @@ class CourseCoordinatorAssignment(db.Model):
     department_id = db.Column(db.String(50), db.ForeignKey('departments.id'))
 
     # Audit fields
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
     created_by_id = db.Column(db.Integer, db.ForeignKey('admins.id'))
 
     # Relationships
@@ -534,7 +535,7 @@ class AdminAuditLog(db.Model):
     action = db.Column(db.String(50), nullable=False)  # created, updated, deleted, role_changed, activated, deactivated, imported
 
     # When
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None), index=True)
 
     # Details of the change (JSON)
     changes_json = db.Column(db.Text)

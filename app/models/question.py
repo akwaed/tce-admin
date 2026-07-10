@@ -2,7 +2,8 @@
 Question Bank Models
 For managing additional questions with approval workflow
 """
-from datetime import datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from app.models import db
 import json
 
@@ -23,8 +24,8 @@ class QuestionBank(db.Model):
     last_import_filename = db.Column(db.String(255))
     last_import_by_id = db.Column(db.Integer, db.ForeignKey('admins.id'))
     
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None), onupdate=lambda: datetime.now(UTC).replace(tzinfo=None))
     
     # Relationships
     questions = db.relationship('Question', backref='question_bank', lazy='dynamic',
@@ -55,7 +56,7 @@ class QuestionTypeDefinition(db.Model):
     options_json = db.Column(db.Text)  # [{label: "Strongly", score: 5}, ...]
     na_label = db.Column(db.String(100))  # "Not Applicable" label if used
     
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
     
     # Unique constraint
     __table_args__ = (
@@ -123,8 +124,8 @@ class Question(db.Model):
     sort_order = db.Column(db.Integer, default=0)
     
     # Audit
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None), onupdate=lambda: datetime.now(UTC).replace(tzinfo=None))
     
     # Unique constraint
     __table_args__ = (
@@ -180,7 +181,7 @@ class QuestionAuditLog(db.Model):
     admin_id = db.Column(db.Integer, db.ForeignKey('admins.id'), nullable=False)
     
     # When
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
     
     # Details of the change (JSON)
     details_json = db.Column(db.Text)
@@ -221,7 +222,7 @@ class QuestionMapping(db.Model):
     question_id = db.Column(db.String(100))  # From Question.question_id
     
     # Audit
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None), onupdate=lambda: datetime.now(UTC).replace(tzinfo=None))
     updated_by_id = db.Column(db.Integer, db.ForeignKey('admins.id'))
     
     __table_args__ = (
@@ -249,7 +250,7 @@ class QBAuditLog(db.Model):
     admin_linkblue = db.Column(db.String(50), nullable=False)
 
     # When
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None), index=True)
 
     # Optional: reference to backup created
     backup_id = db.Column(db.Integer, db.ForeignKey('qb_backups.id'))
@@ -335,7 +336,7 @@ class QBBackup(db.Model):
     backup_type = db.Column(db.String(10), nullable=False, index=True)
 
     # Timestamp for the backup (used in filename)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None), nullable=False, index=True)
 
     # Filename of the backup (stored in backups directory)
     filename = db.Column(db.String(255), nullable=False)

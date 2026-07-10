@@ -166,7 +166,7 @@ INITIAL_BLUE_DATASOURCES = [
 def _seed_blue_datasources():
     """Insert the initial 4 HANA datasources if the table is empty."""
     from datetime import datetime, timezone
-UTC = timezone.utc
+    UTC = timezone.utc
     now = datetime.now(UTC)
     for ds in INITIAL_BLUE_DATASOURCES:
         row = BlueSyncDatasource(
