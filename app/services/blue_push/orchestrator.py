@@ -49,6 +49,20 @@ def _default_datasources_path() -> str:
     return str(root / "datasources")
 
 
+def _safe_rollback() -> None:
+    """Roll back a failed SQLAlchemy transaction so later work can proceed.
+
+    PostgreSQL aborts the whole transaction after any error; without an
+    explicit rollback, every subsequent statement raises
+    InFailedSqlTransaction (even unrelated inserts).
+    """
+    try:
+        from app.models import db
+        db.session.rollback()
+    except Exception:
+        pass
+
+
 def resolve_api_credentials() -> tuple[Optional[str], str]:
     """API key from SystemSetting DB, then BLUE_API_KEY env. WS URL similar."""
     api_key = None
@@ -59,8 +73,9 @@ def resolve_api_credentials() -> tuple[Optional[str], str]:
         db_url = SystemSetting.get(SystemSetting.BLUE_WS_URL)
         if db_url:
             ws_url = db_url
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("resolve_api_credentials db lookup failed: %s", exc)
+        _safe_rollback()
 
     if not api_key:
         api_key = os.environ.get("BLUE_API_KEY")
@@ -121,7 +136,9 @@ def load_datasource_configs(
         if rows:
             configs = [config_from_db_row(r) for r in rows]
     except Exception as exc:
+        # Critical: Postgres leaves the session unusable until rollback.
         logger.warning("db_config_load_failed err=%s; using defaults", exc)
+        _safe_rollback()
 
     if not configs:
         for k in DEFAULT_IMPORT_ORDER:
@@ -194,6 +211,10 @@ class BluePushOrchestrator:
         from app.models import db
         from app.models.settings import DataSyncLog, DataFileSyncEvent
 
+        # Ensure we start with a clean session (prior create_app seed queries
+        # or failed lookups must not leave Postgres in aborted state).
+        _safe_rollback()
+
         self.api_key, self.ws_url = resolve_api_credentials()
         self._parent_sync_log_id = parent_sync_log_id
         self.errors = []
@@ -232,14 +253,24 @@ class BluePushOrchestrator:
         )
 
         # Create sync log early so UI can poll
-        sync_log = DataSyncLog(
-            sync_type=DataSyncLog.TYPE_DATASOURCE_TO_BLUE,
-            status=DataSyncLog.STATUS_RUNNING,
-            triggered_by_id=triggered_by.id if triggered_by else None,
-            trigger_type=trigger_type,
-        )
-        db.session.add(sync_log)
-        db.session.commit()
+        try:
+            sync_log = DataSyncLog(
+                sync_type=DataSyncLog.TYPE_DATASOURCE_TO_BLUE,
+                status=DataSyncLog.STATUS_RUNNING,
+                triggered_by_id=triggered_by.id if triggered_by else None,
+                trigger_type=trigger_type,
+            )
+            db.session.add(sync_log)
+            db.session.commit()
+        except Exception as exc:
+            _safe_rollback()
+            logger.exception("sync_log_create_failed")
+            return {
+                "success": False,
+                "error": f"Could not create sync log (DB error): {exc}",
+                "results": {},
+                "stats": self.stats,
+            }
         self._persist_progress(sync_log.id, dry_run=dry_run)
 
         push_results: Dict[str, PushResult] = {}
@@ -532,7 +563,7 @@ class BluePushOrchestrator:
                 sync_log.errors = self.errors[:50]
             db.session.commit()
         except Exception:
-            db.session.rollback()
+            _safe_rollback()
             logger.exception("persist_progress_failed sync_log_id=%s", sync_log_id)
 
     def _start_file_event(self, sync_log_id: int, cfg: DatasourceConfig):
@@ -555,7 +586,7 @@ class BluePushOrchestrator:
             db.session.commit()
             return event
         except Exception:
-            db.session.rollback()
+            _safe_rollback()
             logger.exception("file_event_create_failed")
             return None
 
@@ -587,7 +618,7 @@ class BluePushOrchestrator:
                 file_event.elapsed_seconds = round(elapsed_seconds, 2)
             db.session.commit()
         except Exception:
-            db.session.rollback()
+            _safe_rollback()
             logger.exception("file_event_complete_failed")
 
 

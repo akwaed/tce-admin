@@ -73,25 +73,33 @@ def create_app(config_name='default'):
     with app.app_context():
         db.create_all()
         
-        # Create default super admin if doesn't exist
-        from app.models.admin import Admin
-        super_admin = Admin.query.filter_by(linkblue='tceadmin').first()
-        if not super_admin:
-            super_admin = Admin(
-                linkblue='tceadmin',
-                first_name='TCE',
-                last_name='Administrator',
-                email='tce-admin@uky.edu',
-                role='super_admin',
-                is_primary_contact=True,
-                has_dashboard_access=True,
-                has_static_report_access=True,
-                has_qb_access=True
+        # Create default super admin if doesn't exist.
+        # On schema drift (missing column), roll back so later CLI/request
+        # work is not stuck in InFailedSqlTransaction.
+        try:
+            from app.models.admin import Admin
+            super_admin = Admin.query.filter_by(linkblue='tceadmin').first()
+            if not super_admin:
+                super_admin = Admin(
+                    linkblue='tceadmin',
+                    first_name='TCE',
+                    last_name='Administrator',
+                    email='tce-admin@uky.edu',
+                    role='super_admin',
+                    is_primary_contact=True,
+                    has_dashboard_access=True,
+                    has_static_report_access=True,
+                    has_qb_access=True
+                )
+                super_admin.set_password(app.config['SUPER_ADMIN_PASSWORD'])
+                db.session.add(super_admin)
+                db.session.commit()
+                print("✓ Created default super admin account")
+        except Exception as exc:
+            db.session.rollback()
+            app.logger.warning(
+                "Skipped default admin seed (schema or DB error): %s", exc
             )
-            super_admin.set_password(app.config['SUPER_ADMIN_PASSWORD'])
-            db.session.add(super_admin)
-            db.session.commit()
-            print("✓ Created default super admin account")
 
         # # Create test account if doesn't exist (lower privilege, configurable via admin UI)
         # test_username = app.config['TEST_ACCOUNT_USERNAME']

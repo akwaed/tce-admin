@@ -114,6 +114,8 @@ def main() -> int:
             return 0 if result.get("success") else 1
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(json.dumps({
                 "success": False,
                 "error": str(e),
