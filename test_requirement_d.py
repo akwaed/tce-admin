@@ -76,13 +76,17 @@ def test_users_always_last():
     assert 180 in applied_waits or any(w>=180 for w in applied_waits)
     print("OK: non-users gaps >= 180s applied ->", applied_waits)
 
-    # Confirm the 3 fixes are encoded (presence in source/constants)
-    src = open('app/services/blue_sync.py').read()
-    assert "FIRSTNAME_1" in src and "LASTNAME_1" in src, "Bug1 column rename missing"
-    assert "PrepareDataToFinzalizeImportV2" in src and "600" in src, "Bug2 600s timeout missing"
-    # HASH omitted because not listed in users columns
-    assert "'USER_ID', 'FIRSTNAME_1'" in src or "USER_ID', 'FIRSTNAME_1" in src, "Bug3 (no HASH) evidence weak"
-    print("OK: three bug fixes from push_users_to_blue.py are replicated in integrated code")
+    # Confirm the 3 fixes are encoded in the rebuilt blue_push package
+    from pathlib import Path
+    pkg = Path('app/services/blue_push')
+    config_src = (pkg / 'config.py').read_text()
+    client_src = (pkg / 'client.py').read_text()
+    csv_src = (pkg / 'csv_loader.py').read_text()
+    assert "FIRSTNAME_1" in config_src and "LASTNAME_1" in config_src, "Bug1 column rename missing"
+    assert "TIMEOUT_PREPARE = 600" in config_src, "Bug2 600s timeout missing"
+    assert "PrepareDataToFinzalizeImportV2" in client_src, "Bug2 prepare action missing"
+    assert "HASH" in csv_src and "DROP_COLUMNS" in config_src, "Bug3 HASH drop missing"
+    print("OK: three bug fixes from push_users_to_blue.py are in app/services/blue_push/")
 
     print()
     print("SUCCESS: Requirement D verified (ordering + spacing + bugfix presence).")

@@ -2,7 +2,8 @@
 Course, Instructor, College, and Department Models
 For verification reports and data from UKDIG sync
 """
-from datetime import datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from app.models import db
 
 
@@ -76,7 +77,7 @@ class Course(db.Model):
     term_code = db.Column(db.String(20), index=True)  # e.g., "Spring 2026" or "2025010"
     
     # Sync metadata
-    last_synced = db.Column(db.DateTime, default=datetime.utcnow)
+    last_synced = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
     
     # Relationships
     instructors = db.relationship('Instructor', backref='course', lazy='dynamic',
@@ -170,7 +171,7 @@ class Instructor(db.Model):
     instructor_role = db.Column(db.String(50))  # Primary, Secondary, etc.
     
     # Sync metadata
-    last_synced = db.Column(db.DateTime, default=datetime.utcnow)
+    last_synced = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
     
     def __repr__(self):
         return f'<Instructor {self.user_id} for {self.section_key}>'
@@ -203,7 +204,7 @@ class CourseUser(db.Model):
     first_name = db.Column(db.String(100), index=True)
     last_name = db.Column(db.String(100), index=True)
     email = db.Column(db.String(200), index=True)
-    last_synced = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    last_synced = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None), index=True)
 
     student_enrollments = db.relationship('StudentEnrollment', backref='user', lazy='dynamic',
                                           cascade='all, delete-orphan')
@@ -234,7 +235,7 @@ class StudentEnrollment(db.Model):
                             nullable=False, index=True)
     user_id = db.Column(db.String(50), db.ForeignKey('course_users.user_id'),
                         nullable=False, index=True)
-    last_synced = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    last_synced = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None), index=True)
 
     def __repr__(self):
         return f'<StudentEnrollment {self.user_id} -> {self.section_key}>'
@@ -246,7 +247,7 @@ class SyncLog(db.Model):
     
     id = db.Column(db.Integer, primary_key=True)
     sync_type = db.Column(db.String(50))  # 'full', 'courses', 'instructors', etc.
-    started_at = db.Column(db.DateTime, default=datetime.utcnow)
+    started_at = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
     completed_at = db.Column(db.DateTime)
     status = db.Column(db.String(20))  # 'running', 'completed', 'failed'
     records_processed = db.Column(db.Integer, default=0)

@@ -15,7 +15,8 @@ Schema notes
   entity_key) for "what changed for this course?" lookups and on
   (sync_run_id, change_type) for "what happened in this sync?" views.
 """
-from datetime import datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from app.models import db
 
 
@@ -24,7 +25,7 @@ class SyncRun(db.Model):
     __tablename__ = 'sync_runs'
 
     id = db.Column(db.Integer, primary_key=True)
-    started_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    started_at = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None), index=True)
     completed_at = db.Column(db.DateTime)
     status = db.Column(db.String(20), default='running', index=True)
 
@@ -70,7 +71,7 @@ class ChangeLog(db.Model):
     sync_run_id = db.Column(
         db.Integer, db.ForeignKey('sync_runs.id'), nullable=False, index=True
     )
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None), index=True)
 
     # 'course', 'instructor', 'student_count'
     entity_type = db.Column(db.String(30), nullable=False, index=True)

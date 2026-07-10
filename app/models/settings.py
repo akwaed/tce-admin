@@ -18,7 +18,11 @@ class SystemSetting(db.Model):
     key = db.Column(db.String(100), primary_key=True)
     value = db.Column(db.Text, nullable=True)
     description = db.Column(db.String(500))
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = db.Column(
+        db.DateTime,
+        default=lambda: datetime.now(UTC).replace(tzinfo=None),
+        onupdate=lambda: datetime.now(UTC).replace(tzinfo=None),
+    )
     updated_by_id = db.Column(db.Integer, db.ForeignKey('admins.id'), nullable=True)
 
     # Relationship
