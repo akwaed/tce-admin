@@ -8,7 +8,9 @@ This script:
 1. Boots the Flask app with the same config the web process uses.
 2. Verifies the core course tables are present.
 3. Ensures the additive sync history tables (sync_runs, change_log) exist.
-4. Adds any missing indexes needed for PostgreSQL performance at scale.
+4. Adds any missing columns on existing tables (e.g. blue_sync_datasources.column_renames).
+5. Adds any missing indexes needed for PostgreSQL performance at scale.
+6. Seeds default Blue datasources (including DRA Data151 when missing).
 
 It does NOT drop or rewrite any existing Course / Instructor / College /
 Department data.
@@ -199,11 +201,109 @@ def _seed_blue_datasources():
     db.session.commit()
 
 
+def _sql_type_for_column(col, dialect_name: str) -> str:
+    """Best-effort SQL type string for ADD COLUMN on existing tables."""
+    from sqlalchemy import Boolean, DateTime, Integer, String, Text
+    from sqlalchemy.dialects.postgresql import JSONB
+    from sqlalchemy.sql.sqltypes import JSON as SAJSON
+
+    t = col.type
+    # Prefer dialect-compiled type when possible
+    try:
+        compiled = t.compile(dialect=db.engine.dialect)
+        if compiled:
+            return str(compiled)
+    except Exception:
+        pass
+
+    if isinstance(t, Boolean):
+        return 'BOOLEAN' if 'postgresql' in dialect_name else 'INTEGER'
+    if isinstance(t, Integer):
+        return 'INTEGER'
+    if isinstance(t, DateTime):
+        return 'TIMESTAMP' if 'postgresql' in dialect_name else 'DATETIME'
+    if isinstance(t, Text):
+        return 'TEXT'
+    if isinstance(t, String):
+        length = getattr(t, 'length', None) or 255
+        return f'VARCHAR({length})'
+    # JSON / JSONB
+    if 'postgresql' in dialect_name:
+        return 'JSONB'
+    return 'TEXT'  # SQLite JSON affinity is fine as TEXT
+
+
+def _ensure_missing_model_columns(model, inspector) -> list[str]:
+    """ADD COLUMN for model fields missing from an existing table (non-destructive).
+
+    SQLAlchemy create_all() never adds columns to existing tables — this closes
+    that gap for additive schema drift (e.g. column_renames on blue_sync_datasources).
+    """
+    table_name = model.__tablename__
+    if not inspector.has_table(table_name):
+        return []
+
+    existing = {c['name'] for c in inspector.get_columns(table_name)}
+    dialect_name = str(db.engine.url.drivername)
+    added: list[str] = []
+
+    for col in model.__table__.columns:
+        if col.name in existing:
+            continue
+        # Skip pure PK autoincrement if somehow missing (should not happen)
+        sql_type = _sql_type_for_column(col, dialect_name)
+        nullable = 'NULL' if col.nullable else 'NOT NULL'
+        default_sql = ''
+        if col.default is not None and col.default.is_scalar:
+            val = col.default.arg
+            if isinstance(val, bool):
+                default_sql = f" DEFAULT {'TRUE' if val else 'FALSE'}" if 'postgresql' in dialect_name else f" DEFAULT {1 if val else 0}"
+            elif isinstance(val, (int, float)):
+                default_sql = f' DEFAULT {val}'
+            elif isinstance(val, str):
+                default_sql = f" DEFAULT '{val.replace(chr(39), chr(39)+chr(39))}'"
+        elif not col.nullable and col.default is None and col.server_default is None:
+            # Avoid failing NOT NULL adds without a default on populated tables
+            nullable = 'NULL'
+
+        # IF NOT EXISTS is supported on Postgres 9.1+ and modern SQLite
+        stmt = (
+            f'ALTER TABLE {table_name} '
+            f'ADD COLUMN IF NOT EXISTS {col.name} {sql_type} {nullable}{default_sql}'
+        )
+        try:
+            db.session.execute(text(stmt))
+            added.append(f'{table_name}.{col.name}')
+        except Exception as exc:
+            # SQLite < 3.35 may not support IF NOT EXISTS on ADD COLUMN
+            if 'duplicate column' in str(exc).lower() or 'already exists' in str(exc).lower():
+                continue
+            # Retry without IF NOT EXISTS
+            try:
+                stmt2 = (
+                    f'ALTER TABLE {table_name} '
+                    f'ADD COLUMN {col.name} {sql_type} {nullable}{default_sql}'
+                )
+                db.session.execute(text(stmt2))
+                added.append(f'{table_name}.{col.name}')
+            except Exception as exc2:
+                print(f'WARNING: could not add {table_name}.{col.name}: {exc2}')
+
+    if added:
+        db.session.commit()
+    return added
+
+
 def _ensure_users_column_list():
     """Ensure Data144 columns include UKID_NBR, STU_OBJ_ID, BLUE_ROLE, etc."""
     from datetime import datetime, timezone
     UTC = timezone.utc
-    row = BlueSyncDatasource.query.filter_by(datasource_id='Data144').first()
+    try:
+        row = BlueSyncDatasource.query.filter_by(datasource_id='Data144').first()
+    except Exception as exc:
+        print(f'WARNING: could not load Data144 row (schema still migrating?): {exc}')
+        db.session.rollback()
+        return
     if not row:
         return
     seed = next(d for d in INITIAL_BLUE_DATASOURCES if d['datasource_id'] == 'Data144')
@@ -225,6 +325,49 @@ def _ensure_users_column_list():
     row.updated_at = datetime.now(UTC).replace(tzinfo=None)
     db.session.commit()
     print(f'Updated Data144 columns; added: {", ".join(added)}')
+
+
+def _ensure_dra_datasource():
+    """Register DRA (Data151) if missing — college/dept admin report viewers."""
+    from datetime import datetime, timezone
+    UTC = timezone.utc
+    try:
+        existing = BlueSyncDatasource.query.filter_by(datasource_id='Data151').first()
+    except Exception as exc:
+        print(f'WARNING: could not check Data151: {exc}')
+        db.session.rollback()
+        return
+    if existing:
+        print('DRA datasource Data151 already registered.')
+        return
+    now = datetime.now(UTC).replace(tzinfo=None)
+    row = BlueSyncDatasource(
+        datasource_id='Data151',
+        display_name='DRA Report Viewers',
+        legacy_key='dra',
+        block_name='ReportViewersToUsers',
+        csv_file='DRA.csv',  # generated by scripts/dra_sync.py
+        source_type='generated_csv',
+        import_order=5,
+        is_active=True,
+        is_system=False,
+        wait_after_seconds=300,
+        columns=['source_1', 'target_1', 'targetType'],
+        required_columns=['source_1', 'target_1', 'targetType'],
+        column_renames={
+            'source': 'source_1',
+            'target': 'target_1',
+        },
+        notes=(
+            'College/department admin → Blue report-viewer relationships. '
+            'Generated by scripts/dra_sync.py (or tracking DRA export).'
+        ),
+        created_at=now,
+        updated_at=now,
+    )
+    db.session.add(row)
+    db.session.commit()
+    print('Seeded DRA datasource Data151 (ReportViewersToUsers).')
 
 
 def main() -> int:
@@ -261,6 +404,17 @@ def main() -> int:
 
         # Re-inspect after potential table creation.
         inspector = inspect(db.engine)
+        # Additive column upgrades (create_all never ALTERs existing tables).
+        from app.models.admin import Admin
+        col_added = []
+        for model in (BlueSyncDatasource, Admin, DataFileSyncEvent):
+            col_added.extend(_ensure_missing_model_columns(model, inspector))
+        if col_added:
+            print('Added missing columns:', ', '.join(col_added))
+        else:
+            print('No missing model columns on blue_sync_datasources / admins.')
+
+        inspector = inspect(db.engine)
         _ensure_indexes(inspector)
 
         backend = db.engine.url.drivername
@@ -282,6 +436,8 @@ def main() -> int:
             else:
                 # Keep Users (Data144) columns current without a full reseed.
                 _ensure_users_column_list()
+            # DRA (college/dept admin report viewers) → Data151
+            _ensure_dra_datasource()
 
         if _is_postgres():
             try:
