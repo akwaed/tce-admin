@@ -98,20 +98,24 @@ def config_from_db_row(row) -> DatasourceConfig:
     if is_users:
         column_map.setdefault("FIRSTNAME", "FIRSTNAME_1")
         column_map.setdefault("LASTNAME", "LASTNAME_1")
+        column_map.setdefault("UKID_NBR", "UKID_NBR")
+        column_map.setdefault("STU_OBJ_ID", "STU_OBJ_ID")
         column_map.setdefault("BLUE_ROLE", "BLUE_ROLE")
 
     key = getattr(row, "legacy_key", None) or row.datasource_id
     batch_size = 500 if is_users else 500
 
     columns = list(row.columns or [])
-    # Production DB rows may predate BLUE_ROLE on Users — keep pushes current
+    # Production DB rows may predate newer Users fields — keep pushes current
     # without requiring a manual schema reseed.
     if is_users:
         default_users_cols = list(DEFAULT_DATASOURCES["users"].columns)
         if not columns:
             columns = default_users_cols
-        elif "BLUE_ROLE" not in columns:
-            columns = list(columns) + ["BLUE_ROLE"]
+        else:
+            missing = [c for c in default_users_cols if c not in columns]
+            if missing:
+                columns = list(columns) + missing
 
     return DatasourceConfig(
         key=key,

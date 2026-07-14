@@ -19,8 +19,8 @@ Fixes three known bugs from the BlueSyncService integration:
   Bug 3 — HASH column contains corrupted Python memory-address strings
     The HASH column is silently dropped during CSV loading.
 
-Also pushes BLUE_ROLE (Explorance Blue user-type id), e.g. 23 staff / 03
-student / 528 super admin.
+Also pushes UKID_NBR, STU_OBJ_ID, and BLUE_ROLE (Explorance Blue user-type
+id, e.g. 23 staff / 03 student / 528 super admin).
 
 Usage:
     # Dry run — validate CSV + BLUE_ROLE, no SOAP (no API key needed)
@@ -96,6 +96,8 @@ TIMEOUT_FINALIZE_MAX = 1800
 # Also accepts FIRST_NAME / LAST_NAME (strip_hash_column rename).
 COLUMN_MAP: Dict[str, str] = {
     'USER_ID':          'USER_ID',
+    'UKID_NBR':         'UKID_NBR',
+    'STU_OBJ_ID':       'STU_OBJ_ID',
     'FIRSTNAME':        'FIRSTNAME_1',
     'FIRST_NAME':       'FIRSTNAME_1',
     'LASTNAME':         'LASTNAME_1',
@@ -108,6 +110,8 @@ COLUMN_MAP: Dict[str, str] = {
 # Columns that Blue expects, in order
 BLUE_COLUMNS = [
     'USER_ID',
+    'UKID_NBR',
+    'STU_OBJ_ID',
     'FIRSTNAME_1',
     'LASTNAME_1',
     'EMAIL',
@@ -115,9 +119,10 @@ BLUE_COLUMNS = [
     'BLUE_ROLE',
 ]
 
-# Required for a valid Users push (SECONDARY_EMAIL / BLUE_ROLE optional in
-# the sense that the CSV may omit them — but BLUE_ROLE is strongly preferred).
+# Required for a valid Users push. Identity fields + BLUE_ROLE are preferred
+# when present in the CSV; they are not hard-required so older files still load.
 REQUIRED_BLUE_COLUMNS = ['USER_ID', 'FIRSTNAME_1', 'LASTNAME_1', 'EMAIL']
+PREFERRED_OPTIONAL_COLUMNS = ['UKID_NBR', 'STU_OBJ_ID', 'BLUE_ROLE', 'SECONDARY_EMAIL']
 
 
 # ============================================================================
@@ -483,11 +488,11 @@ def load_users_csv(csv_path: str) -> Tuple[List[str], List[List[str]], int, Coun
         print(f"        CSV headers: {', '.join(csv_fieldnames)}")
         sys.exit(1)
 
-    if 'BLUE_ROLE' not in blue_columns:
-        print("[WARN] BLUE_ROLE not found in Users.csv — roles will not be pushed.")
-        print("       Expected a BLUE_ROLE column (e.g. 23, 03, 528).")
-    else:
-        print("[ok] BLUE_ROLE column detected — will be included in the push.")
+    for col in PREFERRED_OPTIONAL_COLUMNS:
+        if col in blue_columns:
+            print(f"[ok] {col} column detected — will be included in the push.")
+        else:
+            print(f"[WARN] {col} not found in Users.csv — will not be pushed.")
 
     rows: List[List[str]] = []
     blank_name_count = 0

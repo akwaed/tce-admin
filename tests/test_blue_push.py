@@ -58,9 +58,9 @@ class TestCsvLoader(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "Users.csv"
             path.write_text(
-                "USER_ID,FIRSTNAME,LASTNAME,EMAIL,BLUE_ROLE,HASH\n"
-                "u1,Ann,Lee,a@x.com,23,<object at 0xdead>\n"
-                "u2,Bob,Kay,b@x.com,528,<object at 0xbeef>\n",
+                "USER_ID,UKID_NBR,STU_OBJ_ID,FIRSTNAME,LASTNAME,EMAIL,BLUE_ROLE,HASH\n"
+                "u1,100,200,Ann,Lee,a@x.com,23,<object at 0xdead>\n"
+                "u2,101,201,Bob,Kay,b@x.com,528,<object at 0xbeef>\n",
                 encoding="utf-8",
             )
             loaded = load_datasource_csv(str(path), DEFAULT_DATASOURCES["users"])
@@ -68,12 +68,25 @@ class TestCsvLoader(unittest.TestCase):
             self.assertIn("HASH", loaded.dropped_columns)
             self.assertEqual(
                 loaded.columns,
-                ["USER_ID", "FIRSTNAME_1", "LASTNAME_1", "EMAIL", "BLUE_ROLE"],
+                [
+                    "USER_ID",
+                    "UKID_NBR",
+                    "STU_OBJ_ID",
+                    "FIRSTNAME_1",
+                    "LASTNAME_1",
+                    "EMAIL",
+                    "BLUE_ROLE",
+                ],
             )
-            self.assertEqual(loaded.rows[0], ["u1", "Ann", "Lee", "a@x.com", "23"])
+            self.assertEqual(
+                loaded.rows[0],
+                ["u1", "100", "200", "Ann", "Lee", "a@x.com", "23"],
+            )
             self.assertEqual(loaded.rows[1][-1], "528")
             self.assertNotIn("HASH", loaded.columns)
             self.assertIn("BLUE_ROLE", DEFAULT_DATASOURCES["users"].columns)
+            self.assertIn("UKID_NBR", DEFAULT_DATASOURCES["users"].columns)
+            self.assertIn("STU_OBJ_ID", DEFAULT_DATASOURCES["users"].columns)
 
     def test_only_present_columns_used(self):
         with tempfile.TemporaryDirectory() as td:

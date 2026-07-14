@@ -154,6 +154,8 @@ INITIAL_BLUE_DATASOURCES = [
         'wait_after_seconds': 300,
         'columns': [
             'USER_ID',
+            'UKID_NBR',
+            'STU_OBJ_ID',
             'FIRSTNAME_1',
             'LASTNAME_1',
             'EMAIL',
@@ -197,29 +199,32 @@ def _seed_blue_datasources():
     db.session.commit()
 
 
-def _ensure_users_blue_role_column():
-    """Append BLUE_ROLE to existing Data144 column lists if missing."""
+def _ensure_users_column_list():
+    """Ensure Data144 columns include UKID_NBR, STU_OBJ_ID, BLUE_ROLE, etc."""
     from datetime import datetime, timezone
     UTC = timezone.utc
     row = BlueSyncDatasource.query.filter_by(datasource_id='Data144').first()
     if not row:
         return
+    seed = next(d for d in INITIAL_BLUE_DATASOURCES if d['datasource_id'] == 'Data144')
+    desired = list(seed['columns'])
     cols = list(row.columns or [])
-    if 'BLUE_ROLE' in cols:
-        return
     if not cols:
-        # Fall back to the seed definition for a complete list.
-        seed = next(d for d in INITIAL_BLUE_DATASOURCES if d['datasource_id'] == 'Data144')
-        row.columns = list(seed['columns'])
+        row.columns = desired
+        added = desired
     else:
-        row.columns = cols + ['BLUE_ROLE']
+        added = [c for c in desired if c not in cols]
+        if not added:
+            return
+        # Preserve existing order; append newly required fields.
+        row.columns = cols + added
     renames = dict(row.column_renames or {})
     renames.setdefault('FIRSTNAME', 'FIRSTNAME_1')
     renames.setdefault('LASTNAME', 'LASTNAME_1')
     row.column_renames = renames
     row.updated_at = datetime.now(UTC).replace(tzinfo=None)
     db.session.commit()
-    print('Updated Data144 columns to include BLUE_ROLE.')
+    print(f'Updated Data144 columns; added: {", ".join(added)}')
 
 
 def main() -> int:
@@ -276,7 +281,7 @@ def main() -> int:
                 print('Seeded 4 initial Blue datasources.')
             else:
                 # Keep Users (Data144) columns current without a full reseed.
-                _ensure_users_blue_role_column()
+                _ensure_users_column_list()
 
         if _is_postgres():
             try:

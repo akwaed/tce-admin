@@ -97,9 +97,12 @@ DEFAULT_DATASOURCES: Dict[str, DatasourceConfig] = {
         display_name="Users",
         csv_file="Users.csv",
         # Blue expects FIRSTNAME_1 / LASTNAME_1 (Bug 1 fix).
+        # UKID_NBR / STU_OBJ_ID are UK person identifiers from HANA.
         # BLUE_ROLE is the Explorance Blue user-type id (e.g. 23 staff, 528 super admin).
         columns=[
             "USER_ID",
+            "UKID_NBR",
+            "STU_OBJ_ID",
             "FIRSTNAME_1",
             "LASTNAME_1",
             "EMAIL",
@@ -109,6 +112,8 @@ DEFAULT_DATASOURCES: Dict[str, DatasourceConfig] = {
         required_columns=["USER_ID", "FIRSTNAME_1", "LASTNAME_1", "EMAIL"],
         column_map={
             "USER_ID": "USER_ID",
+            "UKID_NBR": "UKID_NBR",
+            "STU_OBJ_ID": "STU_OBJ_ID",
             "FIRSTNAME": "FIRSTNAME_1",
             "LASTNAME": "LASTNAME_1",
             "EMAIL": "EMAIL",
