@@ -9,9 +9,12 @@ Runs standalone (no web request needed) — safe to call from cron or
 daily_sync.sh without touching the running Flask app's connection pool.
 
 Usage:
-    python scripts/dra_sync.py [--dry-run]
+    python scripts/dra_sync.py [--dry-run] [--new-codes]
 
-    --dry-run   Generate the CSV and print a preview, but do NOT push to Blue.
+    --dry-run     Generate rows and print a preview, but do NOT push to Blue.
+    --new-codes   Emit new CLASS_COLLEGE_SHORT codes (BE, CI, …). Default is
+                  old Blue hierarchy node ids via datasources/dra_mapping_file.csv
+                  (BE→8F000, CI→8M000, AG→81010, …).
 
 Exit codes:
     0  success
@@ -68,6 +71,44 @@ def _clean_dra_source(value) -> str:
     return str(value).strip() if value is not None else ''
 
 
+# ---------------------------------------------------------------------------
+# College code mapping (new CLASS_COLLEGE_SHORT → old Blue hierarchy Node Id)
+# Blue DRA still expects the *old* college codes (e.g. BE→8F000, CI→8M000).
+# ---------------------------------------------------------------------------
+_DRA_MAPPING: dict[str, str] | None = None
+
+
+def _load_dra_mapping() -> dict[str, str]:
+    """Load New Node Id → Node Id from datasources/dra_mapping_file.csv."""
+    global _DRA_MAPPING
+    if _DRA_MAPPING is not None:
+        return _DRA_MAPPING
+
+    mapping_path = PROJECT_ROOT / 'datasources' / 'dra_mapping_file.csv'
+    _DRA_MAPPING = {}
+    if mapping_path.exists():
+        with mapping_path.open('r', encoding='utf-8-sig') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                new_id = (row.get('New Node Id') or '').strip()
+                old_id = (row.get('Node Id') or '').strip()
+                # Keys stored uppercase for case-insensitive lookup
+                if new_id and old_id and new_id.upper() != old_id.upper():
+                    _DRA_MAPPING[new_id.upper()] = old_id
+    else:
+        log(f"WARNING: DRA mapping file not found at {mapping_path} — "
+            f"college sources will use new codes as-is.")
+    return _DRA_MAPPING
+
+
+def _map_college_to_old_code(college_code: str) -> str:
+    """Translate new college short code to old Blue node id when mapped."""
+    code = _clean_dra_source(college_code)
+    if not code:
+        return code
+    return _load_dra_mapping().get(code.upper(), code)
+
+
 def _resolve_college_code_from_courses(college_value) -> str | None:
     """Resolve a stored college value to CLASS_COLLEGE_SHORT from synced Courses.csv data."""
     from app.models import db
@@ -86,13 +127,33 @@ def _resolve_college_code_from_courses(college_value) -> str | None:
     return college.code if college else None
 
 
-def _get_college_source(admin) -> tuple[str | None, str | None]:
+def _get_college_source(
+    admin,
+    *,
+    use_new_codes: bool = False,
+) -> tuple[str | None, str | None]:
+    """Return C4 source for a college admin.
+
+    By default (*use_new_codes=False*) maps through dra_mapping_file.csv so
+    Blue receives the old hierarchy Node Id (e.g. BE → 8F000).
+    """
     college_code = _resolve_college_code_from_courses(admin.college_code)
     if college_code:
+        if not use_new_codes:
+            college_code = _map_college_to_old_code(college_code)
         return college_code, None
 
-    if admin.college_code:
-        return None, f"College not found in synced Courses.csv data: {admin.college_code} ({admin.linkblue})"
+    # Fallback: admin.college_code may already be a short code (BE, CI, …)
+    raw = _clean_dra_source(admin.college_code)
+    if raw:
+        if not use_new_codes:
+            mapped = _map_college_to_old_code(raw)
+            if mapped != raw or raw in _load_dra_mapping().values():
+                return mapped, None
+        return None, (
+            f"College not found in synced Courses.csv data: "
+            f"{admin.college_code} ({admin.linkblue})"
+        )
     return None, f"No college code for college admin {admin.linkblue}"
 
 
@@ -136,15 +197,32 @@ def _get_department_sources(admin) -> tuple[list[str], list[str]]:
     return [], [f"No department ID for dept admin {admin.linkblue}"]
 
 
-def generate_dra_rows(app_ctx) -> tuple[list[list], list[str]]:
+def generate_dra_rows(
+    app_ctx,
+    *,
+    use_new_codes: bool = False,
+) -> tuple[list[list], list[str]]:
     """Return (rows, errors) where each row is [source, target, targetType].
 
     Must be called inside a Flask app context.
+
+    *use_new_codes*:
+      False (default) — map college C4 sources via dra_mapping_file.csv
+                        (old Blue node ids: 8F000, 81010, …)
+      True            — emit new CLASS_COLLEGE_SHORT codes (BE, AG, CI, …)
     """
     from app.models.admin import Admin
 
     rows: list[list] = []
     errors: list[str] = []
+
+    # Log mapping mode once per run
+    if not use_new_codes:
+        mapping = _load_dra_mapping()
+        log(f"  College code mode: OLD Blue node ids "
+            f"({len(mapping)} mappings from dra_mapping_file.csv)")
+    else:
+        log("  College code mode: NEW CLASS_COLLEGE_SHORT codes (no mapping)")
 
     admins = Admin.query.filter(
         Admin.is_active == True,
@@ -161,7 +239,9 @@ def generate_dra_rows(app_ctx) -> tuple[list[list], list[str]]:
                     rows.append([class_id, admin.linkblue, 'CRS1'])
 
             elif admin.contact_type == 'College' or admin.role == 'college_admin':
-                college_source, college_error = _get_college_source(admin)
+                college_source, college_error = _get_college_source(
+                    admin, use_new_codes=use_new_codes,
+                )
                 if college_error:
                     errors.append(college_error)
                     continue
@@ -433,6 +513,9 @@ def push_to_blue(api_key: str, ws_url: str, rows: list) -> bool:
 
 def main() -> int:
     dry_run = '--dry-run' in sys.argv
+    # Default: old Blue hierarchy node ids. Pass --new-codes only if Blue
+    # hierarchy has been fully migrated to CLASS_COLLEGE_SHORT.
+    use_new_codes = '--new-codes' in sys.argv
 
     log("=" * 60)
     log("TCE Admin DRA Sync" + (" (DRY RUN)" if dry_run else ""))
@@ -448,18 +531,21 @@ def main() -> int:
         api_key = SystemSetting.get(SystemSetting.BLUE_API_KEY)
         ws_url  = SystemSetting.get(SystemSetting.BLUE_WS_URL) or BLUE_WS_URL_DEFAULT
 
-        if not api_key:
+        if not api_key and not dry_run:
             log("ERROR: Blue API key not configured. "
                 "Set it in Settings → Blue API Configuration.")
             return 1
 
         log(f"Target   : {DATASOURCE_ID} / {BLOCK_NAME}")
         log(f"Endpoint : {ws_url}")
-        log(f"API key  : {api_key[:8]}...{api_key[-4:]}")
+        if api_key:
+            log(f"API key  : {api_key[:8]}...{api_key[-4:]}")
+        else:
+            log("API key  : (not required for dry-run)")
 
-        # Generate DRA rows from live DB
+        # Generate DRA rows from live DB (old college codes by default)
         log("Generating DRA data from database...")
-        rows, errors = generate_dra_rows(app)
+        rows, errors = generate_dra_rows(app, use_new_codes=use_new_codes)
         log(f"  {len(rows):,} rows generated, {len(errors)} warning(s)")
         for e in errors[:10]:
             log(f"  WARN: {e}")
@@ -472,10 +558,25 @@ def main() -> int:
 
         # Dry-run: show sample and exit
         if dry_run:
-            log("\nDRY RUN — sample rows (first 10):")
+            c4 = [r for r in rows if r[2] == 'C4']
+            log("\nDRY RUN — sample college (C4) rows (first 10):")
+            log("source, target, targetType")
+            for row in c4[:10]:
+                log(f"  {','.join(str(v) for v in row)}")
+            log("\nDRY RUN — sample rows overall (first 10):")
             log("source, target, targetType")
             for row in rows[:10]:
                 log(f"  {','.join(str(v) for v in row)}")
+            # Sanity: flag any C4 still using 2-letter new codes
+            still_new = [
+                r for r in c4
+                if len(str(r[0])) <= 3 and str(r[0]).isalpha()
+            ]
+            if still_new and not use_new_codes:
+                log(f"\nWARN: {len(still_new)} C4 row(s) still look like new short codes "
+                    f"(mapping may be incomplete). Examples:")
+                for r in still_new[:5]:
+                    log(f"  {','.join(str(v) for v in r)}")
             log(f"\nTotal rows that would be pushed: {len(rows):,}")
             log("Dry run complete — no data was sent to Blue.")
             return 0
