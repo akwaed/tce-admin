@@ -85,8 +85,12 @@ DEFAULT_CSV_PATH = "datasources/Users.csv"
 # Timeouts (seconds)
 TIMEOUT_REGISTER = 30
 TIMEOUT_PUSH_BATCH = 180
-TIMEOUT_PREPARE = 600   # 10 minutes (Bug 2 fix)
-TIMEOUT_FINALIZE = 300  #  5 minutes
+# Prepare is the slow step for full Users (~140k rows). 600s is too short
+# for Data144; scale by row count (see recommended_prepare_timeout).
+TIMEOUT_PREPARE = 600          # minimum / historical Bug-2 default
+TIMEOUT_PREPARE_MAX = 3600     # 1 hour hard cap unless CLI overrides
+TIMEOUT_FINALIZE = 600         # finalize can also be slow for large sets
+TIMEOUT_FINALIZE_MAX = 1800
 
 # The CSV column → Blue column mapping (Bug 1 fix).
 # Also accepts FIRST_NAME / LAST_NAME (strip_hash_column rename).
@@ -269,6 +273,26 @@ def soap_get_current_process(api_key: str) -> str:
 # API HELPERS
 # ============================================================================
 
+def recommended_prepare_timeout(row_count: int, base: int = TIMEOUT_PREPARE) -> int:
+    """Scale Prepare timeout by payload size.
+
+    Full Users (~140k rows) routinely needs 20–45+ minutes on Blue.
+    Formula: ~1s per 40 rows, clamped to [base, TIMEOUT_PREPARE_MAX].
+    """
+    if row_count <= 0:
+        return base
+    scaled = max(base, int(row_count / 40))
+    return min(scaled, TIMEOUT_PREPARE_MAX)
+
+
+def recommended_finalize_timeout(row_count: int, base: int = TIMEOUT_FINALIZE) -> int:
+    """Scale Finalize timeout modestly by payload size."""
+    if row_count <= 0:
+        return base
+    scaled = max(base, int(row_count / 100))
+    return min(scaled, TIMEOUT_FINALIZE_MAX)
+
+
 def call_soap(ws_url: str, payload: str, action: str,
               timeout: int = 180) -> requests.Response:
     """Make a SOAP API call to Blue."""
@@ -276,8 +300,13 @@ def call_soap(ws_url: str, payload: str, action: str,
         'Content-Type': 'text/xml; charset=UTF-8',
         'SOAPAction': f'http://tempuri.org/IBlueWebService/{action}',
     }
-    return requests.post(ws_url, headers=headers,
-                         data=payload.encode('utf-8'), timeout=timeout)
+    # (connect timeout, read timeout) — prepare can sit idle while Blue works
+    return requests.post(
+        ws_url,
+        headers=headers,
+        data=payload.encode('utf-8'),
+        timeout=(30, timeout),
+    )
 
 
 def check_response(response: requests.Response, action: str) -> Tuple[bool, str, bool]:
@@ -655,6 +684,10 @@ def push_users_to_blue(
     filter_role: Optional[str] = None,
     apply_super_admin_roles: bool = False,
     sample_limit: int = 10,
+    prepare_timeout: Optional[int] = None,
+    finalize_timeout: Optional[int] = None,
+    cancel_on_timeout: bool = False,
+    prepare_retries: int = 2,
 ) -> int:
     """Push Users.csv to Explorance Blue via SOAP API.
 
@@ -849,27 +882,78 @@ def push_users_to_blue(
         print()
 
         # --------------------------------------------------------------
-        # Step 5 — PrepareDataToFinalizeImportV2 (Bug 2 fix: 600 s)
+        # Step 5 — PrepareDataToFinalizeImportV2
+        # Full Users (~140k) routinely exceeds the old 600s client timeout.
+        # Scale by row count; retry without cancelling (server may still be
+        # validating when the first client read timeout fires).
         # --------------------------------------------------------------
-        print("[3/4] Validating import (this can take several minutes "
-              "for large datasets)...")
-        print(f"      timeout: {TIMEOUT_PREPARE}s")
-        payload = soap_prepare_finalize(api_key, transaction_id)
-        try:
-            response = call_soap(ws_url, payload,
-                                 "PrepareDataToFinzalizeImportV2",
-                                 timeout=TIMEOUT_PREPARE)
-        except requests.exceptions.Timeout:
-            print(f"[ERROR] Timeout after {TIMEOUT_PREPARE}s on "
-                  f"PrepareDataToFinalizeImportV2.")
-            print("        If this persists, the dataset may be too large "
-                  "for Blue to validate.")
-            print("        Import cancelled.")
-            if transaction_id:
-                cancel_import(api_key, ws_url, transaction_id)
-            return 1
+        prep_timeout = (
+            prepare_timeout
+            if prepare_timeout is not None
+            else recommended_prepare_timeout(len(rows))
+        )
+        fin_timeout = (
+            finalize_timeout
+            if finalize_timeout is not None
+            else recommended_finalize_timeout(len(rows))
+        )
+        retries = max(1, int(prepare_retries))
 
-        if verbose:
+        print("[3/4] Validating import (this can take a long time "
+              "for large datasets)...")
+        print(f"      rows={len(rows):,}  prepare_timeout={prep_timeout}s  "
+              f"retries={retries}  cancel_on_timeout={cancel_on_timeout}")
+        if len(rows) > 50_000 and prep_timeout < 1800:
+            print("      [hint] For full Users, prefer --prepare-timeout 3600")
+
+        response = None
+        for attempt in range(1, retries + 1):
+            # Stretch timeout slightly on later attempts
+            attempt_timeout = prep_timeout if attempt == 1 else min(
+                prep_timeout + 600 * (attempt - 1),
+                max(prep_timeout, TIMEOUT_PREPARE_MAX),
+            )
+            print(f"      Prepare attempt {attempt}/{retries} "
+                  f"(timeout {attempt_timeout}s)...")
+            payload = soap_prepare_finalize(api_key, transaction_id)
+            try:
+                response = call_soap(
+                    ws_url, payload,
+                    "PrepareDataToFinzalizeImportV2",
+                    timeout=attempt_timeout,
+                )
+                break
+            except requests.exceptions.Timeout:
+                print(f"[WARN] Prepare attempt {attempt}/{retries} timed out "
+                      f"after {attempt_timeout}s "
+                      f"(TransactionID={transaction_id}).")
+                if attempt < retries:
+                    # Give Blue time to finish server-side work before retry
+                    wait_s = min(120, 30 * attempt)
+                    print(f"       Waiting {wait_s}s then retrying prepare "
+                          f"(import NOT cancelled)...")
+                    time.sleep(wait_s)
+                    continue
+
+                print(f"[ERROR] Timeout after {retries} prepare attempt(s) "
+                      f"on PrepareDataToFinalizeImportV2.")
+                print("        All batches were already uploaded successfully.")
+                print(f"        TransactionID: {transaction_id}")
+                print("        Blue may still be validating server-side.")
+                print("        Re-run with a longer timeout, e.g.:")
+                print(f"          python scripts/push_users_to_blue.py "
+                      f"--prepare-timeout 3600")
+                print("        Do NOT re-push batches while this transaction "
+                      f"is still active — check Blue import status first.")
+                if cancel_on_timeout and transaction_id:
+                    print("        --cancel-on-timeout set: cancelling import.")
+                    cancel_import(api_key, ws_url, transaction_id)
+                else:
+                    print("        Import left open (not cancelled) so Blue "
+                          "can finish. Use Blue UI or CancelImport if stuck.")
+                return 1
+
+        if verbose and response is not None:
             print(f"  [SOAP] PrepareDataToFinzalizeImportV2 response:\n"
                   f"{response.text[:500]}\n")
 
@@ -886,20 +970,23 @@ def push_users_to_blue(
         print()
 
         # --------------------------------------------------------------
-        # Step 6 — FinalizeImport (timeout: 300 s)
+        # Step 6 — FinalizeImport
         # --------------------------------------------------------------
-        print("[4/4] Finalizing...")
+        print(f"[4/4] Finalizing (timeout {fin_timeout}s)...")
         payload = soap_finalize_import(api_key, transaction_id)
         try:
             response = call_soap(ws_url, payload, "FinalizeImport",
-                                 timeout=TIMEOUT_FINALIZE)
+                                 timeout=fin_timeout)
         except requests.exceptions.Timeout:
-            print(f"[ERROR] Timeout after {TIMEOUT_FINALIZE}s on "
-                  f"FinalizeImport.")
+            print(f"[ERROR] Timeout after {fin_timeout}s on FinalizeImport.")
+            print(f"        TransactionID: {transaction_id}")
             print("        Import may still complete on the Blue server.")
             print("        Check the Blue transaction log to confirm.")
-            if transaction_id:
+            if cancel_on_timeout and transaction_id:
+                print("        --cancel-on-timeout set: cancelling import.")
                 cancel_import(api_key, ws_url, transaction_id)
+            else:
+                print("        Import left open (not cancelled).")
             return 1
 
         if verbose:
@@ -933,9 +1020,12 @@ def push_users_to_blue(
 
     except requests.exceptions.Timeout as e:
         print(f"\n[ERROR] Timeout: {e}")
-        print("        Consider increasing timeouts or reducing --batch-size.")
-        if transaction_id:
+        print("        Consider --prepare-timeout 3600 or smaller --filter-*.")
+        if cancel_on_timeout and transaction_id:
             cancel_import(api_key, ws_url, transaction_id)
+        elif transaction_id:
+            print(f"        TransactionID {transaction_id} left open "
+                  f"(not cancelled).")
         return 1
 
     except Exception as e:
@@ -974,6 +1064,9 @@ Examples:
   # Push first 50 rows as a column-mapping test
   python scripts/push_users_to_blue.py --test-rows 50 --verbose
 
+  # Full push (prepare timeout auto-scales; override if needed)
+  python scripts/push_users_to_blue.py --prepare-timeout 3600
+
   # Full push with longer wait after previous datasources
   python scripts/push_users_to_blue.py --wait-before 600 --batch-size 500
 
@@ -983,6 +1076,8 @@ Environment variables:
   BLUE_DATASOURCE_ID     Blue datasource ID (or use --datasource-id)
   SUPER_ADMIN_LINKBLUES  Comma-separated LinkBlues for --apply-super-admin-roles
                          (also read from Admin table when Flask app is available)
+  BLUE_PREPARE_TIMEOUT   Override prepare timeout seconds
+  BLUE_FINALIZE_TIMEOUT  Override finalize timeout seconds
 """,
     )
 
@@ -1046,6 +1141,29 @@ Environment variables:
         '--verbose', action='store_true',
         help='Print raw SOAP responses for every call.',
     )
+    parser.add_argument(
+        '--prepare-timeout', type=int, default=None,
+        help='Seconds to wait for PrepareDataToFinalizeImportV2 '
+             f'(default: auto-scale by row count, max {TIMEOUT_PREPARE_MAX}s). '
+             'Also reads BLUE_PREPARE_TIMEOUT.',
+    )
+    parser.add_argument(
+        '--finalize-timeout', type=int, default=None,
+        help='Seconds to wait for FinalizeImport '
+             f'(default: auto-scale by row count, max {TIMEOUT_FINALIZE_MAX}s). '
+             'Also reads BLUE_FINALIZE_TIMEOUT.',
+    )
+    parser.add_argument(
+        '--prepare-retries', type=int, default=2,
+        help='How many prepare attempts on client timeout (default: 2). '
+             'Does not cancel between retries.',
+    )
+    parser.add_argument(
+        '--cancel-on-timeout', action='store_true',
+        help='Cancel the Blue import if prepare/finalize times out. '
+             'Default is to LEAVE the import open — cancelling often kills '
+             'server-side work that was still running.',
+    )
 
     args = parser.parse_args()
 
@@ -1076,6 +1194,23 @@ Environment variables:
             _normalize_id(p) for p in args.filter_users.split(',') if p.strip()
         }
 
+    # Timeout overrides: CLI > env > auto-scale (None)
+    prepare_timeout = args.prepare_timeout
+    if prepare_timeout is None and os.getenv('BLUE_PREPARE_TIMEOUT'):
+        try:
+            prepare_timeout = int(os.getenv('BLUE_PREPARE_TIMEOUT', ''))
+        except ValueError:
+            print("[WARN] Invalid BLUE_PREPARE_TIMEOUT; using auto-scale.")
+            prepare_timeout = None
+
+    finalize_timeout = args.finalize_timeout
+    if finalize_timeout is None and os.getenv('BLUE_FINALIZE_TIMEOUT'):
+        try:
+            finalize_timeout = int(os.getenv('BLUE_FINALIZE_TIMEOUT', ''))
+        except ValueError:
+            print("[WARN] Invalid BLUE_FINALIZE_TIMEOUT; using auto-scale.")
+            finalize_timeout = None
+
     return push_users_to_blue(
         csv_path=str(csv_path),
         api_key=api_key,
@@ -1095,6 +1230,10 @@ Environment variables:
         filter_role=args.filter_role,
         apply_super_admin_roles=args.apply_super_admin_roles,
         sample_limit=args.sample_limit,
+        prepare_timeout=prepare_timeout,
+        finalize_timeout=finalize_timeout,
+        cancel_on_timeout=args.cancel_on_timeout,
+        prepare_retries=args.prepare_retries,
     )
 
 
