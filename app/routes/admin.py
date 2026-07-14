@@ -14,6 +14,43 @@ from datetime import datetime
 
 admin_bp = Blueprint('admin', __name__)
 
+
+def _sync_super_admin_blue_role(linkblue, *, promote=True):
+    """Best-effort Users.csv BLUE_ROLE update when super-admin role changes.
+
+    Promotes to 528 or demotes to 23. Failures are logged via flash warning
+    but never block the admin CRUD flow — nightly hana_sync re-applies from DB.
+    """
+    try:
+        from app.services.blue_user_roles import (
+            SUPER_ADMIN_BLUE_ROLE,
+            DEFAULT_STAFF_BLUE_ROLE,
+            set_user_blue_role,
+        )
+        role = SUPER_ADMIN_BLUE_ROLE if promote else DEFAULT_STAFF_BLUE_ROLE
+        updated = set_user_blue_role(linkblue, role)
+        if updated:
+            action = 'promoted to' if promote else 'set to'
+            flash(
+                f'Users.csv BLUE_ROLE for {linkblue} {action} {role} '
+                f'(takes effect in Blue on next Users push).',
+                'info',
+            )
+        elif promote:
+            # LinkBlue may not exist in HANA Users yet (e.g. tceadmin fallback).
+            flash(
+                f'Note: {linkblue} was not found in Users.csv — BLUE_ROLE was not updated. '
+                f'If this LinkBlue appears after the next HANA sync, role 528 will be applied then.',
+                'warning',
+            )
+    except Exception as exc:
+        flash(
+            f'Could not update Users.csv BLUE_ROLE for {linkblue}: {exc}. '
+            f'Nightly HANA sync will still apply super-admin roles from the Admin table.',
+            'warning',
+        )
+
+
 def validate_course_assignment(course_prefix, course_number, department_ids, require_course=False, validate_department=True):
     """
     Validate a course coordinator assignment.
@@ -449,6 +486,9 @@ def add_admin():
             )
             db.session.commit()
 
+            if existing.role == 'super_admin':
+                _sync_super_admin_blue_role(existing.linkblue, promote=True)
+
             flash(f'Admin "{existing.full_name}" reactivated successfully.', 'success')
             return redirect(url_for('admin.list_admins'))
 
@@ -515,6 +555,10 @@ def add_admin():
             }
         )
         db.session.commit()
+
+        # Super admins need BLUE_ROLE=528 in Users.csv for Explorance Blue.
+        if admin.role == 'super_admin':
+            _sync_super_admin_blue_role(admin.linkblue, promote=True)
 
         flash(f'Admin "{admin.full_name}" created successfully.', 'success')
         return redirect(url_for('admin.list_admins'))
@@ -761,6 +805,8 @@ def edit_admin(admin_id):
                 )
                 db.session.commit()
 
+                _sync_super_admin_blue_role(admin.linkblue, promote=True)
+
                 flash(f'Admin "{admin.full_name}" elevated to Super Administrator.', 'success')
                 return redirect(url_for('admin.list_admins'))
 
@@ -786,6 +832,8 @@ def edit_admin(admin_id):
                     }
                 )
                 db.session.commit()
+
+                _sync_super_admin_blue_role(admin.linkblue, promote=False)
 
                 flash(f'Admin "{admin.full_name}" demoted to College Administrator.', 'success')
                 return redirect(url_for('admin.list_admins'))

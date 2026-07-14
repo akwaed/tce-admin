@@ -93,6 +93,10 @@ class HANADatasourceSync:
         'EMAIL', 'SECONDARY_EMAIL',
     ]
 
+    # Explorance Blue super-admin role id. LinkBlues are resolved dynamically
+    # from the Admin table (role=super_admin) — see _load_super_admin_user_ids.
+    SUPER_ADMIN_BLUE_ROLE = '528'
+
     def __init__(self, output_path=None):
         # Always resolve to an absolute path. If no output_path is supplied,
         # fall back to <project_root>/datasources so that running this script
@@ -104,6 +108,8 @@ class HANADatasourceSync:
         self.errors = []       # hard failures (DB query errors) — gate exit code
         self.warnings = []     # soft data-quality warnings (missing fields, dup keys)
         self.stats = {table: 0 for table in self.TABLES}
+        # Lazy-loaded set of uppercase LinkBlues that should get BLUE_ROLE=528.
+        self._super_admin_user_ids = None
         # Per-file diff results, populated by _sync_table().
         # Shape: { 'Courses.csv': { 'added': int, 'updated': int,
         #                           'removed': int, 'unchanged': int,
@@ -248,6 +254,7 @@ class HANADatasourceSync:
         section_key_index = column_names.index('SECTION_KEY') if 'SECTION_KEY' in column_names else -1
         email_index = column_names.index('EMAIL') if 'EMAIL' in column_names else -1
         user_id_index = column_names.index('USER_ID') if 'USER_ID' in column_names else -1
+        blue_role_index = column_names.index('BLUE_ROLE') if 'BLUE_ROLE' in column_names else -1
 
         # Diff key indices (composite primary key for change tracking).
         diff_key_cols = config.get('diff_keys') or ([config['key']] if 'key' in config else [])
@@ -289,6 +296,19 @@ class HANADatasourceSync:
                 email = rowdata[email_index]
                 if email and "'" in email:
                     rowdata[email_index] = f"{rowdata[user_id_index]}@uky.edu"
+
+            # Force Blue super-admin role for current system super admins.
+            # HANA overwrites Users.csv every night, so this must run on
+            # every sync or the role would revert to the HANA default (23).
+            # LinkBlues come from Admin.role == 'super_admin' (+ env override).
+            if (
+                table == 'USERS'
+                and blue_role_index >= 0
+                and user_id_index >= 0
+            ):
+                uid = rowdata[user_id_index]
+                if uid and str(uid).strip().upper() in self._get_super_admin_user_ids():
+                    rowdata[blue_role_index] = self.SUPER_ADMIN_BLUE_ROLE
 
             # Track for diff: stringified column-name -> value dict so the
             # comparison is independent of column ordering on disk.
@@ -432,6 +452,45 @@ class HANADatasourceSync:
                 self.warnings.append(msg)
                 return True
         return False
+
+    def _get_super_admin_user_ids(self):
+        """Return uppercase LinkBlues that must receive BLUE_ROLE=528.
+
+        Resolved dynamically from the TCE Admin DB (``admins.role ==
+        'super_admin'``) plus optional ``SUPER_ADMIN_LINKBLUES`` env var.
+        Cached for the lifetime of this sync run.
+        """
+        if self._super_admin_user_ids is not None:
+            return self._super_admin_user_ids
+
+        try:
+            from app.services.blue_user_roles import get_super_admin_linkblues
+            ids = get_super_admin_linkblues()
+        except Exception as e:
+            self.warnings.append(
+                f"Could not load super-admin LinkBlues for BLUE_ROLE override: {e}"
+            )
+            ids = set()
+            # Last-resort env parse without Flask (e.g. missing app deps).
+            env_raw = os.environ.get('SUPER_ADMIN_LINKBLUES', '') or ''
+            ids = {
+                p.strip().upper()
+                for p in env_raw.split(',')
+                if p.strip()
+            }
+
+        self._super_admin_user_ids = frozenset(ids)
+        if self._super_admin_user_ids:
+            print(
+                f"  Super-admin BLUE_ROLE={self.SUPER_ADMIN_BLUE_ROLE} for: "
+                f"{', '.join(sorted(self._super_admin_user_ids))}"
+            )
+        else:
+            print(
+                "  No super-admin LinkBlues found for BLUE_ROLE override "
+                "(Admin table empty of super_admins and SUPER_ADMIN_LINKBLUES unset)."
+            )
+        return self._super_admin_user_ids
 
     def _write_csv(self, filename, data):
         """Write data to CSV file."""

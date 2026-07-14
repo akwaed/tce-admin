@@ -152,7 +152,14 @@ INITIAL_BLUE_DATASOURCES = [
         'import_order': 4,
         'is_system': True,
         'wait_after_seconds': 300,
-        'columns': ['USER_ID', 'FIRSTNAME_1', 'LASTNAME_1', 'EMAIL', 'SECONDARY_EMAIL'],
+        'columns': [
+            'USER_ID',
+            'FIRSTNAME_1',
+            'LASTNAME_1',
+            'EMAIL',
+            'SECONDARY_EMAIL',
+            'BLUE_ROLE',
+        ],
         'required_columns': ['USER_ID', 'FIRSTNAME_1', 'LASTNAME_1', 'EMAIL'],
         # Bug fix port: remap CSV FIRSTNAME/LASTNAME -> Blue's _1 names
         'column_renames': {
@@ -188,6 +195,31 @@ def _seed_blue_datasources():
         )
         db.session.add(row)
     db.session.commit()
+
+
+def _ensure_users_blue_role_column():
+    """Append BLUE_ROLE to existing Data144 column lists if missing."""
+    from datetime import datetime, timezone
+    UTC = timezone.utc
+    row = BlueSyncDatasource.query.filter_by(datasource_id='Data144').first()
+    if not row:
+        return
+    cols = list(row.columns or [])
+    if 'BLUE_ROLE' in cols:
+        return
+    if not cols:
+        # Fall back to the seed definition for a complete list.
+        seed = next(d for d in INITIAL_BLUE_DATASOURCES if d['datasource_id'] == 'Data144')
+        row.columns = list(seed['columns'])
+    else:
+        row.columns = cols + ['BLUE_ROLE']
+    renames = dict(row.column_renames or {})
+    renames.setdefault('FIRSTNAME', 'FIRSTNAME_1')
+    renames.setdefault('LASTNAME', 'LASTNAME_1')
+    row.column_renames = renames
+    row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+    db.session.commit()
+    print('Updated Data144 columns to include BLUE_ROLE.')
 
 
 def main() -> int:
@@ -242,6 +274,9 @@ def main() -> int:
             if existing == 0:
                 _seed_blue_datasources()
                 print('Seeded 4 initial Blue datasources.')
+            else:
+                # Keep Users (Data144) columns current without a full reseed.
+                _ensure_users_blue_role_column()
 
         if _is_postgres():
             try:

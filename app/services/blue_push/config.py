@@ -96,8 +96,16 @@ DEFAULT_DATASOURCES: Dict[str, DatasourceConfig] = {
         datasource_id="Data144",
         display_name="Users",
         csv_file="Users.csv",
-        # Blue expects FIRSTNAME_1 / LASTNAME_1 (Bug 1 fix)
-        columns=["USER_ID", "FIRSTNAME_1", "LASTNAME_1", "EMAIL", "SECONDARY_EMAIL"],
+        # Blue expects FIRSTNAME_1 / LASTNAME_1 (Bug 1 fix).
+        # BLUE_ROLE is the Explorance Blue user-type id (e.g. 23 staff, 528 super admin).
+        columns=[
+            "USER_ID",
+            "FIRSTNAME_1",
+            "LASTNAME_1",
+            "EMAIL",
+            "SECONDARY_EMAIL",
+            "BLUE_ROLE",
+        ],
         required_columns=["USER_ID", "FIRSTNAME_1", "LASTNAME_1", "EMAIL"],
         column_map={
             "USER_ID": "USER_ID",
@@ -105,6 +113,7 @@ DEFAULT_DATASOURCES: Dict[str, DatasourceConfig] = {
             "LASTNAME": "LASTNAME_1",
             "EMAIL": "EMAIL",
             "SECONDARY_EMAIL": "SECONDARY_EMAIL",
+            "BLUE_ROLE": "BLUE_ROLE",
         },
         batch_size=500,
         is_users=True,

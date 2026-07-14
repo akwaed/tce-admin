@@ -95,21 +95,30 @@ def config_from_db_row(row) -> DatasourceConfig:
         or (row.datasource_id == "Data144")
     )
     # Ensure Users remap even if DB row is missing it
-    if is_users and not column_map:
-        column_map = {
-            "FIRSTNAME": "FIRSTNAME_1",
-            "LASTNAME": "LASTNAME_1",
-        }
+    if is_users:
+        column_map.setdefault("FIRSTNAME", "FIRSTNAME_1")
+        column_map.setdefault("LASTNAME", "LASTNAME_1")
+        column_map.setdefault("BLUE_ROLE", "BLUE_ROLE")
 
     key = getattr(row, "legacy_key", None) or row.datasource_id
     batch_size = 500 if is_users else 500
+
+    columns = list(row.columns or [])
+    # Production DB rows may predate BLUE_ROLE on Users — keep pushes current
+    # without requiring a manual schema reseed.
+    if is_users:
+        default_users_cols = list(DEFAULT_DATASOURCES["users"].columns)
+        if not columns:
+            columns = default_users_cols
+        elif "BLUE_ROLE" not in columns:
+            columns = list(columns) + ["BLUE_ROLE"]
 
     return DatasourceConfig(
         key=key,
         datasource_id=row.datasource_id,
         display_name=row.display_name or key,
         csv_file=row.csv_file,
-        columns=list(row.columns or []),
+        columns=columns,
         required_columns=list(row.required_columns or []),
         column_map=column_map,
         block_name=row.block_name,

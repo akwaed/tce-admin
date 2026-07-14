@@ -19,14 +19,24 @@ Fixes three known bugs from the BlueSyncService integration:
   Bug 3 — HASH column contains corrupted Python memory-address strings
     The HASH column is silently dropped during CSV loading.
 
+Also pushes BLUE_ROLE (Explorance Blue user-type id), e.g. 23 staff / 03
+student / 528 super admin.
+
 Usage:
-    # Dry run — validate CSV, print first 5 rows as they would be sent
+    # Dry run — validate CSV + BLUE_ROLE, no SOAP (no API key needed)
     python scripts/push_users_to_blue.py --dry-run
 
-    # Small test — push first 50 rows only
-    python scripts/push_users_to_blue.py --test-rows 50 --verbose
+    # Preview only super-admin rows (role 528 / specific LinkBlues)
+    python scripts/push_users_to_blue.py --dry-run --filter-users EDAK223,MALU227,KJTU228
+    python scripts/push_users_to_blue.py --dry-run --filter-role 528
 
-    # Full push with wait after previous datasources
+    # Apply Admin-table super-admin overrides, then dry-run
+    python scripts/push_users_to_blue.py --dry-run --apply-super-admin-roles
+
+    # Small live test — push only super admins
+    python scripts/push_users_to_blue.py --filter-role 528 --verbose
+
+    # Full push
     python scripts/push_users_to_blue.py --wait-before 600 --batch-size 500
 
 Dependencies:
@@ -40,22 +50,27 @@ import os
 import re
 import sys
 import time
+from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import requests
 
 # ---------------------------------------------------------------------------
 # Optional dotenv support — load .env from project root
 # ---------------------------------------------------------------------------
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 try:
     from dotenv import load_dotenv
-    _PROJECT_ROOT = Path(__file__).resolve().parent.parent
     _ENV_PATH = _PROJECT_ROOT / '.env'
     if _ENV_PATH.exists():
         load_dotenv(_ENV_PATH)
 except ImportError:
     pass  # dotenv is optional at runtime
+
+# Make project imports available (super-admin role helpers)
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 
 # ============================================================================
@@ -73,17 +88,32 @@ TIMEOUT_PUSH_BATCH = 180
 TIMEOUT_PREPARE = 600   # 10 minutes (Bug 2 fix)
 TIMEOUT_FINALIZE = 300  #  5 minutes
 
-# The CSV column → Blue column mapping (Bug 1 fix)
+# The CSV column → Blue column mapping (Bug 1 fix).
+# Also accepts FIRST_NAME / LAST_NAME (strip_hash_column rename).
 COLUMN_MAP: Dict[str, str] = {
     'USER_ID':          'USER_ID',
     'FIRSTNAME':        'FIRSTNAME_1',
+    'FIRST_NAME':       'FIRSTNAME_1',
     'LASTNAME':         'LASTNAME_1',
+    'LAST_NAME':        'LASTNAME_1',
     'EMAIL':            'EMAIL',
     'SECONDARY_EMAIL':  'SECONDARY_EMAIL',
+    'BLUE_ROLE':        'BLUE_ROLE',
 }
 
 # Columns that Blue expects, in order
-BLUE_COLUMNS = ['USER_ID', 'FIRSTNAME_1', 'LASTNAME_1', 'EMAIL']
+BLUE_COLUMNS = [
+    'USER_ID',
+    'FIRSTNAME_1',
+    'LASTNAME_1',
+    'EMAIL',
+    'SECONDARY_EMAIL',
+    'BLUE_ROLE',
+]
+
+# Required for a valid Users push (SECONDARY_EMAIL / BLUE_ROLE optional in
+# the sense that the CSV may omit them — but BLUE_ROLE is strongly preferred).
+REQUIRED_BLUE_COLUMNS = ['USER_ID', 'FIRSTNAME_1', 'LASTNAME_1', 'EMAIL']
 
 
 # ============================================================================
@@ -369,47 +399,77 @@ def cancel_stale_import(api_key: str, ws_url: str) -> bool:
     return True
 
 
-def load_users_csv(csv_path: str) -> Tuple[List[str], List[List[str]], int]:
+def _build_reverse_map(csv_fieldnames: Sequence[str]) -> Tuple[List[str], Dict[str, str]]:
+    """Return (blue_columns present in CSV, reverse map Blue→CSV)."""
+    field_set = set(csv_fieldnames)
+    blue_columns: List[str] = []
+    reverse_map: Dict[str, str] = {}
+
+    for bc in BLUE_COLUMNS:
+        # Prefer earlier COLUMN_MAP entries (FIRSTNAME before FIRST_NAME).
+        for csv_col, blue_col in COLUMN_MAP.items():
+            if blue_col != bc:
+                continue
+            if csv_col in field_set:
+                blue_columns.append(bc)
+                reverse_map[bc] = csv_col
+                break
+        else:
+            # Identity fallback: CSV already uses Blue name
+            if bc in field_set and bc not in reverse_map:
+                blue_columns.append(bc)
+                reverse_map[bc] = bc
+
+    return blue_columns, reverse_map
+
+
+def load_users_csv(csv_path: str) -> Tuple[List[str], List[List[str]], int, Counter]:
     """Load and validate Users.csv.
 
     - Strips the HASH column entirely (Bug 3 fix).
-    - Applies FIRSTNAME → FIRSTNAME_1, LASTNAME → LASTNAME_1 rename (Bug 1 fix).
+    - Applies FIRSTNAME/FIRST_NAME → FIRSTNAME_1, LASTNAME/LAST_NAME → LASTNAME_1.
+    - Includes BLUE_ROLE when present in the CSV.
     - Counts rows with blank FIRSTNAME or LASTNAME.
+    - Returns BLUE_ROLE value counts for the full file.
 
-    Returns: (blue_columns, rows, blank_name_count)
+    Returns: (blue_columns, rows, blank_name_count, role_counts)
     """
     if not os.path.exists(csv_path):
         print(f"[ERROR] CSV file not found: {csv_path}")
         sys.exit(1)
 
-    with open(csv_path, 'r', encoding='utf-8') as f:
+    with open(csv_path, 'r', encoding='utf-8', errors='replace') as f:
         reader = csv.DictReader(f)
-        csv_fieldnames = reader.fieldnames or []
+        csv_fieldnames = list(reader.fieldnames or [])
 
-    # Determine which Blue columns we can actually fill
-    blue_columns = []
-    for bc in BLUE_COLUMNS:
-        # Check if any CSV column maps to this Blue column
-        for csv_col, blue_col in COLUMN_MAP.items():
-            if blue_col == bc and csv_col in csv_fieldnames:
-                blue_columns.append(bc)
-                break
+    # Drop HASH from consideration (Bug 3)
+    csv_fieldnames = [c for c in csv_fieldnames if c.upper() != 'HASH']
 
-    # Append SECONDARY_EMAIL if present in CSV
-    if 'SECONDARY_EMAIL' in csv_fieldnames:
-        if 'SECONDARY_EMAIL' not in blue_columns:
-            blue_columns.append('SECONDARY_EMAIL')
+    blue_columns, reverse_map = _build_reverse_map(csv_fieldnames)
 
-    # Build reverse map: Blue column → CSV column
-    reverse_map: Dict[str, str] = {}
-    for csv_col, blue_col in COLUMN_MAP.items():
-        if csv_col in csv_fieldnames and blue_col in blue_columns:
-            reverse_map[blue_col] = csv_col
+    missing_required = [c for c in REQUIRED_BLUE_COLUMNS if c not in blue_columns]
+    if missing_required:
+        print(f"[ERROR] Users.csv is missing required columns for Blue: "
+              f"{', '.join(missing_required)}")
+        print(f"        CSV headers: {', '.join(csv_fieldnames)}")
+        sys.exit(1)
 
-    rows = []
+    if 'BLUE_ROLE' not in blue_columns:
+        print("[WARN] BLUE_ROLE not found in Users.csv — roles will not be pushed.")
+        print("       Expected a BLUE_ROLE column (e.g. 23, 03, 528).")
+    else:
+        print("[ok] BLUE_ROLE column detected — will be included in the push.")
+
+    rows: List[List[str]] = []
     blank_name_count = 0
+    role_counts: Counter = Counter()
 
-    with open(csv_path, 'r', encoding='utf-8') as f:
+    firstname_idx = blue_columns.index('FIRSTNAME_1') if 'FIRSTNAME_1' in blue_columns else None
+    lastname_idx = blue_columns.index('LASTNAME_1') if 'LASTNAME_1' in blue_columns else None
+    role_idx = blue_columns.index('BLUE_ROLE') if 'BLUE_ROLE' in blue_columns else None
+    user_id_idx = blue_columns.index('USER_ID') if 'USER_ID' in blue_columns else None
+
+    with open(csv_path, 'r', encoding='utf-8', errors='replace') as f:
         reader = csv.DictReader(f)
         for row in reader:
             row_data = []
@@ -418,25 +478,171 @@ def load_users_csv(csv_path: str) -> Tuple[List[str], List[List[str]], int]:
                 val = row.get(csv_col, '')
                 if val is None:
                     val = ''
+                else:
+                    val = str(val).strip()
                 row_data.append(val)
 
-            # Check blank names
-            firstname_idx = blue_columns.index('FIRSTNAME_1') if 'FIRSTNAME_1' in blue_columns else None
-            lastname_idx = blue_columns.index('LASTNAME_1') if 'LASTNAME_1' in blue_columns else None
             first_val = row_data[firstname_idx] if firstname_idx is not None else ''
             last_val = row_data[lastname_idx] if lastname_idx is not None else ''
-
-            if not first_val.strip() or not last_val.strip():
+            if not first_val or not last_val:
                 blank_name_count += 1
+
+            if role_idx is not None:
+                role_counts[row_data[role_idx] or '(blank)'] += 1
+
+            # Skip completely empty USER_ID rows
+            if user_id_idx is not None and not row_data[user_id_idx]:
+                continue
 
             rows.append(row_data)
 
-    return blue_columns, rows, blank_name_count
+    return blue_columns, rows, blank_name_count, role_counts
+
+
+def _normalize_id(value: str) -> str:
+    return (value or '').strip().upper()
+
+
+def apply_super_admin_roles_in_memory(
+    blue_columns: List[str],
+    rows: List[List[str]],
+    super_admin_ids: Optional[Set[str]] = None,
+) -> Tuple[List[List[str]], Set[str], int]:
+    """Force BLUE_ROLE=528 for super-admin LinkBlues in the in-memory rows.
+
+    Does not rewrite the CSV on disk. Returns (rows, resolved_ids, changed_count).
+    """
+    if 'BLUE_ROLE' not in blue_columns or 'USER_ID' not in blue_columns:
+        print("[WARN] Cannot apply super-admin roles — BLUE_ROLE or USER_ID missing.")
+        return rows, set(), 0
+
+    if super_admin_ids is None:
+        try:
+            from app.services.blue_user_roles import get_super_admin_linkblues
+            super_admin_ids = get_super_admin_linkblues()
+        except Exception as exc:
+            print(f"[WARN] Could not load super-admin LinkBlues from Admin DB: {exc}")
+            env_raw = os.environ.get('SUPER_ADMIN_LINKBLUES', '') or ''
+            super_admin_ids = {
+                _normalize_id(p) for p in env_raw.split(',') if p.strip()
+            }
+
+    super_admin_ids = {_normalize_id(x) for x in (super_admin_ids or set()) if _normalize_id(x)}
+    if not super_admin_ids:
+        print("[WARN] No super-admin LinkBlues resolved "
+              "(Admin table empty of super_admins and SUPER_ADMIN_LINKBLUES unset).")
+        return rows, set(), 0
+
+    try:
+        from app.services.blue_user_roles import SUPER_ADMIN_BLUE_ROLE
+        role_value = SUPER_ADMIN_BLUE_ROLE
+    except Exception:
+        role_value = '528'
+
+    uid_idx = blue_columns.index('USER_ID')
+    role_idx = blue_columns.index('BLUE_ROLE')
+    changed = 0
+    found: Set[str] = set()
+
+    for row in rows:
+        uid = _normalize_id(row[uid_idx])
+        if uid in super_admin_ids:
+            found.add(uid)
+            if row[role_idx] != role_value:
+                row[role_idx] = role_value
+                changed += 1
+
+    missing = sorted(super_admin_ids - found)
+    print(f"[roles] Super-admin BLUE_ROLE={role_value} for: "
+          f"{', '.join(sorted(super_admin_ids))}")
+    print(f"        Found in CSV: {len(found)}  Updated: {changed}  "
+          f"Missing from CSV: {len(missing)}")
+    if missing:
+        print(f"        Missing USER_IDs: {', '.join(missing)}")
+
+    return rows, super_admin_ids, changed
+
+
+def filter_rows(
+    blue_columns: List[str],
+    rows: List[List[str]],
+    *,
+    filter_users: Optional[Set[str]] = None,
+    filter_role: Optional[str] = None,
+) -> List[List[str]]:
+    """Filter rows by USER_ID set and/or BLUE_ROLE value."""
+    if not filter_users and not filter_role:
+        return rows
+
+    uid_idx = blue_columns.index('USER_ID') if 'USER_ID' in blue_columns else None
+    role_idx = blue_columns.index('BLUE_ROLE') if 'BLUE_ROLE' in blue_columns else None
+    want_users = {_normalize_id(u) for u in (filter_users or set()) if _normalize_id(u)}
+    want_role = (filter_role or '').strip()
+
+    out: List[List[str]] = []
+    for row in rows:
+        if want_users:
+            if uid_idx is None or _normalize_id(row[uid_idx]) not in want_users:
+                continue
+        if want_role:
+            if role_idx is None or (row[role_idx] or '').strip() != want_role:
+                continue
+        out.append(row)
+    return out
+
+
+def _role_counts_from_rows(blue_columns: List[str], rows: List[List[str]]) -> Counter:
+    if 'BLUE_ROLE' not in blue_columns:
+        return Counter()
+    idx = blue_columns.index('BLUE_ROLE')
+    return Counter((r[idx] or '(blank)') for r in rows)
+
+
+def _print_role_summary(role_counts: Counter, label: str = "BLUE_ROLE distribution") -> None:
+    if not role_counts:
+        print(f"  {label}: (no BLUE_ROLE data)")
+        return
+    print(f"  {label}:")
+    for role, count in sorted(role_counts.items(), key=lambda x: (-x[1], x[0])):
+        print(f"    role {role:>8}: {count:,}")
+
+
+def _print_sample_rows(
+    blue_columns: List[str],
+    rows: List[List[str]],
+    *,
+    limit: int = 5,
+    prefer_roles: Optional[Sequence[str]] = None,
+) -> None:
+    """Print a sample of rows, preferring rows with special roles when present."""
+    sample = list(rows[:limit])
+    if prefer_roles and 'BLUE_ROLE' in blue_columns and 'USER_ID' in blue_columns:
+        role_idx = blue_columns.index('BLUE_ROLE')
+        preferred = [r for r in rows if (r[role_idx] or '') in set(prefer_roles)]
+        if preferred:
+            # Unique by USER_ID, prefer special roles first then fill from top
+            seen: Set[str] = set()
+            sample = []
+            uid_idx = blue_columns.index('USER_ID')
+            for r in preferred + rows:
+                uid = r[uid_idx]
+                if uid in seen:
+                    continue
+                seen.add(uid)
+                sample.append(r)
+                if len(sample) >= limit:
+                    break
+
+    header = " | ".join(blue_columns)
+    print(f"  {header}")
+    print(f"  {'-' * min(len(header), 120)}")
+    for row_data in sample:
+        print(f"  {' | '.join(str(v) for v in row_data)}")
 
 
 def push_users_to_blue(
     csv_path: str,
-    api_key: str,
+    api_key: Optional[str],
     ws_url: str,
     datasource_id: str,
     batch_size: int,
@@ -445,6 +651,10 @@ def push_users_to_blue(
     wait_before: int,
     skip_cancel_check: bool,
     verbose: bool,
+    filter_users: Optional[Set[str]] = None,
+    filter_role: Optional[str] = None,
+    apply_super_admin_roles: bool = False,
+    sample_limit: int = 10,
 ) -> int:
     """Push Users.csv to Explorance Blue via SOAP API.
 
@@ -456,38 +666,86 @@ def push_users_to_blue(
     # ------------------------------------------------------------------
     # Step 0 — Load and validate CSV
     # ------------------------------------------------------------------
-    blue_columns, rows, blank_name_count = load_users_csv(csv_path)
-    total_rows = len(rows)
+    print(f"[load] Reading {csv_path} ...")
+    blue_columns, rows, blank_name_count, full_role_counts = load_users_csv(csv_path)
+    total_loaded = len(rows)
 
-    # Apply --test-rows limit
+    if apply_super_admin_roles:
+        rows, _, _ = apply_super_admin_roles_in_memory(blue_columns, rows)
+
+    # Optional filters for targeted BLUE_ROLE testing
+    if filter_users or filter_role:
+        before = len(rows)
+        rows = filter_rows(
+            blue_columns, rows,
+            filter_users=filter_users,
+            filter_role=filter_role,
+        )
+        parts = []
+        if filter_users:
+            parts.append(f"users={','.join(sorted(filter_users))}")
+        if filter_role:
+            parts.append(f"role={filter_role}")
+        print(f"[filter] {' '.join(parts)} → {len(rows):,} / {before:,} rows")
+        if not rows:
+            print("[ERROR] No rows matched the filter. Nothing to push.")
+            return 1
+
+    # Apply --test-rows limit (after filters)
     if test_rows is not None and test_rows > 0:
         rows = rows[:test_rows]
         print(f"[test] Limiting to first {len(rows)} rows (--test-rows={test_rows})")
 
+    push_role_counts = _role_counts_from_rows(blue_columns, rows)
     total_batches = (len(rows) + batch_size - 1) // batch_size if rows else 0
 
     # Pre-push summary
     print()
-    print(f"  Users.csv loaded:   {total_rows:,} rows")
+    print(f"  Users.csv loaded:    {total_loaded:,} rows")
+    print(f"  Rows to push:        {len(rows):,}")
     print(f"  Columns to push:     {', '.join(blue_columns)}")
     print(f"  Batch size:          {batch_size}")
     print(f"  Total batches:       {total_batches}")
     if blank_name_count > 0:
         print(f"  Blank name rows:     {blank_name_count} (will push as empty strings)")
+    _print_role_summary(full_role_counts, "Full-file BLUE_ROLE distribution")
+    if filter_users or filter_role or test_rows or apply_super_admin_roles:
+        _print_role_summary(push_role_counts, "Payload BLUE_ROLE distribution")
     print(f"  Target:              {datasource_id} @ {ws_url}")
     print()
 
-    # --dry-run: print sample rows and exit
+    # --dry-run: print sample rows and exit (no API key required)
     if dry_run:
-        print("  [DRY RUN] First 5 rows as they would be sent to Blue:\n")
-        header = " | ".join(blue_columns)
-        print(f"  {header}")
-        print(f"  {'-' * len(header)}")
-        for row_data in rows[:5]:
-            print(f"  {' | '.join(str(v) for v in row_data)}")
+        print("  [DRY RUN] Sample rows as they would be sent to Blue:\n")
+        _print_sample_rows(
+            blue_columns, rows,
+            limit=sample_limit,
+            prefer_roles=['528'],
+        )
+        print()
+        if 'BLUE_ROLE' in blue_columns:
+            role_idx = blue_columns.index('BLUE_ROLE')
+            uid_idx = blue_columns.index('USER_ID')
+            role_528 = [r for r in rows if (r[role_idx] or '') == '528']
+            if role_528:
+                print(f"  Super-admin rows (BLUE_ROLE=528) in payload: {len(role_528)}")
+                for r in role_528[:20]:
+                    print(f"    {r[uid_idx]}  role={r[role_idx]}  "
+                          f"{r[blue_columns.index('FIRSTNAME_1')]} "
+                          f"{r[blue_columns.index('LASTNAME_1')]}")
+                if len(role_528) > 20:
+                    print(f"    ... and {len(role_528) - 20} more")
+            else:
+                print("  [WARN] No BLUE_ROLE=528 rows in this payload.")
         print()
         print("  [DRY RUN] No SOAP calls were made. Exiting.")
         return 0
+
+    if not api_key:
+        print("[ERROR] Blue API key is required for a live push.")
+        print("        Set BLUE_API_KEY in .env or pass --api-key.")
+        print("        (Dry runs do not need an API key: add --dry-run)")
+        return 1
 
     # ------------------------------------------------------------------
     # Step 1 — Optional wait
@@ -697,8 +955,21 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Dry run — see what would be sent
+  # Dry run — validate CSV + BLUE_ROLE mapping (no API key needed)
   python scripts/push_users_to_blue.py --dry-run
+
+  # Preview only super-admin LinkBlues
+  python scripts/push_users_to_blue.py --dry-run \\
+      --filter-users EDAK223,MALU227,KJTU228
+
+  # Preview everyone currently marked BLUE_ROLE=528
+  python scripts/push_users_to_blue.py --dry-run --filter-role 528
+
+  # Apply Admin-table super-admin overrides in memory, then dry-run
+  python scripts/push_users_to_blue.py --dry-run --apply-super-admin-roles
+
+  # Live test: push only the super-admin rows
+  python scripts/push_users_to_blue.py --filter-role 528 --verbose
 
   # Push first 50 rows as a column-mapping test
   python scripts/push_users_to_blue.py --test-rows 50 --verbose
@@ -707,9 +978,11 @@ Examples:
   python scripts/push_users_to_blue.py --wait-before 600 --batch-size 500
 
 Environment variables:
-  BLUE_API_KEY    Blue API key (or use --api-key)
-  BLUE_WS_URL     Blue WS URL (or use --ws-url)
-  BLUE_DATASOURCE_ID  Blue datasource ID (or use --datasource-id)
+  BLUE_API_KEY           Blue API key (or use --api-key)
+  BLUE_WS_URL            Blue WS URL (or use --ws-url)
+  BLUE_DATASOURCE_ID     Blue datasource ID (or use --datasource-id)
+  SUPER_ADMIN_LINKBLUES  Comma-separated LinkBlues for --apply-super-admin-roles
+                         (also read from Admin table when Flask app is available)
 """,
     )
 
@@ -719,7 +992,7 @@ Environment variables:
     )
     parser.add_argument(
         '--api-key', default=None,
-        help='Blue API key (or set BLUE_API_KEY in .env)',
+        help='Blue API key (or set BLUE_API_KEY in .env). Not required for --dry-run.',
     )
     parser.add_argument(
         '--ws-url', default=DEFAULT_WS_URL,
@@ -735,12 +1008,30 @@ Environment variables:
     )
     parser.add_argument(
         '--test-rows', type=int, default=None,
-        help='Only push the first N rows then stop.',
+        help='Only push the first N rows then stop (applied after filters).',
+    )
+    parser.add_argument(
+        '--filter-users', default=None,
+        help='Comma-separated USER_IDs / LinkBlues to push (case-insensitive). '
+             'Useful for testing BLUE_ROLE on specific super admins.',
+    )
+    parser.add_argument(
+        '--filter-role', default=None,
+        help='Only push rows whose BLUE_ROLE equals this value (e.g. 528).',
+    )
+    parser.add_argument(
+        '--apply-super-admin-roles', action='store_true',
+        help='Before push, force BLUE_ROLE=528 for super admins resolved from '
+             'the Admin table and/or SUPER_ADMIN_LINKBLUES (in memory only).',
+    )
+    parser.add_argument(
+        '--sample-limit', type=int, default=10,
+        help='How many sample rows to print on --dry-run (default: 10).',
     )
     parser.add_argument(
         '--dry-run', action='store_true',
-        help='Load and validate CSV, print first 5 rows, but do NOT '
-             'call any SOAP endpoints.',
+        help='Load and validate CSV, print BLUE_ROLE summary + sample rows, '
+             'but do NOT call any SOAP endpoints. No API key required.',
     )
     parser.add_argument(
         '--wait-before', type=int, default=0,
@@ -758,11 +1049,12 @@ Environment variables:
 
     args = parser.parse_args()
 
-    # Resolve API key: CLI arg → env var
+    # Resolve API key: CLI arg → env var (optional for dry-run)
     api_key = args.api_key or os.getenv('BLUE_API_KEY')
-    if not api_key:
-        print("[ERROR] Blue API key is required.")
+    if not api_key and not args.dry_run:
+        print("[ERROR] Blue API key is required for a live push.")
         print("        Set BLUE_API_KEY in .env or pass --api-key.")
+        print("        For CSV/BLUE_ROLE validation only: add --dry-run")
         return 1
 
     # Resolve CSV path — support relative paths from cwd or project root
@@ -770,7 +1062,7 @@ Environment variables:
     if not csv_path.is_absolute():
         # Try cwd first, then project root
         cwd_path = Path.cwd() / csv_path
-        prj_path = Path(__file__).resolve().parent.parent / csv_path
+        prj_path = _PROJECT_ROOT / csv_path
         if cwd_path.exists():
             csv_path = str(cwd_path)
         elif prj_path.exists():
@@ -778,17 +1070,31 @@ Environment variables:
         else:
             csv_path = str(cwd_path)  # Let file-not-found error fire later
 
+    filter_users = None
+    if args.filter_users:
+        filter_users = {
+            _normalize_id(p) for p in args.filter_users.split(',') if p.strip()
+        }
+
     return push_users_to_blue(
         csv_path=str(csv_path),
         api_key=api_key,
-        ws_url=args.ws_url,
-        datasource_id=args.datasource_id,
+        ws_url=args.ws_url or os.getenv('BLUE_WS_URL') or DEFAULT_WS_URL,
+        datasource_id=(
+            args.datasource_id
+            or os.getenv('BLUE_DATASOURCE_ID')
+            or DEFAULT_DATASOURCE_ID
+        ),
         batch_size=args.batch_size,
         test_rows=args.test_rows,
         dry_run=args.dry_run,
         wait_before=args.wait_before,
         skip_cancel_check=args.skip_cancel_check,
         verbose=args.verbose,
+        filter_users=filter_users,
+        filter_role=args.filter_role,
+        apply_super_admin_roles=args.apply_super_admin_roles,
+        sample_limit=args.sample_limit,
     )
 
 
