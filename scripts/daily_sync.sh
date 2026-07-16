@@ -183,27 +183,57 @@ fi
 log "Step 3/4 complete in $(( BLUE_END - BLUE_START ))s."
 
 # ---------------------------------------------------------------------------
-# Step 4: DRA -> Explorance Blue
+# Step 4: DRA -> Explorance Blue (conditional)
+# Runs when:
+#   - SystemSetting dra_include_in_daily_sync is true (default), OR
+#   - SystemSetting dra_sync_pending is true (set when college/super admins
+#     change the admin list and dra_queue_on_admin_change is enabled)
 # ---------------------------------------------------------------------------
-log "Step 4/4: Pushing DRA data to Explorance Blue..."
-DRA_START=$(date +%s)
+log "Step 4/4: Checking whether DRA push is needed..."
+DRA_CHECK_OUT="$("$VENV_PYTHON" - <<'PY'
+from app import create_app
+from app.services.dra_push_service import (
+    should_run_dra_in_daily_sync,
+    is_dra_include_in_daily_sync,
+    is_dra_sync_pending,
+)
+app = create_app()
+with app.app_context():
+    run = should_run_dra_in_daily_sync()
+    print("yes" if run else "no")
+    print(
+        f"include_daily={is_dra_include_in_daily_sync()} "
+        f"pending={is_dra_sync_pending()}"
+    )
+PY
+)" || DRA_CHECK_OUT=$'no\n(error reading flags)'
+SHOULD_DRA="$(printf '%s\n' "$DRA_CHECK_OUT" | head -1 | tr -d '[:space:]')"
+DRA_DETAIL="$(printf '%s\n' "$DRA_CHECK_OUT" | tail -1)"
+log "  DRA flags: $DRA_DETAIL  → run=$SHOULD_DRA"
 
-set +e
-run_with_timeout "$DRA_SYNC_TIMEOUT_SECONDS" "$VENV_PYTHON" "$DRA_SCRIPT"
-DRA_EXIT=$?
-set -e
+if [ "$SHOULD_DRA" = "yes" ]; then
+    log "Step 4/4: Pushing DRA data to Explorance Blue..."
+    DRA_START=$(date +%s)
 
-if [ $DRA_EXIT -ne 0 ]; then
-    if [ $DRA_EXIT -eq 124 ] || [ $DRA_EXIT -eq 137 ]; then
-        log "WARNING: DRA sync timed out after ${DRA_SYNC_TIMEOUT_SECONDS}s. Daily DB sync was successful."
-    else
-        log "WARNING: DRA sync failed (exit code $DRA_EXIT). Daily DB sync was successful."
+    set +e
+    run_with_timeout "$DRA_SYNC_TIMEOUT_SECONDS" "$VENV_PYTHON" "$DRA_SCRIPT" --scheduled
+    DRA_EXIT=$?
+    set -e
+
+    if [ $DRA_EXIT -ne 0 ]; then
+        if [ $DRA_EXIT -eq 124 ] || [ $DRA_EXIT -eq 137 ]; then
+            log "WARNING: DRA sync timed out after ${DRA_SYNC_TIMEOUT_SECONDS}s. Daily DB sync was successful."
+        else
+            log "WARNING: DRA sync failed (exit code $DRA_EXIT). Daily DB sync was successful."
+        fi
+        # DRA failure is non-fatal — do not abort or change exit code
     fi
-    # DRA failure is non-fatal — do not abort or change exit code
-fi
 
-DRA_END=$(date +%s)
-log "Step 4/4 complete in $(( DRA_END - DRA_START ))s."
+    DRA_END=$(date +%s)
+    log "Step 4/4 complete in $(( DRA_END - DRA_START ))s."
+else
+    log "Step 4/4 skipped — DRA not required (daily include off and no pending admin-list queue)."
+fi
 
 # ---------------------------------------------------------------------------
 # Done

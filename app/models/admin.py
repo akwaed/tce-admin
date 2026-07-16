@@ -576,9 +576,20 @@ class AdminAuditLog(db.Model):
         }
         return action_names.get(self.action, self.action)
 
+    # Actions that change who appears in DRA (college/dept report viewers).
+    DRA_RELEVANT_ACTIONS = frozenset({
+        'created', 'updated', 'deleted', 'activated', 'deactivated',
+        'imported', 'copied', 'elevated', 'demoted', 'role_changed',
+    })
+
     @staticmethod
     def log_change(target_admin, actor_admin, action, changes=None):
-        """Helper method to create an audit log entry"""
+        """Helper method to create an audit log entry.
+
+        When a college or super admin mutates the admin list, and the
+        DRA_QUEUE_ON_ADMIN_CHANGE setting is on, marks DRA for inclusion
+        in the next daily sync.
+        """
         log = AdminAuditLog(
             target_admin_id=target_admin.id if target_admin else None,
             target_linkblue=target_admin.linkblue if target_admin else 'unknown',
@@ -589,6 +600,14 @@ class AdminAuditLog(db.Model):
         if changes:
             log.changes = changes
         db.session.add(log)
+
+        if action in AdminAuditLog.DRA_RELEVANT_ACTIONS and actor_admin is not None:
+            try:
+                from app.services.dra_push_service import queue_dra_after_admin_change
+                queue_dra_after_admin_change(actor_admin)
+            except Exception:
+                pass  # never block admin CRUD on DRA queue failure
+
         return log
 
     def to_dict(self):

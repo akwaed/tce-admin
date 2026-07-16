@@ -516,6 +516,8 @@ def main() -> int:
     # Default: old Blue hierarchy node ids. Pass --new-codes only if Blue
     # hierarchy has been fully migrated to CLASS_COLLEGE_SHORT.
     use_new_codes = '--new-codes' in sys.argv
+    scheduled = '--scheduled' in sys.argv
+    if_needed = '--if-needed' in sys.argv or scheduled
 
     log("=" * 60)
     log("TCE Admin DRA Sync" + (" (DRY RUN)" if dry_run else ""))
@@ -523,41 +525,32 @@ def main() -> int:
 
     from app import create_app
     from app.models.settings import SystemSetting
+    from app.services.dra_push_service import (
+        push_dra_to_blue,
+        should_run_dra_in_daily_sync,
+    )
 
     app = create_app(os.environ.get('FLASK_ENV', 'production'))
 
     with app.app_context():
-        # Load API key + WS URL from the database (set via Settings UI)
-        api_key = SystemSetting.get(SystemSetting.BLUE_API_KEY)
-        ws_url  = SystemSetting.get(SystemSetting.BLUE_WS_URL) or BLUE_WS_URL_DEFAULT
+        if if_needed and not dry_run:
+            if not should_run_dra_in_daily_sync():
+                log("DRA not required (include_in_daily_sync=false and no pending queue). Skipping.")
+                return 0
+            log("DRA required for this run (daily include and/or pending queue).")
 
-        if not api_key and not dry_run:
-            log("ERROR: Blue API key not configured. "
-                "Set it in Settings → Blue API Configuration.")
-            return 1
-
-        log(f"Target   : {DATASOURCE_ID} / {BLOCK_NAME}")
-        log(f"Endpoint : {ws_url}")
-        if api_key:
-            log(f"API key  : {api_key[:8]}...{api_key[-4:]}")
-        else:
-            log("API key  : (not required for dry-run)")
-
-        # Generate DRA rows from live DB (old college codes by default)
-        log("Generating DRA data from database...")
-        rows, errors = generate_dra_rows(app, use_new_codes=use_new_codes)
-        log(f"  {len(rows):,} rows generated, {len(errors)} warning(s)")
-        for e in errors[:10]:
-            log(f"  WARN: {e}")
-        if len(errors) > 10:
-            log(f"  ... and {len(errors) - 10} more warnings")
-
-        if not rows:
-            log("ERROR: No rows generated — nothing to push.")
-            return 1
-
-        # Dry-run: show sample and exit
+        # Dry-run keeps the lightweight path (no DataSyncLog)
         if dry_run:
+            log("Generating DRA data from database...")
+            rows, errors = generate_dra_rows(app, use_new_codes=use_new_codes)
+            log(f"  {len(rows):,} rows generated, {len(errors)} warning(s)")
+            for e in errors[:10]:
+                log(f"  WARN: {e}")
+            if len(errors) > 10:
+                log(f"  ... and {len(errors) - 10} more warnings")
+            if not rows:
+                log("ERROR: No rows generated — nothing to push.")
+                return 1
             c4 = [r for r in rows if r[2] == 'C4']
             log("\nDRY RUN — sample college (C4) rows (first 10):")
             log("source, target, targetType")
@@ -567,7 +560,6 @@ def main() -> int:
             log("source, target, targetType")
             for row in rows[:10]:
                 log(f"  {','.join(str(v) for v in row)}")
-            # Sanity: flag any C4 still using 2-letter new codes
             still_new = [
                 r for r in c4
                 if len(str(r[0])) <= 3 and str(r[0]).isalpha()
@@ -581,18 +573,22 @@ def main() -> int:
             log("Dry run complete — no data was sent to Blue.")
             return 0
 
-        # Push to Blue
-        log("Pushing to Explorance Blue...")
-        success = push_to_blue(api_key, ws_url, rows)
-
-        if success:
+        # Live push via shared service (logs to DataSyncLog)
+        trigger = 'scheduled' if scheduled else 'cli'
+        ok, msg, log_id = push_dra_to_blue(
+            triggered_by_id=None,
+            trigger_type=trigger,
+            use_new_codes=use_new_codes,
+            clear_pending_on_success=True,
+        )
+        log(msg + (f" (sync_log_id={log_id})" if log_id else ""))
+        if ok:
             log("=" * 60)
-            log(f"DRA sync complete. {len(rows):,} rows pushed to {DATASOURCE_ID}.")
+            log(f"DRA sync complete → {DATASOURCE_ID}.")
             log("=" * 60)
             return 0
-        else:
-            log("ERROR: DRA push failed.")
-            return 1
+        log("ERROR: DRA push failed.")
+        return 1
 
 
 if __name__ == '__main__':

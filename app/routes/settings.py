@@ -455,11 +455,22 @@ def index():
         blue_service = get_blue_sync_service()
         api_key_valid, api_key_message = blue_service.validate_api_key()
 
-    return render_template('settings/index.html',
-                           api_key_setting=api_key_setting,
-                           ws_url_setting=ws_url_setting,
-                           api_key_valid=api_key_valid,
-                           api_key_message=api_key_message)
+    from app.services.dra_push_service import (
+        is_dra_include_in_daily_sync,
+        is_dra_queue_on_admin_change,
+        is_dra_sync_pending,
+    )
+
+    return render_template(
+        'settings/index.html',
+        api_key_setting=api_key_setting,
+        ws_url_setting=ws_url_setting,
+        api_key_valid=api_key_valid,
+        api_key_message=api_key_message,
+        dra_include_in_daily_sync=is_dra_include_in_daily_sync(),
+        dra_queue_on_admin_change=is_dra_queue_on_admin_change(),
+        dra_sync_pending=is_dra_sync_pending(),
+    )
 
 
 @settings_bp.route('/api-key', methods=['GET', 'POST'])
@@ -926,6 +937,64 @@ def trigger_hana_sync():
 
     flash('HANA to Datasource sync started. Check back for results.', 'info')
     return redirect(url_for('settings.sync_logs'))
+
+
+@settings_bp.route('/sync/dra-to-blue', methods=['POST'])
+@super_admin_required
+def trigger_dra_sync():
+    """Manually push DRA (college/dept admin report viewers) to Blue Data151."""
+    api_key = SystemSetting.get(SystemSetting.BLUE_API_KEY)
+    if not api_key:
+        flash('Explorance Blue API key is not configured. Please configure it first.', 'danger')
+        return redirect(request.referrer or url_for('settings.index'))
+
+    # Allow concurrent DRA with other syncs only if no DRA is already running
+    running_dra = DataSyncLog.query.filter(
+        DataSyncLog.sync_type == DataSyncLog.TYPE_DRA_TO_BLUE,
+        DataSyncLog.status == DataSyncLog.STATUS_RUNNING,
+    ).order_by(DataSyncLog.started_at.desc()).first()
+    if running_dra:
+        flash('A DRA push is already running. Check Sync Logs for progress.', 'warning')
+        return redirect(url_for('settings.sync_logs'))
+
+    use_new_codes = request.form.get('layout') == 'new'
+    from app.services.dra_push_service import start_dra_push_background
+    start_dra_push_background(
+        triggered_by_id=current_user.id,
+        trigger_type='manual',
+        use_new_codes=use_new_codes,
+    )
+    flash(
+        'DRA push to Blue started (Data151). Check Sync Logs for results.',
+        'info',
+    )
+    return redirect(url_for('settings.sync_logs'))
+
+
+@settings_bp.route('/dra-flags', methods=['POST'])
+@super_admin_required
+def update_dra_flags():
+    """Update DRA daily-sync / admin-change queue flags."""
+    include_daily = '1' if request.form.get('dra_include_in_daily_sync') else '0'
+    queue_on_change = '1' if request.form.get('dra_queue_on_admin_change') else '0'
+
+    SystemSetting.set(
+        SystemSetting.DRA_INCLUDE_IN_DAILY_SYNC,
+        'true' if include_daily == '1' else 'false',
+        description='Always run DRA push as part of nightly daily_sync.sh',
+        admin=current_user,
+    )
+    SystemSetting.set(
+        SystemSetting.DRA_QUEUE_ON_ADMIN_CHANGE,
+        'true' if queue_on_change == '1' else 'false',
+        description=(
+            'When college/super admins change the admin list, mark DRA pending '
+            'so the next daily sync includes a DRA push'
+        ),
+        admin=current_user,
+    )
+    flash('DRA sync flags updated.', 'success')
+    return redirect(url_for('settings.index'))
 
 
 @settings_bp.route('/sync/datasource-to-blue', methods=['POST'])

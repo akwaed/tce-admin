@@ -32,6 +32,14 @@ class SystemSetting(db.Model):
     BLUE_API_KEY = 'blue_api_key'
     BLUE_WS_URL = 'blue_ws_url'
 
+    # DRA (Data151) push controls
+    # When true, daily_sync always runs DRA after HANA/DB/Blue steps.
+    DRA_INCLUDE_IN_DAILY_SYNC = 'dra_include_in_daily_sync'
+    # When true, college/super admin list changes mark DRA pending for daily sync.
+    DRA_QUEUE_ON_ADMIN_CHANGE = 'dra_queue_on_admin_change'
+    # Dirty flag set by admin-list changes; cleared after a successful DRA push.
+    DRA_SYNC_PENDING = 'dra_sync_pending'
+
     def __repr__(self):
         return f'<SystemSetting {self.key}>'
 
@@ -138,6 +146,7 @@ class DataSyncLog(db.Model):
     TYPE_HANA_TO_DATASOURCE = 'hana_to_datasource'
     TYPE_DATASOURCE_TO_BLUE = 'datasource_to_blue'
     TYPE_FULL_SYNC = 'full_sync'
+    TYPE_DRA_TO_BLUE = 'dra_to_blue'
 
     # Status constants
     STATUS_RUNNING = 'running'
@@ -261,7 +270,8 @@ class DataSyncLog(db.Model):
         type_names = {
             self.TYPE_HANA_TO_DATASOURCE: 'HANA to Datasource',
             self.TYPE_DATASOURCE_TO_BLUE: 'Datasource to Blue',
-            self.TYPE_FULL_SYNC: 'Full Sync (HANA to Blue)'
+            self.TYPE_FULL_SYNC: 'Full Sync (HANA to Blue)',
+            self.TYPE_DRA_TO_BLUE: 'DRA to Blue (Data151)',
         }
         return type_names.get(self.sync_type, self.sync_type)
 

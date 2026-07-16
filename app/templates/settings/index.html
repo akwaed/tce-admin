@@ -148,6 +148,16 @@
                             </form>
                         </div>
                         {% endfor %}
+                        <div class="col-12">
+                            <form action="{{ url_for('settings.trigger_dra_sync') }}" method="post" class="d-inline">
+                                <button type="submit" class="btn btn-outline-danger btn-sm w-100"
+                                        {% if not api_key_valid %}disabled{% endif %}
+                                        onclick="return confirm('Push DRA (college/dept report viewers) to Blue Data151 now?')"
+                                        title="Push DRA to Blue">
+                                    <i class="bi bi-diagram-3 me-1"></i>Push DRA to Blue
+                                </button>
+                            </form>
+                        </div>
                     </div>
 
                     <form action="{{ url_for('settings.trigger_full_sync') }}" method="post" class="d-inline">
@@ -157,6 +167,44 @@
                             <i class="bi bi-arrow-repeat me-1"></i>Full Sync (All Steps)
                         </button>
                     </form>
+                </div>
+
+                <!-- DRA flags -->
+                <div class="border rounded p-3 mt-3 bg-light">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <strong><i class="bi bi-diagram-3 me-1"></i>DRA (Data151) options</strong>
+                        {% if dra_sync_pending %}
+                        <span class="badge bg-warning text-dark">Queued for next daily sync</span>
+                        {% else %}
+                        <span class="badge bg-secondary">Not queued</span>
+                        {% endif %}
+                    </div>
+                    <form action="{{ url_for('settings.update_dra_flags') }}" method="post">
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" name="dra_include_in_daily_sync"
+                                   id="dra_include_daily" value="1"
+                                   {% if dra_include_in_daily_sync %}checked{% endif %}>
+                            <label class="form-check-label" for="dra_include_daily">
+                                Always include DRA push in <strong>daily sync</strong>
+                            </label>
+                        </div>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" name="dra_queue_on_admin_change"
+                                   id="dra_queue_admin" value="1"
+                                   {% if dra_queue_on_admin_change %}checked{% endif %}>
+                            <label class="form-check-label" for="dra_queue_admin">
+                                When a <strong>college or super admin</strong> changes the admin list,
+                                queue DRA for the next daily sync
+                            </label>
+                        </div>
+                        <button type="submit" class="btn btn-sm btn-outline-primary">
+                            <i class="bi bi-save me-1"></i>Save DRA flags
+                        </button>
+                    </form>
+                    <small class="text-muted d-block mt-2">
+                        Daily sync runs DRA if “always include” is on <em>or</em> a pending queue exists
+                        from an admin-list change. Manual “Push DRA” always works.
+                    </small>
                 </div>
 
                 <div class="mt-3 text-center">
