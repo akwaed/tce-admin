@@ -80,9 +80,6 @@ from app import create_app
 from app.models import db
 from app.models.course import Course
 from app.models.sync_history import ChangeLog, SyncRun
-from app.services.course_sync import normalize_diff_value
-
-
 BACKUP_ROOT = PROJECT_ROOT / 'data' / 'backups' / 'change_tracking'
 
 
@@ -186,18 +183,25 @@ def backup_tables(out_dir: Path) -> dict:
     return manifest
 
 
-def find_noop_ids(limit=None):
-    """Yield change_log ids where updated + normalized old == new."""
-    q = ChangeLog.query.filter(ChangeLog.change_type == 'updated')
-    if limit:
-        q = q.limit(limit)
-    for row in q.yield_per(1000):
-        if normalize_diff_value(row.old_value) == normalize_diff_value(row.new_value):
-            yield row
+def count_noop_rows() -> int:
+    """Count Updated rows where stored Old == New (covers historical date false-positives).
+
+    Fast path: equality in SQL. Does not re-scan 4M+ rows in Python.
+    """
+    return db.session.execute(text("""
+        SELECT COUNT(*) FROM change_log
+         WHERE change_type = 'updated'
+           AND old_value IS NOT DISTINCT FROM new_value
+    """)).scalar_one()
 
 
 def backfill_first_seen(dry_run: bool, stamp_untracked_now: bool) -> dict:
-    """Set first_seen_in_tracking_at where NULL using earliest change_log time."""
+    """Set first_seen_in_tracking_at where NULL using earliest change_log time.
+
+    Uses a single aggregation over change_log (section prefix of entity_key),
+    then one set-based UPDATE. The previous courses⋈change_log OR/LIKE join
+    is O(courses × log) and stalls for hours on multi-million-row tables.
+    """
     stats = {
         'from_change_log': 0,
         'stamped_now': 0,
@@ -205,66 +209,103 @@ def backfill_first_seen(dry_run: bool, stamp_untracked_now: bool) -> dict:
         'still_null': 0,
     }
     now = datetime.now(UTC).replace(tzinfo=None)
+    dialect = str(db.engine.url.drivername)
+    is_pg = 'postgresql' in dialect or 'postgres' in dialect
 
-    # Courses that already have a marker.
+    print('  counting courses already stamped...', flush=True)
     already = Course.query.filter(Course.first_seen_in_tracking_at.isnot(None)).count()
     stats['already_set'] = already
+    print(f'  already stamped: {already:,}', flush=True)
 
-    # Earliest change per section_key (course-level keys only — not instructor pairs).
-    # Also consider entity_key like "section|user" by taking the section prefix.
-    # Simpler approach: for each course, find min created_at where entity_key = section
-    # OR entity_key LIKE section||'|%'
-    dialect = str(db.engine.url.drivername)
-    if 'postgresql' in dialect or 'postgres' in dialect:
-        sql = text("""
-            SELECT c.section_key, MIN(cl.created_at) AS first_at
-              FROM courses c
-              JOIN change_log cl
-                ON cl.entity_key = c.section_key
-                OR cl.entity_key LIKE c.section_key || '|%'
-             WHERE c.first_seen_in_tracking_at IS NULL
-             GROUP BY c.section_key
-        """)
+    # Derive section_key from entity_key:
+    #   course / student_count → entity_key is section_key
+    #   instructor / student   → "{section_key}|{user_id}"
+    if is_pg:
+        section_expr = "split_part(entity_key, '|', 1)"
     else:
-        sql = text("""
-            SELECT c.section_key, MIN(cl.created_at) AS first_at
-              FROM courses c
-              JOIN change_log cl
-                ON cl.entity_key = c.section_key
-                OR cl.entity_key LIKE (c.section_key || '|%')
-             WHERE c.first_seen_in_tracking_at IS NULL
-             GROUP BY c.section_key
-        """)
+        # SQLite: everything before first '|' (or whole key if none)
+        section_expr = (
+            "CASE WHEN instr(entity_key, '|') > 0 "
+            "THEN substr(entity_key, 1, instr(entity_key, '|') - 1) "
+            "ELSE entity_key END"
+        )
 
-    rows = db.session.execute(sql).fetchall()
-    for section_key, first_at in rows:
-        stats['from_change_log'] += 1
-        if not dry_run:
-            db.session.execute(
-                text(
-                    'UPDATE courses SET first_seen_in_tracking_at = :ts '
-                    'WHERE section_key = :sk AND first_seen_in_tracking_at IS NULL'
-                ),
-                {'ts': first_at, 'sk': section_key},
-            )
+    print('  aggregating earliest change_log per section (one scan)...', flush=True)
+
+    if dry_run:
+        count_sql = text(f"""
+            SELECT COUNT(*) FROM (
+                SELECT {section_expr} AS section_key
+                  FROM change_log
+                 GROUP BY 1
+            ) sub
+            JOIN courses c ON c.section_key = sub.section_key
+             AND c.first_seen_in_tracking_at IS NULL
+        """)
+        stats['from_change_log'] = db.session.execute(count_sql).scalar_one() or 0
+        print(f'  would stamp from change_log: {stats["from_change_log"]:,}', flush=True)
+    else:
+        update_sql = text(f"""
+            UPDATE courses
+               SET first_seen_in_tracking_at = sub.first_at
+              FROM (
+                    SELECT {section_expr} AS section_key,
+                           MIN(created_at) AS first_at
+                      FROM change_log
+                     GROUP BY 1
+                   ) sub
+             WHERE courses.section_key = sub.section_key
+               AND courses.first_seen_in_tracking_at IS NULL
+        """)
+        # SQLite does not support UPDATE ... FROM the same way; use correlated path.
+        if is_pg:
+            result = db.session.execute(update_sql)
+            stats['from_change_log'] = result.rowcount or 0
+        else:
+            # SQLite: insert into temp map then update
+            rows = db.session.execute(text(f"""
+                SELECT {section_expr} AS section_key, MIN(created_at) AS first_at
+                  FROM change_log
+                 GROUP BY 1
+            """)).fetchall()
+            for section_key, first_at in rows:
+                res = db.session.execute(
+                    text(
+                        'UPDATE courses SET first_seen_in_tracking_at = :ts '
+                        'WHERE section_key = :sk AND first_seen_in_tracking_at IS NULL'
+                    ),
+                    {'ts': first_at, 'sk': section_key},
+                )
+                stats['from_change_log'] += res.rowcount or 0
+        print(f'  stamped from change_log: {stats["from_change_log"]:,}', flush=True)
 
     if stamp_untracked_now:
-        untracked = Course.query.filter(Course.first_seen_in_tracking_at.is_(None)).all()
-        for course in untracked:
-            # Skip if we just would have set from change_log but dry-run
-            stats['stamped_now'] += 1
-            if not dry_run:
-                course.first_seen_in_tracking_at = now
+        print('  stamping remaining untracked courses to now...', flush=True)
+        if dry_run:
+            stats['stamped_now'] = Course.query.filter(
+                Course.first_seen_in_tracking_at.is_(None)
+            ).count()
+        else:
+            res = db.session.execute(
+                text(
+                    'UPDATE courses SET first_seen_in_tracking_at = :ts '
+                    'WHERE first_seen_in_tracking_at IS NULL'
+                ),
+                {'ts': now},
+            )
+            stats['stamped_now'] = res.rowcount or 0
+        print(f'  stamped now: {stats["stamped_now"]:,}', flush=True)
     else:
         stats['still_null'] = Course.query.filter(
             Course.first_seen_in_tracking_at.is_(None)
         ).count()
         if dry_run:
-            # In dry-run, from_change_log rows are still NULL in DB
             stats['still_null'] = max(0, stats['still_null'] - stats['from_change_log'])
+        print(f'  still null after backfill: {stats["still_null"]:,}', flush=True)
 
     if not dry_run:
         db.session.commit()
+        print('  committed.', flush=True)
     else:
         db.session.rollback()
 
@@ -272,54 +313,51 @@ def backfill_first_seen(dry_run: bool, stamp_untracked_now: bool) -> dict:
 
 
 def archive_noops(dry_run: bool) -> dict:
-    """Copy no-op updated rows to change_log_archived, then delete from change_log."""
+    """Copy no-op updated rows to change_log_archived, then delete from change_log.
+
+    Set-based: old_value IS NOT DISTINCT FROM new_value (historical date bugs
+    stored identical ISO strings on both sides).
+    """
     _ensure_archive_table()
     now = datetime.now(UTC).replace(tzinfo=None)
-    archived = 0
-    ids = []
-    for row in find_noop_ids():
-        ids.append(row.id)
-        archived += 1
-        if dry_run:
-            continue
-        db.session.execute(
-            text("""
-                INSERT INTO change_log_archived (
-                    id, sync_run_id, created_at, entity_type, entity_key,
-                    change_type, field_name, old_value, new_value, display_label,
-                    archived_at, archive_reason
-                ) VALUES (
-                    :id, :sync_run_id, :created_at, :entity_type, :entity_key,
-                    :change_type, :field_name, :old_value, :new_value, :display_label,
-                    :archived_at, :archive_reason
-                )
-            """),
-            {
-                'id': row.id,
-                'sync_run_id': row.sync_run_id,
-                'created_at': row.created_at,
-                'entity_type': row.entity_type,
-                'entity_key': row.entity_key,
-                'change_type': row.change_type,
-                'field_name': row.field_name,
-                'old_value': row.old_value,
-                'new_value': row.new_value,
-                'display_label': row.display_label,
-                'archived_at': now,
-                'archive_reason': 'noop_old_equals_new',
-            },
-        )
 
-    if not dry_run and ids:
-        # Delete in chunks
-        for i in range(0, len(ids), 500):
-            chunk = ids[i:i + 500]
-            ChangeLog.query.filter(ChangeLog.id.in_(chunk)).delete(synchronize_session=False)
-        db.session.commit()
-    else:
-        db.session.rollback()
+    print('  counting no-op Updated rows...', flush=True)
+    noop_count = count_noop_rows()
+    print(f'  no-op rows: {noop_count:,}', flush=True)
 
-    return {'noop_rows': archived, 'archived': 0 if dry_run else archived}
+    if dry_run or noop_count == 0:
+        return {'noop_rows': noop_count, 'archived': 0}
+
+    print('  inserting into change_log_archived...', flush=True)
+    db.session.execute(
+        text("""
+            INSERT INTO change_log_archived (
+                id, sync_run_id, created_at, entity_type, entity_key,
+                change_type, field_name, old_value, new_value, display_label,
+                archived_at, archive_reason
+            )
+            SELECT
+                id, sync_run_id, created_at, entity_type, entity_key,
+                change_type, field_name, old_value, new_value, display_label,
+                :archived_at, 'noop_old_equals_new'
+            FROM change_log
+            WHERE change_type = 'updated'
+              AND old_value IS NOT DISTINCT FROM new_value
+              AND id NOT IN (SELECT id FROM change_log_archived)
+        """),
+        {'archived_at': now},
+    )
+
+    print('  deleting no-ops from change_log...', flush=True)
+    result = db.session.execute(text("""
+        DELETE FROM change_log
+         WHERE change_type = 'updated'
+           AND old_value IS NOT DISTINCT FROM new_value
+    """))
+    deleted = result.rowcount or 0
+    db.session.commit()
+    print(f'  archived and deleted: {deleted:,}', flush=True)
+    return {'noop_rows': noop_count, 'archived': deleted}
 
 
 def restore_from(backup_dir: Path, dry_run: bool) -> dict:
@@ -472,13 +510,13 @@ def main(argv=None) -> int:
         print(json.dumps(fs_stats, indent=2))
 
         if args.archive_noops:
-            print(f'\n[{mode}] Archiving no-op Updated rows ...')
+            print(f'\n[{mode}] Archiving no-op Updated rows ...', flush=True)
             ar_stats = archive_noops(dry_run=dry)
             print(json.dumps(ar_stats, indent=2))
         else:
-            # Still report how many no-ops exist
-            n = sum(1 for _ in find_noop_ids())
-            print(f'\nNo-op Updated rows currently in change_log: {n:,}')
+            print('\nCounting no-op Updated rows (SQL, fast)...', flush=True)
+            n = count_noop_rows()
+            print(f'No-op Updated rows currently in change_log: {n:,}')
             print('(Left in place; UI hides them by default. Use --archive-noops to move them.)')
 
         if dry:
