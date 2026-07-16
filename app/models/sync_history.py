@@ -73,12 +73,11 @@ class ChangeLog(db.Model):
     )
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None), index=True)
 
-    # 'course', 'instructor', 'student_count'
+    # 'course', 'instructor', 'student', 'student_count'
     entity_type = db.Column(db.String(30), nullable=False, index=True)
 
-    # For courses: section_key
-    # For instructors: "{section_key}|{user_id}"
-    # For student_count: section_key
+    # For courses / student_count: section_key
+    # For instructors / students: "{section_key}|{user_id}"
     entity_key = db.Column(db.String(200), nullable=False, index=True)
 
     # 'added', 'updated', 'removed'

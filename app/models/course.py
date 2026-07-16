@@ -78,6 +78,10 @@ class Course(db.Model):
     
     # Sync metadata
     last_synced = db.Column(db.DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None))
+
+    # When change-tracking first observed this course (not a proven creation date).
+    # Null means tracking has never stamped this row; set on first post-rollout sync.
+    first_seen_in_tracking_at = db.Column(db.DateTime, nullable=True, index=True)
     
     # Relationships
     instructors = db.relationship('Instructor', backref='course', lazy='dynamic',

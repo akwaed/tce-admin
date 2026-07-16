@@ -11,7 +11,9 @@
         </ol>
     </nav>
     <h1><i class="bi bi-clock-history me-2"></i>Course History Search</h1>
-    <p class="text-muted">Search courses by code to view their sync change history.</p>
+    <p class="text-muted mb-0">
+        One search box: course code or title, section key, instructor name / LinkBlue, or student name / LinkBlue.
+    </p>
 </div>
 
 <!-- Search Form -->
@@ -19,9 +21,9 @@
     <div class="card-body">
         <form method="get" action="{{ url_for('tracking.course_history_search') }}" class="row g-2 align-items-end">
             <div class="col-md-10">
-                <label for="q" class="form-label fw-semibold">Course Code</label>
+                <label for="q" class="form-label fw-semibold">Search</label>
                 <input type="text" name="q" id="q" class="form-control form-control-lg"
-                       placeholder="Enter course code (e.g. A&amp;S111, che202, ACCT 201-001)..."
+                       placeholder="e.g. AAD 150, WRD691, Jane Smith, jdoe123..."
                        value="{{ q }}" autofocus>
             </div>
             <div class="col-md-2">
@@ -32,29 +34,30 @@
         </form>
         {% if q and results %}
         <div class="mt-3 text-muted small">
-            <i class="bi bi-info-circle me-1"></i>Found {{ results|length }} result(s) for "{{ q }}"
+            <i class="bi bi-info-circle me-1"></i>Found {{ results|length }} section(s) for "{{ q }}"
         </div>
         {% endif %}
     </div>
 </div>
 
 {% if q and not results %}
-<!-- No Results -->
 <div class="card border-warning">
     <div class="card-body text-center py-5">
         <i class="bi bi-search fs-1 text-muted"></i>
         <h5 class="mt-3">No courses found matching "{{ q }}"</h5>
-        <p class="text-muted">Try a different search term or a shorter course prefix.</p>
+        <p class="text-muted mb-0">
+            Try a course code, part of a title, or an instructor/student name or LinkBlue.
+            {% if q|length < 2 %}Use at least a couple of characters.{% endif %}
+        </p>
     </div>
 </div>
 {% endif %}
 
 {% if results %}
-<!-- Results Table -->
 <div class="card">
     <div class="card-header d-flex justify-content-between align-items-center">
         <span><i class="bi bi-table me-2"></i>Search Results</span>
-        <span class="badge bg-primary">{{ results|length }} courses</span>
+        <span class="badge bg-primary">{{ results|length }} sections</span>
     </div>
     <div class="card-body p-0">
         <div class="table-responsive" style="max-height: 600px; overflow-y: auto;">
@@ -67,21 +70,40 @@
                         <th>Title</th>
                         <th>Term</th>
                         <th>College</th>
+                        <th>Why matched</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for r in results %}
                     <tr>
                         <td>
-                            <a href="{{ url_for('tracking.course_history_detail', section_key=r.section_key) }}" class="font-monospace small">
+                            {% if r.matched_user_id %}
+                            <a href="{{ url_for('tracking.course_history_detail', section_key=r.section_key, user=r.matched_user_id) }}"
+                               class="font-monospace small">
                                 {{ r.section_key }}
                             </a>
+                            {% else %}
+                            <a href="{{ url_for('tracking.course_history_detail', section_key=r.section_key) }}"
+                               class="font-monospace small">
+                                {{ r.section_key }}
+                            </a>
+                            {% endif %}
                         </td>
                         <td class="font-monospace small">{{ r.class_code }}</td>
                         <td class="small">{{ r.section_id }}</td>
                         <td class="small">{{ r.section_title }}</td>
                         <td class="small">{{ r.term_code }}</td>
                         <td class="small font-monospace">{{ r.college_code }}</td>
+                        <td class="small">
+                            {% if r.match_kind == 'instructor' %}
+                            <span class="badge bg-info text-dark">Instructor</span>
+                            {% elif r.match_kind == 'student' %}
+                            <span class="badge bg-success">Student</span>
+                            {% else %}
+                            <span class="badge bg-secondary">Course</span>
+                            {% endif %}
+                            <span class="text-muted ms-1">{{ r.match_reason }}</span>
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -92,12 +114,13 @@
 {% endif %}
 
 {% if not q and not results %}
-<!-- Empty State -->
 <div class="card">
     <div class="card-body text-center py-5">
         <i class="bi bi-clock-history fs-1 text-muted"></i>
         <h5 class="mt-3">Search Course History</h5>
-        <p class="text-muted">Enter a course code above to see its sync change history across all terms.</p>
+        <p class="text-muted mb-0">
+            Enter a course code, person name, or LinkBlue above to open that section’s sync timeline.
+        </p>
     </div>
 </div>
 {% endif %}

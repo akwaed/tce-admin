@@ -407,12 +407,12 @@ def main() -> int:
         # Additive column upgrades (create_all never ALTERs existing tables).
         from app.models.admin import Admin
         col_added = []
-        for model in (BlueSyncDatasource, Admin, DataFileSyncEvent):
+        for model in (BlueSyncDatasource, Admin, DataFileSyncEvent, Course):
             col_added.extend(_ensure_missing_model_columns(model, inspector))
         if col_added:
             print('Added missing columns:', ', '.join(col_added))
         else:
-            print('No missing model columns on blue_sync_datasources / admins.')
+            print('No missing model columns on blue_sync_datasources / admins / courses.')
 
         inspector = inspect(db.engine)
         _ensure_indexes(inspector)

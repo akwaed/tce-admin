@@ -27,6 +27,9 @@ datasources/*.xls
 datasources/*.json
 datasources/backups/
 
+# Change-tracking table dumps (produced by backup_and_backfill_change_tracking.py)
+data/backups/
+
 # IDE/editor
 .idea/
 .vscode/

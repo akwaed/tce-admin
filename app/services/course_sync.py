@@ -32,7 +32,7 @@ import os
 import threading
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 UTC = timezone.utc
 
 from app.models import db
@@ -158,6 +158,33 @@ def _parse_date(value):
     return None
 
 
+def normalize_diff_value(value):
+    """Canonical string form for field-diff comparisons.
+
+    PostgreSQL/psycopg2 returns native ``date`` / ``datetime`` objects for
+    Date columns, while CSV parsing via ``_parse_date`` yields ISO strings
+    (``\"2026-12-13\"``). Comparing a ``date`` to a ``str`` is always unequal
+    in Python, which produced false-positive ``Updated`` change_log rows for
+    every date field on every sync. Normalize both sides before comparing.
+    """
+    if value is None:
+        return ''
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    s = str(value).strip()
+    if not s:
+        return ''
+    # Collapse datetime-ish strings to the date portion so
+    # "2026-12-13 00:00:00" matches "2026-12-13".
+    if len(s) >= 10 and s[4] == '-' and s[7] == '-':
+        tail = s[10:]
+        if not tail or tail[0] in (' ', 'T'):
+            return s[:10]
+    return s
+
+
 def _clean(row, key):
     return (row.get(key) or '').strip()
 
@@ -228,6 +255,8 @@ class CourseSyncService:
             'users_synced': 0,
             'instructors_added': 0,
             'instructors_removed': 0,
+            'students_added': 0,
+            'students_removed': 0,
             'student_enrollments_synced': 0,
             'colleges_added': 0,
             'departments_added': 0,
@@ -415,6 +444,21 @@ class CourseSyncService:
             CREATE INDEX IF NOT EXISTS ix_student_enrollments_user_id
                 ON student_enrollments(user_id);
         """)
+        # Additive: tracking baseline marker for courses that predate change_log.
+        # IF NOT EXISTS is supported on modern PostgreSQL; ignore race/dupes.
+        try:
+            cur.execute("""
+                ALTER TABLE courses
+                ADD COLUMN IF NOT EXISTS first_seen_in_tracking_at TIMESTAMP NULL
+            """)
+        except Exception:
+            # Older SQLite path shouldn't hit this (PG-only service), but be safe.
+            try:
+                cur.execute(
+                    'ALTER TABLE courses ADD COLUMN first_seen_in_tracking_at TIMESTAMP'
+                )
+            except Exception:
+                pass
         cur.close()
 
     # ------------------------------------------------------------------
@@ -634,6 +678,9 @@ class CourseSyncService:
 
         _update_progress(f'Upserting {len(to_upsert):,} courses...', 1)
         self._bulk_upsert_courses(conn, to_upsert)
+        # Baseline marker: first time post-tracking-fix this course was synced.
+        # Never fabricates a pre-tracking creation date.
+        self._mark_first_seen_in_tracking(conn, self._csv_section_keys)
         conn.commit()
 
         # Orphan removal
@@ -657,13 +704,45 @@ class CourseSyncService:
         ).strip()
 
     def _course_diff(self, old, new):
+        """Return {field: (old_norm, new_norm)} for fields that truly changed.
+
+        Values are normalized via ``normalize_diff_value`` so date objects from
+        the DB compare equal to ISO date strings from CSV parsing.
+        """
         diff = {}
         for field in self.COURSE_DIFF_FIELDS:
-            o = old.get(field)
-            n = new.get(field)
-            if (o or '') != (n or ''):
-                diff[field] = (o, n)
+            o = normalize_diff_value(old.get(field))
+            n = normalize_diff_value(new.get(field))
+            if o != n:
+                # Store normalized forms so change_log Old/New are comparable.
+                diff[field] = (o or None, n or None)
         return diff
+
+    def _mark_first_seen_in_tracking(self, conn, section_keys):
+        """Stamp first_seen_in_tracking_at the first time tracking observes a course.
+
+        Does not invent a historical creation date — only records when tracking
+        first touched the row after this column existed. Null until then.
+        """
+        if not section_keys:
+            return
+        now = datetime.now(UTC).replace(tzinfo=None)
+        keys = list(section_keys)
+        cur = conn.cursor()
+        for i in range(0, len(keys), 500):
+            self._raise_if_cancelled(conn)
+            chunk = keys[i:i + 500]
+            placeholders = ','.join(['%s'] * len(chunk))
+            cur.execute(
+                f"""
+                UPDATE courses
+                   SET first_seen_in_tracking_at = %s
+                 WHERE first_seen_in_tracking_at IS NULL
+                   AND section_key IN ({placeholders})
+                """,
+                [now, *chunk],
+            )
+        cur.close()
 
     def _upsert_colleges_and_departments(self, conn, colleges, dept_info):
         cur = conn.cursor()
@@ -1052,7 +1131,12 @@ class CourseSyncService:
     # ------------------------------------------------------------------
 
     def _sync_student_counts(self, conn):
-        """Persist student-course links and update per-course student counts."""
+        """Persist student-course links, per-student add/drop, and counts.
+
+        Additive student-level change_log rows (entity_type='student') mirror
+        instructor add/remove tracking. Aggregate student_count diffs are kept
+        as entity_type='student_count'.
+        """
         path = os.path.join(self.datasources_path, 'Student_Course.csv')
         if not os.path.exists(path):
             self.errors.append(f'Student_Course.csv not found at {path}')
@@ -1083,6 +1167,56 @@ class CourseSyncService:
             return
 
         total_students = len(enrollments)
+        users_data = self._load_users_csv()
+
+        # Snapshot BEFORE delete-and-reinsert so we can compute per-student diffs.
+        old_pairs = self._snapshot_existing_enrollments(conn, self._csv_section_keys)
+
+        new_pairs = {}
+        for sk, uid in enrollments:
+            fname, lname, email = users_data.get(uid, ('', '', ''))
+            if not (fname or lname or email) and (sk, uid) in old_pairs:
+                prev = old_pairs[(sk, uid)]
+                fname = prev.get('first_name') or ''
+                lname = prev.get('last_name') or ''
+                email = prev.get('email') or ''
+            new_pairs[(sk, uid)] = {
+                'section_key': sk,
+                'user_id': uid,
+                'first_name': fname,
+                'last_name': lname,
+                'email': email,
+            }
+
+        added_pairs = set(new_pairs) - set(old_pairs)
+        removed_pairs = set(old_pairs) - set(new_pairs)
+        for key in added_pairs:
+            m = new_pairs[key]
+            self._record_change(
+                'student', f'{key[0]}|{key[1]}', 'added',
+                display_label=f"{m['first_name']} {m['last_name']} ({key[1]}) -> {key[0]}",
+                new_value=json.dumps({
+                    'first_name': m['first_name'],
+                    'last_name': m['last_name'],
+                    'email': m['email'],
+                }),
+            )
+        for key in removed_pairs:
+            old = old_pairs[key]
+            self._record_change(
+                'student', f'{key[0]}|{key[1]}', 'removed',
+                display_label=(
+                    f"{old.get('first_name', '')} {old.get('last_name', '')} "
+                    f"({key[1]}) -> {key[0]}"
+                ),
+                old_value=json.dumps({
+                    'first_name': old.get('first_name'),
+                    'last_name': old.get('last_name'),
+                    'email': old.get('email'),
+                }),
+            )
+        self.stats['students_added'] = len(added_pairs)
+        self.stats['students_removed'] = len(removed_pairs)
 
         _update_progress(f'Refreshing {total_students:,} student enrollments...', 3)
         cur = conn.cursor()
@@ -1167,6 +1301,42 @@ class CourseSyncService:
 
         self.stats['student_enrollments_synced'] = total_students
         self.stats['students_counted'] = total_students
+
+    def _snapshot_existing_enrollments(self, conn, section_keys):
+        """Return {(section_key, user_id): {fields...}} for the sync window.
+
+        Mirrors ``_snapshot_existing_instructors``. Names come from course_users
+        (enrollments themselves only store user_id).
+        """
+        result = {}
+        if not section_keys:
+            return result
+        keys = list(section_keys)
+        cur = conn.cursor()
+        for i in range(0, len(keys), 500):
+            chunk = keys[i:i + 500]
+            placeholders = ','.join(['%s'] * len(chunk))
+            cur.execute(
+                f"""
+                SELECT se.section_key, se.user_id,
+                       cu.first_name, cu.last_name, cu.email
+                  FROM student_enrollments se
+             LEFT JOIN course_users cu ON cu.user_id = se.user_id
+                 WHERE se.section_key IN ({placeholders})
+                """,
+                chunk,
+            )
+            for row in cur.fetchall():
+                sk, uid, fname, lname, email = row
+                result[(sk, uid)] = {
+                    'section_key': sk,
+                    'user_id': uid,
+                    'first_name': fname,
+                    'last_name': lname,
+                    'email': email,
+                }
+        cur.close()
+        return result
 
     def _get_existing_student_counts(self, conn, section_keys):
         """Return {section_key: student_count} for the given keys."""

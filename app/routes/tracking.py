@@ -9,17 +9,19 @@ from flask_login import login_required, current_user
 from app.models import db
 from app.models.admin import Admin, AdminAuditLog
 from app.models.question import QBAuditLog, QBBackup
-from app.models.course import College, Department, Course, Instructor
+from app.models.course import College, Department, Course, Instructor, CourseUser, StudentEnrollment
 from app.models.sync_history import ChangeLog, SyncRun
 from app.services.backup_service import get_backup_service
+from app.services.course_sync import normalize_diff_value
 from functools import wraps
 from datetime import datetime, timezone
 UTC = timezone.utc
 from collections import defaultdict
 import csv
 import io
+import math
 import re
-from sqlalchemy import text
+from sqlalchemy import or_, and_, func, text
 
 tracking_bp = Blueprint('tracking', __name__)
 
@@ -961,10 +963,13 @@ def dra_preview():
 # Course history search & detail
 # ---------------------------------------------------------------------------
 
+COURSE_HISTORY_PAGE_SIZE = 50
+
+
 @tracking_bp.route('/course-history')
 @login_required
 def course_history_search():
-    """Search courses by code with fuzzy matching."""
+    """Unified search: course code/title/section, instructor name, student name."""
     q = request.args.get('q', '').strip()
     results = []
     if q:
@@ -977,34 +982,390 @@ def course_history_search():
 def course_history_detail(section_key):
     """View change history for a specific course section."""
     course = Course.query.get_or_404(section_key)
-    changes = _get_course_changes(section_key)
+
+    filters = {
+        'entity_type': request.args.get('entity_type', '').strip(),
+        'change_type': request.args.get('change_type', '').strip(),
+        'sync_run': request.args.get('sync_run', '').strip(),
+        'date_from': request.args.get('date_from', '').strip(),
+        'date_to': request.args.get('date_to', '').strip(),
+        'user': request.args.get('user', '').strip(),  # highlight / filter person
+        'show_noise': request.args.get('show_noise', '').strip() in ('1', 'true', 'yes'),
+        'page': max(1, request.args.get('page', 1, type=int) or 1),
+    }
+
+    change_page = _get_course_changes(section_key, filters)
+    grouped = _group_changes_by_sync_run(change_page['items'])
+
+    history_meta = _course_history_meta(course, change_page['total_raw'], change_page['total'])
+
     instructors = Instructor.query.filter_by(section_key=section_key).all()
     related = Course.query.filter(
         Course.class_id == course.class_id,
         Course.section_key != section_key
     ).order_by(Course.term_code.desc()).limit(20).all()
-    return render_template('tracking/course_history_detail.html',
-                           course=course, changes=changes,
-                           instructors=instructors, related=related)
+    return render_template(
+        'tracking/course_history_detail.html',
+        course=course,
+        changes=change_page['items'],
+        grouped_changes=grouped,
+        pagination=change_page,
+        filters=filters,
+        history_meta=history_meta,
+        instructors=instructors,
+        related=related,
+        highlight_user=filters['user'],
+    )
 
 
-def _search_courses(q):
+def _search_courses(q, limit=100):
+    """Search courses by code/title/section_key and by instructor/student name.
+
+    Returns a list of dict-like rows with an extra ``match_reason`` explaining
+    why the course was included (course code, instructor, student, etc.).
+    """
+    q = (q or '').strip()
+    if not q:
+        return []
+
     norm = re.sub(r'[\s\-]', '', q).lower()
-    return db.session.execute(text("""
+    name_like = f'%{q.lower()}%'
+    # Split "last, first" or "first last" for multi-token name matching.
+    name_parts = [p for p in re.split(r'[\s,]+', q) if p]
+
+    def _person_name_filter(first_col, last_col, user_id_col, email_col=None):
+        """Match full query OR (for multi-token) every token against name fields."""
+        clauses = [
+            func.lower(func.coalesce(first_col, '')).like(name_like),
+            func.lower(func.coalesce(last_col, '')).like(name_like),
+            func.lower(user_id_col).like(name_like),
+        ]
+        if email_col is not None:
+            clauses.append(func.lower(func.coalesce(email_col, '')).like(name_like))
+        if len(name_parts) >= 2:
+            token_ands = []
+            for part in name_parts:
+                pl = f'%{part.lower()}%'
+                token_ands.append(
+                    or_(
+                        func.lower(func.coalesce(first_col, '')).like(pl),
+                        func.lower(func.coalesce(last_col, '')).like(pl),
+                        func.lower(user_id_col).like(pl),
+                    )
+                )
+            clauses.append(and_(*token_ands))
+        return or_(*clauses)
+
+    # 1) Course code / section_key / title / class_id
+    course_rows = db.session.execute(text("""
         SELECT section_key, class_code, section_id, section_title,
-               term_code, college_code, class_id
+               term_code, college_code, class_id,
+               'course' AS match_kind,
+               COALESCE(class_code, section_key) AS match_detail
         FROM courses
-        WHERE LOWER(REPLACE(REPLACE(class_code, ' ', ''), '-', '')) LIKE :prefix
+        WHERE LOWER(REPLACE(REPLACE(COALESCE(class_code, ''), ' ', ''), '-', '')) LIKE :prefix
            OR LOWER(REPLACE(REPLACE(section_key, ' ', ''), '-', '')) LIKE :prefix
+           OR LOWER(COALESCE(section_title, '')) LIKE :title_like
+           OR LOWER(COALESCE(class_id, '')) LIKE :title_like
         ORDER BY term_code DESC, class_code, section_id
-        LIMIT 100
-    """), {'prefix': f'%{norm}%'}).mappings().all()
+        LIMIT :lim
+    """), {
+        'prefix': f'%{norm}%',
+        'title_like': f'%{q.lower()}%',
+        'lim': limit,
+    }).mappings().all()
+
+    seen = {r['section_key']: dict(r) for r in course_rows}
+    for sk, row in seen.items():
+        row['match_reason'] = f"Course: {row.get('match_detail') or sk}"
+
+    # 2) Instructor name / linkblue
+    instructor_q = (
+        db.session.query(
+            Course.section_key,
+            Course.class_code,
+            Course.section_id,
+            Course.section_title,
+            Course.term_code,
+            Course.college_code,
+            Course.class_id,
+            Instructor.user_id,
+            Instructor.first_name,
+            Instructor.last_name,
+        )
+        .join(Instructor, Instructor.section_key == Course.section_key)
+        .filter(_person_name_filter(
+            Instructor.first_name, Instructor.last_name, Instructor.user_id,
+        ))
+        .order_by(Course.term_code.desc())
+        .limit(limit)
+    )
+
+    for row in instructor_q.all():
+        sk = row.section_key
+        label = f"{(row.first_name or '')} {(row.last_name or '')}".strip() or row.user_id
+        reason = f"Instructor: {label} ({row.user_id})"
+        if sk not in seen:
+            seen[sk] = {
+                'section_key': sk,
+                'class_code': row.class_code,
+                'section_id': row.section_id,
+                'section_title': row.section_title,
+                'term_code': row.term_code,
+                'college_code': row.college_code,
+                'class_id': row.class_id,
+                'match_kind': 'instructor',
+                'match_detail': row.user_id,
+                'match_reason': reason,
+                'matched_user_id': row.user_id,
+            }
+        else:
+            if seen[sk].get('match_kind') == 'course':
+                seen[sk]['match_reason'] = (
+                    f"{seen[sk]['match_reason']}; also instructor {label}"
+                )
+            seen[sk].setdefault('matched_user_id', row.user_id)
+
+    # 3) Student name / linkblue via CourseUser
+    student_q = (
+        db.session.query(
+            Course.section_key,
+            Course.class_code,
+            Course.section_id,
+            Course.section_title,
+            Course.term_code,
+            Course.college_code,
+            Course.class_id,
+            CourseUser.user_id,
+            CourseUser.first_name,
+            CourseUser.last_name,
+        )
+        .join(StudentEnrollment, StudentEnrollment.section_key == Course.section_key)
+        .join(CourseUser, CourseUser.user_id == StudentEnrollment.user_id)
+        .filter(_person_name_filter(
+            CourseUser.first_name, CourseUser.last_name, CourseUser.user_id,
+            email_col=CourseUser.email,
+        ))
+        .order_by(Course.term_code.desc())
+        .limit(limit)
+    )
+
+    for row in student_q.all():
+        sk = row.section_key
+        label = f"{(row.first_name or '')} {(row.last_name or '')}".strip() or row.user_id
+        reason = f"Student: {label} ({row.user_id})"
+        if sk not in seen:
+            seen[sk] = {
+                'section_key': sk,
+                'class_code': row.class_code,
+                'section_id': row.section_id,
+                'section_title': row.section_title,
+                'term_code': row.term_code,
+                'college_code': row.college_code,
+                'class_id': row.class_id,
+                'match_kind': 'student',
+                'match_detail': row.user_id,
+                'match_reason': reason,
+                'matched_user_id': row.user_id,
+            }
+        else:
+            if seen[sk].get('match_kind') == 'course':
+                seen[sk]['match_reason'] = (
+                    f"{seen[sk]['match_reason']}; also student {label}"
+                )
+            seen[sk].setdefault('matched_user_id', row.user_id)
+
+    # Sort: term desc, class code
+    results = list(seen.values())
+    results.sort(
+        key=lambda r: (
+            r.get('term_code') or '',
+            r.get('class_code') or '',
+            r.get('section_id') or '',
+        ),
+        reverse=True,
+    )
+    return results[:limit]
 
 
-def _get_course_changes(section_key):
-    """Get all change log entries related to this course section."""
-    changes = ChangeLog.query.filter(
-        (ChangeLog.entity_key == section_key) |
-        (ChangeLog.entity_key.like(f'{section_key}|%'))
-    ).order_by(ChangeLog.created_at.desc()).limit(200).all()
-    return changes
+def _is_noop_change(ch):
+    """True when an 'updated' row has Old == New after type normalization.
+
+    Filters historical false-positive date diffs without deleting them.
+    """
+    if getattr(ch, 'change_type', None) != 'updated':
+        return False
+    return normalize_diff_value(ch.old_value) == normalize_diff_value(ch.new_value)
+
+
+def _course_change_base_query(section_key):
+    """All change_log rows for a section (course, instructors, students, counts)."""
+    return ChangeLog.query.filter(
+        or_(
+            ChangeLog.entity_key == section_key,
+            ChangeLog.entity_key.like(f'{section_key}|%'),
+        )
+    )
+
+
+def _get_course_changes(section_key, filters=None):
+    """Paginated, filterable change log for a course section.
+
+    By default, no-op Updated rows (Old == New after normalization) are hidden
+    so historical date-type false positives do not clutter the timeline.
+    Pass show_noise=True to include them.
+    """
+    filters = filters or {}
+    page = max(1, int(filters.get('page') or 1))
+    per_page = COURSE_HISTORY_PAGE_SIZE
+    show_noise = bool(filters.get('show_noise'))
+
+    query = _course_change_base_query(section_key)
+    total_raw = query.count()
+
+    entity_type = filters.get('entity_type') or ''
+    if entity_type:
+        # Treat 'student' filter as student + student_count for usability.
+        if entity_type == 'student':
+            query = query.filter(ChangeLog.entity_type.in_(['student', 'student_count']))
+        else:
+            query = query.filter(ChangeLog.entity_type == entity_type)
+
+    change_type = filters.get('change_type') or ''
+    if change_type:
+        query = query.filter(ChangeLog.change_type == change_type)
+
+    sync_run = filters.get('sync_run') or ''
+    if sync_run:
+        try:
+            query = query.filter(ChangeLog.sync_run_id == int(sync_run))
+        except (TypeError, ValueError):
+            pass
+
+    date_from = filters.get('date_from') or ''
+    if date_from:
+        try:
+            dt = datetime.strptime(date_from, '%Y-%m-%d')
+            query = query.filter(ChangeLog.created_at >= dt)
+        except ValueError:
+            pass
+
+    date_to = filters.get('date_to') or ''
+    if date_to:
+        try:
+            dt = datetime.strptime(date_to, '%Y-%m-%d')
+            # Inclusive end-of-day
+            dt = dt.replace(hour=23, minute=59, second=59)
+            query = query.filter(ChangeLog.created_at <= dt)
+        except ValueError:
+            pass
+
+    user = filters.get('user') or ''
+    if user:
+        # entity_key is "{section}|{user_id}" for people; also match display_label.
+        query = query.filter(
+            or_(
+                ChangeLog.entity_key.like(f'%|{user}'),
+                ChangeLog.entity_key.like(f'%|{user}|%'),
+                ChangeLog.display_label.ilike(f'%{user}%'),
+            )
+        )
+
+    # Fetch a window large enough to filter no-ops in Python while still paging.
+    # No-ops are rare going forward; for noisy historical data we may scan more.
+    ordered = query.order_by(ChangeLog.created_at.desc(), ChangeLog.id.desc())
+
+    if show_noise:
+        total = ordered.count()
+        items = ordered.offset((page - 1) * per_page).limit(per_page).all()
+    else:
+        # Pull candidates; filter no-ops; page in memory for correctness.
+        # Cap scan to avoid unbounded memory on pathological sections.
+        scan_cap = 5000
+        candidates = ordered.limit(scan_cap).all()
+        filtered = [c for c in candidates if not _is_noop_change(c)]
+        total = len(filtered)
+        if len(candidates) >= scan_cap:
+            # Approximate: there may be more; still show what we scanned.
+            pass
+        start = (page - 1) * per_page
+        items = filtered[start:start + per_page]
+
+    pages = max(1, math.ceil(total / per_page)) if total else 1
+    return {
+        'items': items,
+        'page': page,
+        'per_page': per_page,
+        'total': total,
+        'total_raw': total_raw,
+        'pages': pages,
+        'has_prev': page > 1,
+        'has_next': page < pages,
+    }
+
+
+def _group_changes_by_sync_run(changes):
+    """Group change rows by sync_run_id for timeline display."""
+    groups = []
+    by_run = defaultdict(list)
+    order = []
+    for ch in changes:
+        rid = ch.sync_run_id
+        if rid not in by_run:
+            order.append(rid)
+        by_run[rid].append(ch)
+    for rid in order:
+        rows = by_run[rid]
+        first = rows[0]
+        run = first.sync_run if first else None
+        groups.append({
+            'sync_run_id': rid,
+            'started_at': run.started_at if run else first.created_at,
+            'changes': rows,
+            'count': len(rows),
+        })
+    return groups
+
+
+def _course_history_meta(course, total_raw, total_visible):
+    """Honest empty-state / baseline messaging for a course timeline."""
+    first_seen = getattr(course, 'first_seen_in_tracking_at', None)
+    has_any = (total_raw or 0) > 0
+    has_visible = (total_visible or 0) > 0
+
+    if has_visible:
+        status = 'has_history'
+        message = None
+    elif has_any and not has_visible:
+        status = 'only_noise'
+        message = (
+            'This course only has no-op history rows (same Old and New values, '
+            'usually from a past date-type comparison bug). Meaningful changes '
+            'will appear here once they occur. Toggle “Show no-op rows” to view '
+            'the raw log.'
+        )
+    elif first_seen:
+        status = 'tracking_baseline'
+        message = (
+            f'Tracking began {first_seen.strftime("%Y-%m-%d %H:%M")} UTC for this '
+            f'course. No changes have been recorded since that baseline. '
+            f'This is not a proven original creation date — only when change '
+            f'tracking first observed the row.'
+        )
+    else:
+        status = 'no_tracking_yet'
+        message = (
+            'No change history is available for this course. Change tracking may '
+            'not have run against it yet, or the course predated tracking and has '
+            'not been stamped with a baseline. We do not invent a creation date '
+            'when none was recorded. After the next successful sync that includes '
+            'this section, a “tracking began” baseline will appear here.'
+        )
+
+    return {
+        'status': status,
+        'message': message,
+        'first_seen_in_tracking_at': first_seen,
+        'total_raw': total_raw,
+        'total_visible': total_visible,
+    }
