@@ -969,7 +969,7 @@ def edit_admin(admin_id):
         admin.has_dashboard_access = request.form.get('has_dashboard_access') == 'yes'
         admin.has_static_report_access = request.form.get('has_static_report_access') == 'yes'
 
-        # QB access can only be granted by super admins.
+        # QB access can be granted by super admins and primary college contacts.
         if current_user.can_grant_qb_access():
             admin.has_qb_access = request.form.get('has_qb_access') == 'yes'
 
