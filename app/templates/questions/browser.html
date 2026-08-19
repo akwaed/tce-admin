@@ -500,6 +500,11 @@
                 <span class="badge bg-dark ms-1">{{ pending_count }}</span>
             </a>
             {% endif %}
+            {% if can_export_summary %}
+            <a href="{{ url_for('questions.export_summary') }}" class="btn btn-success">
+                <i class="bi bi-file-earmark-spreadsheet me-1"></i>Export Summary
+            </a>
+            {% endif %}
             {% if is_super_admin %}
             <a href="{{ url_for('questions.import_files') }}" class="btn btn-outline-secondary">
                 <i class="bi bi-upload me-1"></i>Import

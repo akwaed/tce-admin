@@ -11,6 +11,11 @@ import io
 import json
 from datetime import datetime
 from collections import defaultdict
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.page import PageMargins
+from openpyxl.worksheet.table import Table, TableStyleInfo
 from app.models import db
 from app.models.question import QBAuditLog
 from app.services.backup_service import get_backup_service
@@ -203,6 +208,7 @@ class QuestionBankService:
         self._placeholder_names = []
         self._uuid_row = []
         self._unit_to_college = {}
+        self._unit_metadata = {}
         self._section_key_to_crs_section = {}
         # Cache tracking
         self._cache_timestamps = {}
@@ -258,21 +264,41 @@ class QuestionBankService:
         
         # Build unit to college mapping (before filtering)
         full_df = pd.read_csv(courses_file, low_memory=False)
+        self._unit_to_college = {}
+        self._unit_metadata = {}
+        self._section_key_to_crs_section = {}
         for _, row in full_df.iterrows():
             college_code = str(row.get('CLASS_COLLEGE_SHORT', '')).strip()
+            college_name = str(row.get('CLASS_COLLEGE', '')).strip()
             dept_id = str(row.get('CLASS_DEPARTMENT_ID', '')).strip()
+            dept_name = str(row.get('CLASS_DEPARTMENT', '')).strip()
             class_code = str(row.get('CLASS', '')).strip()
             section_key = str(row.get('SECTION_KEY', '')).strip()
             crs_section = str(row.get('CRS_SECTION', '')).strip()
+            section_title = str(row.get('SECTION_TITLE', '')).strip()
+
+            metadata = {
+                'college_code': college_code if college_code != 'nan' else '',
+                'college_name': college_name if college_name != 'nan' else '',
+                'department_id': dept_id if dept_id != 'nan' else '',
+                'department_name': dept_name if dept_name != 'nan' else '',
+                'course': class_code if class_code != 'nan' else '',
+                'section': crs_section if crs_section != 'nan' else '',
+                'section_title': section_title if section_title != 'nan' else '',
+            }
             
             if dept_id and dept_id != 'nan':
                 self._unit_to_college[dept_id] = college_code
+                self._unit_metadata.setdefault(('DEPARTMENT', dept_id), metadata)
             if class_code and class_code != 'nan':
                 self._unit_to_college[class_code] = college_code
+                self._unit_metadata.setdefault(('COURSE', class_code), metadata)
             if section_key and section_key != 'nan':
                 self._unit_to_college[section_key] = college_code
+                self._unit_metadata.setdefault(('SECTION', section_key), metadata)
             if crs_section and crs_section != 'nan':
                 self._unit_to_college[crs_section] = college_code
+                self._unit_metadata.setdefault(('SECTION', crs_section), metadata)
                 if section_key and section_key != 'nan':
                     self._section_key_to_crs_section[section_key] = crs_section
         
@@ -815,6 +841,236 @@ class QuestionBankService:
         
         output.seek(0)
         return output
+
+    def _summary_rows(self, college_code=None):
+        """Return readable question assignment rows, optionally scoped to one college."""
+        rows = []
+        self._coalesce_question_mapping()
+
+        for unit_type, unit_id, questions in self._iter_question_mapping_rows():
+            canonical_id = self._canonical_mapping_unit_id(unit_type, unit_id)
+            metadata = self._unit_metadata.get((unit_type, canonical_id), {})
+            unit_college = metadata.get('college_code') or self.get_college_for_unit(canonical_id) or ''
+
+            # Fail closed for scoped exports: unknown units must never leak into a
+            # college administrator's workbook.
+            if college_code and unit_college != college_code:
+                continue
+
+            department = metadata.get('department_name', '')
+            course = metadata.get('course', '')
+            section = metadata.get('section', '')
+            if unit_type == 'DEPARTMENT':
+                department = department or canonical_id
+                course = ''
+                section = ''
+            elif unit_type == 'COURSE':
+                course = course or canonical_id
+                section = ''
+            elif unit_type == 'SECTION':
+                section = section or canonical_id
+
+            section_title = metadata.get('section_title', '')
+            if section and section_title:
+                section = f'{section} — {section_title}'
+
+            for placeholder, question_id in questions.items():
+                if not question_id:
+                    continue
+
+                placeholder_lower = str(placeholder).lower()
+                question = self.questions.get(question_id, {})
+                question_type = question.get('type', 'Unknown')
+                if question_type == 'Unknown':
+                    if 'sel' in placeholder_lower:
+                        question_type = 'Selection'
+                    elif 'com' in placeholder_lower:
+                        question_type = 'Comment'
+
+                type_definition = self.question_types.get(question.get('type_id', ''), {})
+                options = ' • '.join(
+                    str(option) for option in type_definition.get('options', [])
+                    if option is not None and str(option).strip()
+                )
+                notes = []
+                if question.get('block_title'):
+                    notes.append(f"Block: {question['block_title']}")
+                if question.get('detail'):
+                    notes.append(str(question['detail']))
+
+                rows.append({
+                    'college_code': unit_college,
+                    'college_name': metadata.get('college_name', ''),
+                    'values': [
+                        unit_type.title(),
+                        department,
+                        course,
+                        section,
+                        'Instructor' if 'ins_' in placeholder_lower or '_ins_' in placeholder_lower else 'Course',
+                        question_type,
+                        question.get('text') or f'Question ID: {question_id}',
+                        options,
+                        '\n'.join(notes),
+                        placeholder,
+                        question_id,
+                    ]
+                })
+
+        rows.sort(key=lambda row: (
+            row['college_name'] or row['college_code'],
+            row['values'][1],
+            row['values'][2],
+            row['values'][3],
+            row['values'][4],
+            row['values'][9],
+        ))
+        return rows
+
+    @staticmethod
+    def _summary_sheet_title(college_code, college_name, used_titles):
+        """Create a valid, recognizable, unique Excel sheet title."""
+        if college_code:
+            base = f'{college_code} - {college_name}' if college_name else college_code
+        else:
+            base = 'Unassigned Units'
+        for character in '[]:*?/\\':
+            base = base.replace(character, '-')
+        base = base.strip() or 'Question Summary'
+        base = base[:31]
+
+        title = base
+        counter = 2
+        while title.lower() in used_titles:
+            suffix = f' ({counter})'
+            title = f'{base[:31 - len(suffix)]}{suffix}'
+            counter += 1
+        used_titles.add(title.lower())
+        return title
+
+    def export_question_bank_summary(self, college_code=None, exported_at=None):
+        """Export an easy-to-read QB summary, grouped into college worksheets."""
+        headers = [
+            'Unit Level', 'Department', 'Course', 'Section', 'Audience',
+            'Question Type', 'Question', 'Response Options', 'Notes',
+            'Placeholder', 'Question ID'
+        ]
+        rows = self._summary_rows(college_code=college_code)
+        grouped_rows = defaultdict(list)
+        college_names = {}
+
+        for row in rows:
+            key = row['college_code'] or ''
+            grouped_rows[key].append(row['values'])
+            if row['college_name']:
+                college_names[key] = row['college_name']
+
+        # A scoped export should still produce a useful, clearly labeled sheet
+        # when that college currently has no mapped questions.
+        if college_code and college_code not in grouped_rows:
+            grouped_rows[college_code] = []
+            for college_name, college in self.hierarchy.items():
+                if college.get('id') == college_code:
+                    college_names[college_code] = college_name
+                    break
+        elif not grouped_rows:
+            grouped_rows[''] = []
+
+        workbook = Workbook()
+        workbook.remove(workbook.active)
+        used_titles = set()
+        exported_at = exported_at or datetime.now()
+        header_fill = PatternFill('solid', fgColor='0033A0')
+        subheader_fill = PatternFill('solid', fgColor='E9EFFB')
+        light_border = Border(bottom=Side(style='thin', color='B7C9E2'))
+
+        ordered_groups = sorted(
+            grouped_rows.items(),
+            key=lambda item: (college_names.get(item[0], ''), item[0])
+        )
+        for sheet_index, (group_code, group_rows) in enumerate(ordered_groups, start=1):
+            group_name = college_names.get(group_code, '')
+            title = self._summary_sheet_title(group_code, group_name, used_titles)
+            sheet = workbook.create_sheet(title=title)
+            sheet.sheet_view.showGridLines = False
+
+            label = group_name or group_code or 'Unassigned Units'
+            if group_code and group_name:
+                label = f'{group_name} ({group_code})'
+            sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+            sheet['A1'] = f'Question Bank Summary — {label}'
+            sheet['A1'].font = Font(name='Aptos Display', size=18, bold=True, color='FFFFFF')
+            sheet['A1'].fill = header_fill
+            sheet['A1'].alignment = Alignment(vertical='center')
+            sheet.row_dimensions[1].height = 32
+
+            sheet.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(headers))
+            sheet['A2'] = (
+                f'Exported {exported_at:%Y-%m-%d %H:%M} • '
+                f'{len(group_rows):,} assigned question(s)'
+            )
+            sheet['A2'].font = Font(name='Aptos', size=10, italic=True, color='334155')
+            sheet['A2'].fill = subheader_fill
+            sheet['A2'].alignment = Alignment(vertical='center')
+            sheet.row_dimensions[2].height = 22
+
+            for column, header in enumerate(headers, start=1):
+                cell = sheet.cell(row=4, column=column, value=header)
+                cell.font = Font(name='Aptos', size=10, bold=True, color='FFFFFF')
+                cell.fill = header_fill
+                cell.alignment = Alignment(vertical='center', wrap_text=True)
+            sheet.row_dimensions[4].height = 28
+
+            if group_rows:
+                for row_index, values in enumerate(group_rows, start=5):
+                    for column, value in enumerate(values, start=1):
+                        cell = sheet.cell(row=row_index, column=column, value=value)
+                        cell.font = Font(name='Aptos', size=10, color='172033')
+                        cell.alignment = Alignment(vertical='top', wrap_text=True)
+                        cell.border = light_border
+                    sheet.row_dimensions[row_index].height = 45
+
+                table_ref = f'A4:{get_column_letter(len(headers))}{4 + len(group_rows)}'
+                table = Table(displayName=f'QuestionSummary{sheet_index}', ref=table_ref)
+                table.tableStyleInfo = TableStyleInfo(
+                    name='TableStyleMedium2',
+                    showFirstColumn=False,
+                    showLastColumn=False,
+                    showRowStripes=True,
+                    showColumnStripes=False,
+                )
+                sheet.add_table(table)
+            else:
+                sheet.merge_cells(start_row=5, start_column=1, end_row=6, end_column=len(headers))
+                sheet['A5'] = 'No assigned questions were found for this college.'
+                sheet['A5'].font = Font(name='Aptos', size=11, italic=True, color='475569')
+                sheet['A5'].alignment = Alignment(horizontal='center', vertical='center')
+                sheet['A5'].fill = PatternFill('solid', fgColor='F8FAFC')
+
+            widths = [13, 24, 15, 28, 12, 15, 60, 34, 36, 20, 18]
+            for column, width in enumerate(widths, start=1):
+                sheet.column_dimensions[get_column_letter(column)].width = width
+
+            sheet.freeze_panes = 'A5'
+            sheet.auto_filter.ref = f'A4:{get_column_letter(len(headers))}{max(4, 4 + len(group_rows))}'
+            sheet.print_title_rows = '1:4'
+            sheet.page_setup.orientation = 'landscape'
+            sheet.page_setup.fitToWidth = 1
+            sheet.page_setup.fitToHeight = 0
+            sheet.sheet_properties.pageSetUpPr.fitToPage = True
+            sheet.page_margins = PageMargins(
+                left=0.25, right=0.25, top=0.5, bottom=0.5, header=0.2, footer=0.2
+            )
+            sheet.oddFooter.center.text = 'Page &P of &N'
+            sheet.oddFooter.right.text = 'TCE Question Bank Summary'
+
+        output = io.BytesIO()
+        workbook.save(output)
+        output.seek(0)
+        return output, {
+            'row_count': len(rows),
+            'sheet_count': len(ordered_groups),
+            'sheet_names': [sheet.title for sheet in workbook.worksheets],
+        }
     
     def generate_hierarchy_html(self, units_with_questions=None, use_cache=True):
         """Generate HTML for the hierarchy tree with caching"""
@@ -958,6 +1214,7 @@ def browser():
                          pending_count=pending_count,
                          my_pending_count=my_pending_count,
                          can_approve=current_user.is_super_admin() or current_user.role == 'college_admin',
+                         can_export_summary=current_user.is_super_admin() or current_user.role == 'college_admin',
                          is_super_admin=current_user.is_super_admin(),
                          user_role=current_user.role)
 
@@ -1607,6 +1864,49 @@ def export_qb():
         )
     except Exception as e:
         flash(f'Export failed: {str(e)}', 'danger')
+        return redirect(url_for('questions.browser'))
+
+
+@questions_bp.route('/export/summary')
+@qb_access_required
+def export_summary():
+    """Export a readable question assignment summary for college and super admins."""
+    if current_user.role not in ('super_admin', 'college_admin'):
+        flash('Only college and super administrators can export the question bank summary.', 'danger')
+        return redirect(url_for('questions.browser'))
+    if current_user.role == 'college_admin' and not current_user.college_code:
+        flash('Your account must be assigned to a college before exporting a summary.', 'danger')
+        return redirect(url_for('questions.browser'))
+
+    college_code = None if current_user.is_super_admin() else current_user.college_code
+    admin_scope = {'college': college_code, 'department': None} if college_code else None
+    qb_service = get_qb_service()
+
+    try:
+        qb_service.load_courses(admin_scope=admin_scope)
+        qb_service.load_question_bank()
+        qb_service.load_question_mapping()
+        output, summary = qb_service.export_question_bank_summary(college_code=college_code)
+
+        audit_details = {
+            'scope': college_code or 'all_colleges',
+            'question_count': summary['row_count'],
+            'sheet_count': summary['sheet_count'],
+        }
+        log_audit('export_qb_summary', current_user, audit_details)
+        QBAuditLog.log_action('qb_summary_export', current_user, details=audit_details)
+        db.session.commit()
+
+        scope_label = college_code or 'all_colleges'
+        filename = f'QB_summary_{scope_label}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
+        return Response(
+            output.read(),
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={'Content-Disposition': f'attachment; filename={filename}'}
+        )
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Summary export failed: {str(e)}', 'danger')
         return redirect(url_for('questions.browser'))
 
 

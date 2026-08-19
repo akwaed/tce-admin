@@ -283,6 +283,7 @@ class QBAuditLog(db.Model):
         action_names = {
             'qb_import': 'Question Bank Import',
             'qb_export': 'Question Bank Export',
+            'qb_summary_export': 'Question Bank Summary Export',
             'qm_import': 'Question Mapping Import',
             'qm_export': 'Question Mapping Export',
             'question_add': 'Question Added',
