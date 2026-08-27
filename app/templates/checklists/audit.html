@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}{{ semester.display_name }} Audit History{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <nav aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="{{ url_for('checklists.index') }}">TCE Checklists</a></li><li class="breadcrumb-item"><a href="{{ url_for('checklists.detail', checklist_id=semester.id) }}">{{ semester.display_name }}</a></li><li class="breadcrumb-item active">Audit history</li></ol></nav>
+    <h1><i class="bi bi-clock-history me-2"></i>Checklist Audit History</h1>
+    <p class="text-muted mb-0">{{ semester.display_name }} · {{ semester.term_code }}</p>
+</div>
+
+<div class="card mb-4"><div class="card-body">
+    <form method="GET" class="row g-3 align-items-end">
+        <div class="col-md-3"><label class="form-label">Action</label><select class="form-select" name="action"><option value="">All actions</option>{% for value in action_options %}<option value="{{ value }}" {% if current_filters.action == value %}selected{% endif %}>{{ value.replace('_', ' ').title() }}</option>{% endfor %}</select></div>
+        <div class="col-md-3"><label class="form-label">Entity</label><select class="form-select" name="entity_type"><option value="">All entities</option>{% for value in entity_type_options %}<option value="{{ value }}" {% if current_filters.entity_type == value %}selected{% endif %}>{{ value.replace('_', ' ').title() }}</option>{% endfor %}</select></div>
+        <div class="col-md-3"><label class="form-label">Administrator</label><input class="form-control" name="actor" value="{{ current_filters.actor }}" placeholder="LinkBlue"></div>
+        <div class="col-md-3 d-flex gap-2"><button class="btn btn-uk-primary flex-grow-1" type="submit">Filter</button><a class="btn btn-outline-secondary" href="{{ url_for('checklists.audit', checklist_id=semester.id) }}">Clear</a></div>
+    </form>
+</div></div>
+
+<div class="card">
+    <div class="card-header d-flex justify-content-between"><span>Changes</span><span class="badge bg-secondary">{{ pagination.total }}</span></div>
+    {% if logs %}<div class="table-responsive"><table class="table table-hover mb-0 align-middle">
+        <thead class="table-light"><tr><th>Date and time</th><th>Administrator</th><th>Action</th><th>Entity</th><th>Details</th></tr></thead>
+        <tbody>{% for log in logs %}<tr>
+            <td class="small text-nowrap">{{ log.timestamp|ny_str('%Y-%m-%d %I:%M:%S %p %Z') }}</td>
+            <td><strong>{{ log.actor_linkblue }}</strong>{% if log.actor %}<div class="small text-muted">{{ log.actor.full_name }}</div>{% endif %}</td>
+            <td><span class="badge bg-primary">{{ log.action_display }}</span></td>
+            <td>{{ log.entity_type.replace('_', ' ').title() }} #{{ log.entity_id }}</td>
+            <td>
+                {% if log.old_values or log.new_values or log.reason %}
+                <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#audit{{ log.id }}">View</button>
+                <div class="collapse mt-2" id="audit{{ log.id }}">
+                    {% if log.reason %}<div class="small mb-2"><strong>Reason:</strong> {{ log.reason }}</div>{% endif %}
+                    <div class="row g-2 small"><div class="col-lg-6"><strong>Before</strong><pre class="bg-light border rounded p-2 mt-1 mb-0" style="white-space: pre-wrap;">{{ log.old_values|tojson(indent=2) }}</pre></div><div class="col-lg-6"><strong>After</strong><pre class="bg-light border rounded p-2 mt-1 mb-0" style="white-space: pre-wrap;">{{ log.new_values|tojson(indent=2) }}</pre></div></div>
+                </div>
+                {% else %}<span class="text-muted">—</span>{% endif %}
+            </td>
+        </tr>{% endfor %}</tbody>
+    </table></div>
+    {% if pagination.pages > 1 %}<div class="card-footer bg-white"><nav><ul class="pagination justify-content-center mb-0">{% if pagination.has_prev %}<li class="page-item"><a class="page-link" href="{{ url_for('checklists.audit', checklist_id=semester.id, page=pagination.prev_num, **current_filters) }}">Previous</a></li>{% endif %}<li class="page-item disabled"><span class="page-link">Page {{ pagination.page }} of {{ pagination.pages }}</span></li>{% if pagination.has_next %}<li class="page-item"><a class="page-link" href="{{ url_for('checklists.audit', checklist_id=semester.id, page=pagination.next_num, **current_filters) }}">Next</a></li>{% endif %}</ul></nav></div>{% endif %}
+    {% else %}<div class="card-body text-center text-muted py-5"><i class="bi bi-inbox display-6"></i><p class="mt-2 mb-0">No audit entries match these filters.</p></div>{% endif %}
+</div>
+{% endblock %}

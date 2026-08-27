@@ -38,6 +38,14 @@ This system manages TCE administrators, verification reports, and question banks
 - **Approval Workflow** - Department admins submit changes for college/super admin approval
 - **Import/Export** - Upload QB.xlsx and QM.xlsx files, export current mappings
 
+### ✅ Implemented - TCE Report Checklists
+- **Super Admin Workspace** - Semester-based online checklists for all active TCE report types
+- **Reusable Templates** - 21 active templates seeded from the Spring 2025 workbook, plus 2 reference-only templates
+- **Collaboration & Signoff** - Task status, creator assignment, separate verifier signoff, notes, evidence links, and progress
+- **Semester Copying** - Start from current templates or copy a prior semester's frozen instructions with work state reset
+- **Audit History** - Versioned template changes and append-only semester activity tracking
+- **Archival** - Read-only historical checklists that can be reopened only with a recorded reason
+
 ### 🔜 Coming Soon (Phase 4)
 - **Azure AD Integration** - University single sign-on (waiting for cloud team)
 
@@ -60,6 +68,9 @@ python run.py --import-admins contacts.csv
 
 # Generate sample course data for testing (optional)
 python run.py --generate-sample
+
+# Explicitly initialize/verify TCE checklist tables and seed data (safe to rerun)
+python run.py --initialize-checklists
 
 # Sync course data from CSV files
 python run.py --sync-courses

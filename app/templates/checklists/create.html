@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+
+{% block title %}Create TCE Checklist{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('checklists.index') }}">TCE Checklists</a></li>
+            <li class="breadcrumb-item active">Create</li>
+        </ol>
+    </nav>
+    <h1><i class="bi bi-plus-square me-2"></i>Create Semester Checklist</h1>
+    <p class="text-muted mb-0">Start with the latest templates or copy the exact instructions from a previous semester.</p>
+</div>
+
+<form method="POST" class="row g-4" id="createChecklistForm">
+    <div class="col-lg-5">
+        <div class="card h-100">
+            <div class="card-header">Semester details</div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label" for="termCode">Term code <span class="text-danger">*</span></label>
+                    <input class="form-control" id="termCode" name="term_code" maxlength="50" required
+                           value="{{ request.form.get('term_code', '') }}" placeholder="2027010">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" for="displayName">Display name <span class="text-danger">*</span></label>
+                    <input class="form-control" id="displayName" name="display_name" maxlength="150" required
+                           value="{{ request.form.get('display_name', '') }}" placeholder="Spring 2027">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" for="projectName">Project name</label>
+                    <input class="form-control" id="projectName" name="project_name" maxlength="200"
+                           value="{{ request.form.get('project_name', '') }}" placeholder="Optional Explorance project name">
+                </div>
+                <div class="alert alert-info small mb-0">
+                    Completion, signoffs, dates, notes, and evidence are always reset for a new semester.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-7">
+        <div class="card">
+            <div class="card-header">Checklist source</div>
+            <div class="card-body">
+                <div class="form-check border rounded p-3 ps-5 mb-3">
+                    <input class="form-check-input" type="radio" name="source_mode" id="sourceTemplates" value="templates"
+                           {% if not preselected_source and request.form.get('source_mode', 'templates') != 'copy' %}checked{% endif %}>
+                    <label class="form-check-label fw-semibold" for="sourceTemplates">Start from current templates</label>
+                    <div class="small text-muted">Recommended for a normal new semester.</div>
+                </div>
+                <div id="templateOptions" class="ms-4 mb-4">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <span class="small text-muted">{{ templates|length }} active report templates</span>
+                        <button type="button" class="btn btn-sm btn-link" id="toggleTemplates">Clear all</button>
+                    </div>
+                    <div class="border rounded p-3" style="max-height: 320px; overflow-y: auto;">
+                        {% for template in templates %}
+                        <div class="form-check mb-2">
+                            <input class="form-check-input template-checkbox" type="checkbox" name="template_id"
+                                   value="{{ template.id }}" id="template{{ template.id }}" checked>
+                            <label class="form-check-label" for="template{{ template.id }}">
+                                {{ template.title }} <span class="text-muted small">({{ template.items|length }} tasks)</span>
+                            </label>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <div class="form-check border rounded p-3 ps-5 mb-3">
+                    <input class="form-check-input" type="radio" name="source_mode" id="sourceCopy" value="copy"
+                           {% if preselected_source or request.form.get('source_mode') == 'copy' %}checked{% endif %}>
+                    <label class="form-check-label fw-semibold" for="sourceCopy">Copy prior semester exactly</label>
+                    <div class="small text-muted">Keeps that semester's frozen task wording while resetting all work state.</div>
+                </div>
+                <div id="copyOptions" class="ms-4">
+                    <label class="form-label" for="sourceChecklist">Prior semester</label>
+                    <select class="form-select" id="sourceChecklist" name="source_checklist_id">
+                        <option value="">Select a semester</option>
+                        {% for semester in prior_semesters %}
+                        <option value="{{ semester.id }}" {% if preselected_source == semester.id or request.form.get('source_checklist_id')|int == semester.id %}selected{% endif %}>
+                            {{ semester.display_name }} — {{ semester.term_code }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="card-footer bg-white d-flex justify-content-end gap-2">
+                <a href="{{ url_for('checklists.index') }}" class="btn btn-outline-secondary">Cancel</a>
+                <button type="submit" class="btn btn-uk-primary"><i class="bi bi-plus-lg me-1"></i>Create Checklist</button>
+            </div>
+        </div>
+    </div>
+</form>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const templateRadio = document.getElementById('sourceTemplates');
+const copyRadio = document.getElementById('sourceCopy');
+const templateOptions = document.getElementById('templateOptions');
+const copyOptions = document.getElementById('copyOptions');
+const sourceChecklist = document.getElementById('sourceChecklist');
+
+function updateSourceMode() {
+    templateOptions.classList.toggle('opacity-50', !templateRadio.checked);
+    templateOptions.querySelectorAll('input').forEach(input => input.disabled = !templateRadio.checked);
+    copyOptions.classList.toggle('opacity-50', !copyRadio.checked);
+    sourceChecklist.disabled = !copyRadio.checked;
+    sourceChecklist.required = copyRadio.checked;
+}
+templateRadio.addEventListener('change', updateSourceMode);
+copyRadio.addEventListener('change', updateSourceMode);
+updateSourceMode();
+
+document.getElementById('toggleTemplates').addEventListener('click', function () {
+    const boxes = Array.from(document.querySelectorAll('.template-checkbox'));
+    const shouldCheck = boxes.some(box => !box.checked);
+    boxes.forEach(box => box.checked = shouldCheck);
+    this.textContent = shouldCheck ? 'Clear all' : 'Select all';
+});
+</script>
+{% endblock %}

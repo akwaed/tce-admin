@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+
+{% block title %}TCE Checklists{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+        <div>
+            <h1><i class="bi bi-list-check me-2"></i>TCE Report Checklists</h1>
+            <p class="text-muted mb-0">Create, complete, verify, and audit report work by semester.</p>
+        </div>
+        <div class="d-flex gap-2">
+            <a href="{{ url_for('checklists.templates') }}" class="btn btn-outline-secondary">
+                <i class="bi bi-layout-text-sidebar-reverse me-1"></i>Templates
+            </a>
+            <a href="{{ url_for('checklists.create') }}" class="btn btn-uk-primary">
+                <i class="bi bi-plus-lg me-1"></i>Create Semester Checklist
+            </a>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" class="row g-3 align-items-end">
+            <div class="col-md-5">
+                <label class="form-label">Search</label>
+                <input type="search" name="search" class="form-control"
+                       value="{{ current_filters.search }}" placeholder="Semester, term code, or project">
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">Status</label>
+                <select name="status" class="form-select">
+                    <option value="">All statuses</option>
+                    {% for value, label in [('draft', 'Draft'), ('in_progress', 'In progress'), ('ready_for_verification', 'Ready for verification'), ('verified', 'Verified'), ('published', 'Published'), ('archived', 'Archived')] %}
+                    <option value="{{ value }}" {% if current_filters.status == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-3 d-flex gap-2">
+                <button class="btn btn-uk-primary flex-grow-1" type="submit"><i class="bi bi-search me-1"></i>Filter</button>
+                <a href="{{ url_for('checklists.index') }}" class="btn btn-outline-secondary">Clear</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+{% if semesters %}
+<div class="row g-4">
+    {% for semester in semesters %}
+    {% set counts = semester.item_counts %}
+    <div class="col-xl-6">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-start gap-3">
+                <div>
+                    <h2 class="h5 mb-1">{{ semester.display_name }}</h2>
+                    <span class="text-muted small">{{ semester.term_code }}{% if semester.project_name %} · {{ semester.project_name }}{% endif %}</span>
+                </div>
+                <span class="badge {% if semester.status == 'published' %}bg-success{% elif semester.status == 'verified' %}bg-primary{% elif semester.status == 'ready_for_verification' %}bg-info text-dark{% elif semester.status == 'archived' %}bg-secondary{% elif semester.status == 'in_progress' %}bg-warning text-dark{% else %}bg-light text-dark{% endif %}">
+                    {{ semester.status_display }}
+                </span>
+            </div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between small mb-1">
+                    <span>{{ counts.complete }} of {{ counts.total }} required tasks complete</span>
+                    <strong>{{ semester.progress_percent }}%</strong>
+                </div>
+                <div class="progress mb-3" role="progressbar" aria-label="Checklist completion" aria-valuenow="{{ semester.progress_percent }}" aria-valuemin="0" aria-valuemax="100">
+                    <div class="progress-bar" style="width: {{ semester.progress_percent }}%"></div>
+                </div>
+                <div class="row text-center g-2 small">
+                    <div class="col"><div class="border rounded p-2"><strong class="d-block">{{ semester.reports|length }}</strong>Reports</div></div>
+                    <div class="col"><div class="border rounded p-2"><strong class="d-block">{{ counts.verified }}</strong>Verified</div></div>
+                    <div class="col"><div class="border rounded p-2"><strong class="d-block text-danger">{{ counts.blocked }}</strong>Blocked</div></div>
+                </div>
+            </div>
+            <div class="card-footer bg-white d-flex flex-wrap justify-content-between align-items-center gap-2">
+                <small class="text-muted">Updated {{ semester.updated_at|ny_str('%Y-%m-%d %I:%M %p %Z') if semester.updated_at else 'N/A' }}</small>
+                <div class="d-flex gap-2">
+                    <a href="{{ url_for('checklists.create', source=semester.id) }}" class="btn btn-sm btn-outline-secondary" title="Copy to a new semester">
+                        <i class="bi bi-copy"></i> Copy
+                    </a>
+                    <a href="{{ url_for('checklists.detail', checklist_id=semester.id) }}" class="btn btn-sm btn-uk-primary">
+                        Open <i class="bi bi-arrow-right ms-1"></i>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="card">
+    <div class="card-body text-center py-5">
+        <i class="bi bi-clipboard-plus display-4 text-muted"></i>
+        <h2 class="h4 mt-3">No semester checklists found</h2>
+        <p class="text-muted">Create the first checklist from the active TCE report templates.</p>
+        <a href="{{ url_for('checklists.create') }}" class="btn btn-uk-primary">Create Semester Checklist</a>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

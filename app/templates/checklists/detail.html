@@ -1,0 +1,277 @@
+{% extends "base.html" %}
+
+{% block title %}{{ semester.display_name }} Checklist{% endblock %}
+
+{% block extra_css %}
+<style>
+    .checklist-summary-card { min-width: 145px; background: #fff; border: 1px solid var(--uk-gray); border-radius: 8px; padding: .75rem 1rem; }
+    .checklist-task { border: 1px solid #dfe3e8; border-left: 4px solid #adb5bd; border-radius: 6px; padding: 1rem; background: #fff; }
+    .checklist-task[data-status="complete"] { border-left-color: #198754; }
+    .checklist-task[data-status="blocked"] { border-left-color: #dc3545; }
+    .checklist-task[data-status="in_progress"] { border-left-color: #ffc107; }
+    .checklist-task[data-status="not_applicable"] { border-left-color: #6c757d; }
+    .task-instruction { white-space: pre-line; }
+    .task-save-state { min-height: 1.25rem; }
+    .report-section-title { color: var(--uk-blue); border-bottom: 1px solid var(--uk-gray); padding-bottom: .4rem; margin: 1.25rem 0 .75rem; }
+    .accordion-button:not(.collapsed) { background: #eef3fb; color: var(--uk-blue); }
+    @media print {
+        nav, footer, .no-print, .btn, .form-control, .form-select { display: none !important; }
+        .accordion-collapse { display: block !important; }
+        .checklist-task { break-inside: avoid; }
+        .main-content { padding: 0; }
+        .page-header { margin: 0 0 1rem; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+{% set semester_counts = semester.item_counts %}
+<div class="page-header">
+    <nav aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="{{ url_for('checklists.index') }}">TCE Checklists</a></li><li class="breadcrumb-item active">{{ semester.display_name }}</li></ol></nav>
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+        <div>
+            <h1><i class="bi bi-clipboard-check me-2"></i>{{ semester.display_name }}</h1>
+            <p class="text-muted mb-0">{{ semester.term_code }}{% if semester.project_name %} · {{ semester.project_name }}{% endif %}</p>
+        </div>
+        <div class="d-flex flex-wrap gap-2 no-print">
+            <button type="button" class="btn btn-outline-secondary" onclick="window.print()"><i class="bi bi-printer me-1"></i>Print</button>
+            <a href="{{ url_for('checklists.audit', checklist_id=semester.id) }}" class="btn btn-outline-secondary"><i class="bi bi-clock-history me-1"></i>Audit History</a>
+            <a href="{{ url_for('checklists.create', source=semester.id) }}" class="btn btn-outline-primary"><i class="bi bi-copy me-1"></i>Copy</a>
+            {% if semester.is_archived %}
+            <button class="btn btn-warning" data-bs-toggle="modal" data-bs-target="#reopenModal"><i class="bi bi-unlock me-1"></i>Reopen</button>
+            {% else %}
+            <form method="POST" action="{{ url_for('checklists.archive', checklist_id=semester.id) }}" onsubmit="return confirm('Archive this semester? It will become read-only.');">
+                <button class="btn btn-outline-danger" type="submit"><i class="bi bi-archive me-1"></i>Archive</button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+{% if semester.is_archived %}
+<div class="alert alert-secondary"><i class="bi bi-lock me-2"></i>This checklist is archived and read-only. It remains available for audit.</div>
+{% endif %}
+
+<div class="d-flex flex-wrap gap-3 mb-4">
+    <div class="checklist-summary-card"><div class="small text-muted text-uppercase">Status</div><strong id="semesterStatus">{{ semester.status_display }}</strong></div>
+    <div class="checklist-summary-card"><div class="small text-muted text-uppercase">Complete</div><strong id="semesterComplete">{{ semester_counts.complete }} / {{ semester_counts.total }}</strong></div>
+    <div class="checklist-summary-card"><div class="small text-muted text-uppercase">Verified</div><strong id="semesterVerified">{{ semester_counts.verified }} / {{ semester_counts.total }}</strong></div>
+    <div class="checklist-summary-card"><div class="small text-muted text-uppercase">Blocked</div><strong class="text-danger" id="semesterBlocked">{{ semester_counts.blocked }}</strong></div>
+</div>
+<div class="d-flex justify-content-between small mb-1"><span>Semester progress</span><strong id="semesterProgressLabel">{{ semester.progress_percent }}%</strong></div>
+<div class="progress mb-4" style="height: 12px;"><div class="progress-bar" id="semesterProgressBar" style="width: {{ semester.progress_percent }}%" aria-valuenow="{{ semester.progress_percent }}" aria-valuemin="0" aria-valuemax="100"></div></div>
+
+<div class="accordion" id="reportsAccordion">
+    {% for report in semester.reports %}
+    {% set report_counts = report.item_counts %}
+    <div class="accordion-item mb-3 border-0 shadow-sm" id="reportCard{{ report.id }}">
+        <h2 class="accordion-header" id="reportHeading{{ report.id }}">
+            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#reportCollapse{{ report.id }}" aria-expanded="false" aria-controls="reportCollapse{{ report.id }}">
+                <span class="me-auto">
+                    <strong>{{ report.title_snapshot }}</strong>
+                    <span class="text-muted small ms-2" id="reportCounts{{ report.id }}">{{ report_counts.complete }}/{{ report_counts.total }} complete</span>
+                </span>
+                <span class="badge bg-secondary me-3" id="reportStatus{{ report.id }}">{{ report.status_display }}</span>
+            </button>
+        </h2>
+        <div id="reportCollapse{{ report.id }}" class="accordion-collapse collapse" aria-labelledby="reportHeading{{ report.id }}">
+            <div class="accordion-body">
+                {% if report.description_snapshot %}<p class="text-muted">{{ report.description_snapshot }}</p>{% endif %}
+                <div class="row g-3 align-items-end border rounded p-3 mb-3 bg-light no-print report-metadata-form" data-url="{{ url_for('checklists.update_report', report_id=report.id) }}">
+                    <div class="col-md-3"><label class="form-label small">Creation date</label><input type="date" class="form-control form-control-sm report-creation-date" value="{{ report.creation_date.isoformat() if report.creation_date else '' }}" {% if semester.is_archived %}disabled{% endif %}></div>
+                    <div class="col-md-3"><label class="form-label small">Verification date</label><input type="date" class="form-control form-control-sm report-verification-date" value="{{ report.verification_date.isoformat() if report.verification_date else '' }}" {% if semester.is_archived %}disabled{% endif %}></div>
+                    <div class="col-md-3"><div class="form-check mb-2"><input class="form-check-input report-published" type="checkbox" id="published{{ report.id }}" {% if report.published_status %}checked{% endif %} {% if semester.is_archived %}disabled{% endif %}><label class="form-check-label" for="published{{ report.id }}">Published</label></div></div>
+                    <div class="col-md-3"><div class="small task-save-state report-save-state text-muted" aria-live="polite"></div></div>
+                </div>
+                <div class="d-flex justify-content-between small mb-1"><span>Report progress</span><strong id="reportProgressLabel{{ report.id }}">{{ report.progress_percent }}%</strong></div>
+                <div class="progress mb-3"><div class="progress-bar" id="reportProgressBar{{ report.id }}" style="width: {{ report.progress_percent }}%"></div></div>
+
+                {% for section_name, items in report_groups[report.id] %}
+                <h3 class="h6 report-section-title">{{ section_name }}</h3>
+                <div class="d-grid gap-3">
+                    {% for item in items %}
+                    <form class="checklist-task checklist-item-form" data-status="{{ item.status }}" data-url="{{ url_for('checklists.update_item', item_id=item.id) }}" data-report-id="{{ report.id }}">
+                        <input type="hidden" name="version" value="{{ item.version }}">
+                        <div class="d-flex justify-content-between gap-3 mb-3">
+                            <div class="task-instruction"><span class="text-muted me-2">{{ item.sort_order }}.</span>{{ item.instruction_snapshot }}</div>
+                            {% if not item.is_required %}<span class="badge bg-light text-dark align-self-start">Optional</span>{% endif %}
+                        </div>
+                        <div class="row g-3">
+                            <div class="col-md-3">
+                                <label class="form-label small">Status</label>
+                                <select class="form-select form-select-sm item-status" name="status" {% if semester.is_archived %}disabled{% endif %}>
+                                    {% for value, label in [('not_started', 'Not started'), ('in_progress', 'In progress'), ('complete', 'Complete'), ('blocked', 'Blocked'), ('not_applicable', 'Not applicable')] %}
+                                    <option value="{{ value }}" {% if item.status == value %}selected{% endif %}>{{ label }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small">Creator / assignee</label>
+                                <select class="form-select form-select-sm item-creator" name="creator_id" {% if semester.is_archived %}disabled{% endif %}>
+                                    <option value="">Unassigned</option>
+                                    {% for admin in super_admins %}<option value="{{ admin.id }}" {% if item.creator_id == admin.id %}selected{% endif %}>{{ admin.full_name }}</option>{% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small">Evidence link</label>
+                                <input type="url" class="form-control form-control-sm item-evidence" name="evidence_url" value="{{ item.evidence_url or '' }}" placeholder="https://..." {% if semester.is_archived %}disabled{% endif %}>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small">Verification</label>
+                                <div class="small verification-display">
+                                    {% if item.verified_at %}<span class="text-success"><i class="bi bi-patch-check-fill me-1"></i>{{ item.verifier.full_name }} · {{ item.verified_at|ny_str('%Y-%m-%d %I:%M %p') }}</span>
+                                    {% else %}<span class="text-muted">Not verified</span>{% endif %}
+                                </div>
+                            </div>
+                            <div class="col-md-9">
+                                <label class="form-label small">Notes</label>
+                                <textarea class="form-control form-control-sm item-notes" name="notes" rows="2" maxlength="10000" {% if semester.is_archived %}disabled{% endif %}>{{ item.notes or '' }}</textarea>
+                            </div>
+                            <div class="col-md-3 d-flex flex-column justify-content-end">
+                                <div class="task-save-state small text-muted mb-1" aria-live="polite">
+                                    {% if item.updated_by %}Updated by {{ item.updated_by.full_name }}{% endif %}
+                                </div>
+                                {% if not semester.is_archived %}
+                                <div class="d-flex gap-2">
+                                    <button type="button" class="btn btn-sm btn-outline-primary flex-grow-1 item-save"><i class="bi bi-save me-1"></i>Save</button>
+                                    {% if item.verified_at %}
+                                    <button type="button" class="btn btn-sm btn-outline-secondary item-unverify" title="Remove verification"><i class="bi bi-arrow-counterclockwise"></i></button>
+                                    {% else %}
+                                    <button type="button" class="btn btn-sm btn-success item-verify" title="Verify as current user"><i class="bi bi-patch-check me-1"></i>Verify</button>
+                                    {% endif %}
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </form>
+                    {% endfor %}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+{% if semester.is_archived %}
+<div class="modal fade" id="reopenModal" tabindex="-1" aria-labelledby="reopenModalLabel" aria-hidden="true">
+    <div class="modal-dialog"><div class="modal-content"><form method="POST" action="{{ url_for('checklists.reopen', checklist_id=semester.id) }}">
+        <div class="modal-header"><h2 class="modal-title fs-5" id="reopenModalLabel">Reopen {{ semester.display_name }}</h2><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+        <div class="modal-body"><label class="form-label">Reason <span class="text-danger">*</span></label><textarea class="form-control" name="reason" rows="3" required placeholder="Explain why this audit record needs to be reopened"></textarea></div>
+        <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button><button type="submit" class="btn btn-warning">Reopen Checklist</button></div>
+    </form></div></div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function payloadFor(form) {
+    return {
+        version: Number(form.querySelector('[name="version"]').value),
+        status: form.querySelector('.item-status').value,
+        creator_id: form.querySelector('.item-creator').value || null,
+        evidence_url: form.querySelector('.item-evidence').value,
+        notes: form.querySelector('.item-notes').value
+    };
+}
+
+function setState(form, message, kind) {
+    const state = form.querySelector('.task-save-state');
+    state.textContent = message;
+    state.className = `task-save-state small mb-1 text-${kind || 'muted'}`;
+}
+
+function updateProgress(data) {
+    const report = data.report;
+    document.getElementById(`reportCounts${report.id}`).textContent = `${report.counts.complete}/${report.counts.total} complete`;
+    document.getElementById(`reportProgressLabel${report.id}`).textContent = `${report.progress_percent}%`;
+    document.getElementById(`reportProgressBar${report.id}`).style.width = `${report.progress_percent}%`;
+    document.getElementById(`reportStatus${report.id}`).textContent = report.status_display;
+    document.getElementById('semesterStatus').textContent = data.semester.status_display;
+    document.getElementById('semesterComplete').textContent = `${data.semester.counts.complete} / ${data.semester.counts.total}`;
+    document.getElementById('semesterVerified').textContent = `${data.semester.counts.verified} / ${data.semester.counts.total}`;
+    document.getElementById('semesterBlocked').textContent = data.semester.counts.blocked;
+    document.getElementById('semesterProgressLabel').textContent = `${data.semester.progress_percent}%`;
+    document.getElementById('semesterProgressBar').style.width = `${data.semester.progress_percent}%`;
+}
+
+async function saveItem(form, verified) {
+    if (form.dataset.saving === '1') return;
+    form.dataset.saving = '1';
+    setState(form, 'Saving…', 'muted');
+    const payload = payloadFor(form);
+    if (verified !== undefined) payload.verified = verified;
+    try {
+        const response = await fetch(form.dataset.url, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not save this task.');
+        form.querySelector('[name="version"]').value = data.item.version;
+        form.dataset.status = data.item.status;
+        setState(form, `Saved by ${data.item.updated_by || 'administrator'}`, 'success');
+        const verification = form.querySelector('.verification-display');
+        const actions = form.querySelector('.item-save')?.parentElement;
+        if (data.item.verified_at) {
+            verification.innerHTML = `<span class="text-success"><i class="bi bi-patch-check-fill me-1"></i>${data.item.verifier_name}</span>`;
+            const verifyButton = actions?.querySelector('.item-verify');
+            if (verifyButton) {
+                verifyButton.className = 'btn btn-sm btn-outline-secondary item-unverify';
+                verifyButton.title = 'Remove verification';
+                verifyButton.innerHTML = '<i class="bi bi-arrow-counterclockwise"></i>';
+                verifyButton.onclick = () => saveItem(form, false);
+            }
+        } else {
+            verification.innerHTML = '<span class="text-muted">Not verified</span>';
+            const unverifyButton = actions?.querySelector('.item-unverify');
+            if (unverifyButton) {
+                unverifyButton.className = 'btn btn-sm btn-success item-verify';
+                unverifyButton.title = 'Verify as current user';
+                unverifyButton.innerHTML = '<i class="bi bi-patch-check me-1"></i>Verify';
+                unverifyButton.onclick = () => saveItem(form, true);
+            }
+        }
+        updateProgress(data);
+    } catch (error) {
+        setState(form, error.message, 'danger');
+    } finally {
+        form.dataset.saving = '0';
+    }
+}
+
+document.querySelectorAll('.checklist-item-form').forEach(form => {
+    form.querySelector('.item-save')?.addEventListener('click', () => saveItem(form));
+    form.querySelector('.item-verify')?.addEventListener('click', () => saveItem(form, true));
+    form.querySelector('.item-unverify')?.addEventListener('click', () => saveItem(form, false));
+    let timer;
+    form.querySelectorAll('.item-status, .item-creator, .item-evidence, .item-notes').forEach(control => {
+        control.addEventListener('change', () => {
+            clearTimeout(timer);
+            timer = setTimeout(() => saveItem(form), 350);
+        });
+    });
+});
+
+document.querySelectorAll('.report-metadata-form').forEach(form => {
+    form.querySelectorAll('input').forEach(control => control.addEventListener('change', async () => {
+        const state = form.querySelector('.report-save-state');
+        state.textContent = 'Saving…';
+        const response = await fetch(form.dataset.url, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                creation_date: form.querySelector('.report-creation-date').value,
+                verification_date: form.querySelector('.report-verification-date').value,
+                published_status: form.querySelector('.report-published').checked
+            })
+        });
+        const data = await response.json();
+        state.textContent = response.ok ? 'Saved' : (data.error || 'Save failed');
+        state.className = `small task-save-state report-save-state text-${response.ok ? 'success' : 'danger'}`;
+        if (response.ok) document.getElementById(`reportStatus${data.report.id}`).textContent = data.report.status_display;
+    }));
+});
+</script>
+{% endblock %}

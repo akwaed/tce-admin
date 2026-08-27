@@ -59,6 +59,7 @@ def create_app(config_name='default'):
     from app.routes.tracking import tracking_bp
     from app.routes.settings import settings_bp
     from app.routes.reports import reports_bp
+    from app.routes.checklists import checklists_bp
 
     app.register_blueprint(main_bp)
     app.register_blueprint(auth_bp, url_prefix='/auth')
@@ -68,6 +69,7 @@ def create_app(config_name='default'):
     app.register_blueprint(tracking_bp, url_prefix='/tracking')
     app.register_blueprint(settings_bp, url_prefix='/settings')
     app.register_blueprint(reports_bp, url_prefix='/reports')
+    app.register_blueprint(checklists_bp, url_prefix='/checklists')
     
     # Create database tables
     with app.app_context():
@@ -100,6 +102,15 @@ def create_app(config_name='default'):
             app.logger.warning(
                 "Skipped default admin seed (schema or DB error): %s", exc
             )
+
+        # Seed the workbook-derived TCE report checklist templates once.
+        # Existing templates are never overwritten so UI edits remain authoritative.
+        try:
+            from app.services.checklist_service import seed_checklist_templates
+            seed_checklist_templates()
+        except Exception as exc:
+            db.session.rollback()
+            app.logger.warning("Skipped checklist template seed: %s", exc)
 
         # # Create test account if doesn't exist (lower privilege, configurable via admin UI)
         # test_username = app.config['TEST_ACCOUNT_USERNAME']

@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block title %}Edit {{ template.title }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <nav aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="{{ url_for('checklists.index') }}">TCE Checklists</a></li><li class="breadcrumb-item"><a href="{{ url_for('checklists.templates') }}">Templates</a></li><li class="breadcrumb-item active">{{ template.title }}</li></ol></nav>
+    <h1><i class="bi bi-pencil-square me-2"></i>Edit {{ template.title }}</h1>
+    <p class="text-muted mb-0">Version {{ template.version }} · Existing semester checklists will not be changed.</p>
+</div>
+
+<form method="POST">
+    <div class="card mb-4">
+        <div class="card-header">Template details</div>
+        <div class="card-body">
+            <div class="row g-3">
+                <div class="col-md-8"><label class="form-label">Title</label><input class="form-control" name="title" maxlength="200" value="{{ template.title }}" required></div>
+                <div class="col-md-4 d-flex align-items-end gap-4 pb-2">
+                    <div class="form-check"><input class="form-check-input" type="checkbox" name="is_active" value="1" id="isActive" {% if template.is_active %}checked{% endif %}><label class="form-check-label" for="isActive">Active</label></div>
+                    <div class="form-check"><input class="form-check-input" type="checkbox" name="reference_only" value="1" id="referenceOnly" {% if template.reference_only %}checked{% endif %}><label class="form-check-label" for="referenceOnly">Reference only</label></div>
+                </div>
+                <div class="col-12"><label class="form-label">Description</label><textarea class="form-control" name="description" rows="3">{{ template.description or '' }}</textarea></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between"><span>Instructions</span><span class="badge bg-secondary">{{ template.items|length }} tasks</span></div>
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead class="table-light"><tr><th style="width: 70px;">Order</th><th style="width: 190px;">Section</th><th>Instruction</th><th style="width: 95px;">Required</th><th style="width: 80px;">Delete</th></tr></thead>
+                <tbody>
+                    {% for item in template.items %}
+                    <tr>
+                        <td>{{ item.sort_order }}</td>
+                        <td><input class="form-control form-control-sm" name="item_{{ item.id }}_section" value="{{ item.section_name }}" maxlength="150"></td>
+                        <td><textarea class="form-control form-control-sm" name="item_{{ item.id }}_instruction" rows="2" required>{{ item.instruction }}</textarea></td>
+                        <td class="text-center"><input class="form-check-input" type="checkbox" name="item_{{ item.id }}_required" value="1" {% if item.is_required %}checked{% endif %}></td>
+                        <td class="text-center"><input class="form-check-input border-danger" type="checkbox" name="delete_item_id" value="{{ item.id }}" aria-label="Delete instruction {{ item.sort_order }}"></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-header"><i class="bi bi-plus-circle me-1"></i>Add instruction</div>
+        <div class="card-body">
+            <div class="row g-3 align-items-start">
+                <div class="col-md-3"><label class="form-label">Section</label><input class="form-control" name="new_section" value="Setup" maxlength="150"></div>
+                <div class="col-md-7"><label class="form-label">Instruction</label><textarea class="form-control" name="new_instruction" rows="3"></textarea></div>
+                <div class="col-md-2 pt-md-4"><div class="form-check mt-2"><input class="form-check-input" type="checkbox" name="new_required" value="1" id="newRequired" checked><label class="form-check-label" for="newRequired">Required</label></div></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="d-flex justify-content-end gap-2 mb-4">
+        <a href="{{ url_for('checklists.templates') }}" class="btn btn-outline-secondary">Cancel</a>
+        <button class="btn btn-uk-primary" type="submit" onclick="return confirm('Save this as a new template version? Existing semester checklists will not change.');"><i class="bi bi-save me-1"></i>Save New Version</button>
+    </div>
+</form>
+
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-clock-history me-1"></i>Recent template history</div>
+    {% if template_logs %}
+    <div class="table-responsive"><table class="table table-hover mb-0 align-middle">
+        <thead class="table-light"><tr><th>Date</th><th>Administrator</th><th>Version change</th><th>Details</th></tr></thead>
+        <tbody>{% for log in template_logs %}<tr>
+            <td class="small text-nowrap">{{ log.timestamp|ny_str('%Y-%m-%d %I:%M %p %Z') }}</td>
+            <td>{{ log.actor_linkblue }}</td>
+            <td>v{{ log.old_values.get('version', '?') }} → v{{ log.new_values.get('version', '?') }}</td>
+            <td><button class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#templateLog{{ log.id }}">View changes</button>
+                <div class="collapse mt-2" id="templateLog{{ log.id }}"><pre class="bg-light border rounded p-2 mb-0 small" style="white-space: pre-wrap; max-width: 800px;">{{ log.new_values|tojson(indent=2) }}</pre></div>
+            </td>
+        </tr>{% endfor %}</tbody>
+    </table></div>
+    {% else %}<div class="card-body text-muted">No template edits have been recorded yet.</div>{% endif %}
+</div>
+{% endblock %}

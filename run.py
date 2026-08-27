@@ -9,6 +9,7 @@ Usage:
     python run.py --create-superadmin   # Create/reset super admin account
     python run.py --sync-courses        # Sync course data from CSV files
     python run.py --generate-sample     # Generate sample course data for testing
+    python run.py --initialize-checklists  # Create/seed checklist tables safely
 """
 import os
 import sys
@@ -27,6 +28,25 @@ from app import create_app, db
 from app.models.admin import Admin
 
 app = create_app(os.environ.get('FLASK_ENV', 'development'))
+
+
+def initialize_checklists():
+    """Create checklist tables and seed only templates that do not exist."""
+    from app.models.checklist import ReportChecklistTemplate, ReportChecklistTemplateItem
+    from app.services.checklist_service import seed_checklist_templates
+
+    with app.app_context():
+        db.create_all()
+        result = seed_checklist_templates()
+        template_count = ReportChecklistTemplate.query.count()
+        item_count = ReportChecklistTemplateItem.query.count()
+
+    print("\nChecklist initialization complete.")
+    print(f"  Templates created: {result['created_templates']}")
+    print(f"  Items created: {result['created_items']}")
+    print(f"  Total templates: {template_count}")
+    print(f"  Total template items: {item_count}")
+    return result
 
 
 def import_admins_from_csv(filepath):
@@ -163,6 +183,8 @@ def main():
                        help='Sync course data from CSV files (default: ./datasources)')
     parser.add_argument('--generate-sample', nargs='?', const='./datasources', metavar='PATH',
                        help='Generate sample course data for testing')
+    parser.add_argument('--initialize-checklists', action='store_true',
+                       help='Create checklist tables and seed missing templates without overwriting edits')
     parser.add_argument('--host', type=str, default='127.0.0.1',
                        help='Host to bind to (default: 127.0.0.1)')
     parser.add_argument('--port', type=int, default=5000,
@@ -178,6 +200,8 @@ def main():
         sync_courses(args.sync_courses)
     elif args.generate_sample:
         generate_sample_data(args.generate_sample)
+    elif args.initialize_checklists:
+        initialize_checklists()
     else:
         print("\n" + "="*50)
         print("  UK TCE Admin System")

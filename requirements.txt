@@ -5,14 +5,15 @@
 Flask==3.0.0
 Flask-SQLAlchemy==3.1.1
 Flask-Login==0.6.3
+Flask-Session==0.8.0
 Werkzeug==3.0.1
 
 # Database
 SQLAlchemy==2.0.23
 psycopg2-binary>=2.9.9   # PostgreSQL driver (binary build, no libpq compile needed)
 
-# For future Azure AD integration
-# msal==1.25.0
+# Azure AD authentication
+msal>=1.33.0,<2
 
 # Data processing
 pandas==2.1.3

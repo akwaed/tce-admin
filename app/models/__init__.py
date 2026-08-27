@@ -10,3 +10,11 @@ from app.models.course import Course, Instructor, College, Department, SyncLog, 
 from app.models.question import QuestionBank, Question, QuestionTypeDefinition, QuestionAuditLog, QBAuditLog, QBBackup
 from app.models.settings import SystemSetting, DataSyncLog, DataFileSyncEvent, BlueSyncDatasource
 from app.models.sync_history import SyncRun, ChangeLog
+from app.models.checklist import (
+    ChecklistAuditLog,
+    ReportChecklistTemplate,
+    ReportChecklistTemplateItem,
+    SemesterChecklist,
+    SemesterChecklistItem,
+    SemesterReportChecklist,
+)

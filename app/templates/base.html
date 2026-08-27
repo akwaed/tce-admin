@@ -337,6 +337,12 @@
                             <i class="bi bi-search me-1"></i>User Lookup
                         </a>
                     </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint and request.endpoint.startswith('checklists.') %}active{% endif %}"
+                           href="{{ url_for('checklists.index') }}">
+                            <i class="bi bi-list-check me-1"></i>TCE Checklist
+                        </a>
+                    </li>
                     {% endif %}
                     <li class="nav-item">
                         <a class="nav-link {% if 'admin' in request.endpoint %}active{% endif %}" 

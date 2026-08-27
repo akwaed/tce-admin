@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block title %}Checklist Templates{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+        <div>
+            <nav aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="{{ url_for('checklists.index') }}">TCE Checklists</a></li><li class="breadcrumb-item active">Templates</li></ol></nav>
+            <h1><i class="bi bi-layout-text-sidebar-reverse me-2"></i>Checklist Templates</h1>
+            <p class="text-muted mb-0">Changes affect future semesters only. Existing semester snapshots remain unchanged.</p>
+        </div>
+        <a href="{{ url_for('checklists.create') }}" class="btn btn-uk-primary"><i class="bi bi-plus-lg me-1"></i>Create Semester Checklist</a>
+    </div>
+</div>
+
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-hover table-uk mb-0 align-middle">
+            <thead><tr><th>Report template</th><th>Version</th><th>Tasks</th><th>Status</th><th>Source</th><th class="text-end">Action</th></tr></thead>
+            <tbody>
+                {% for template in templates %}
+                <tr>
+                    <td><strong>{{ template.title }}</strong>{% if template.description %}<div class="small text-muted text-truncate" style="max-width: 520px;">{{ template.description }}</div>{% endif %}</td>
+                    <td>v{{ template.version }}</td>
+                    <td>{{ template.items|length }}</td>
+                    <td>
+                        {% if template.reference_only %}<span class="badge bg-secondary">Reference only</span>
+                        {% elif template.is_active %}<span class="badge bg-success">Active</span>
+                        {% else %}<span class="badge bg-warning text-dark">Inactive</span>{% endif %}
+                    </td>
+                    <td class="small text-muted">{{ template.source_note or 'Online template' }}</td>
+                    <td class="text-end"><a href="{{ url_for('checklists.edit_template', template_id=template.id) }}" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil me-1"></i>Edit</a></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
