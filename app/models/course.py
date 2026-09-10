@@ -5,6 +5,17 @@ For verification reports and data from UKDIG sync
 from datetime import datetime, timezone
 UTC = timezone.utc
 from app.models import db
+from sqlalchemy.ext.hybrid import hybrid_property
+from sqlalchemy import select, func
+
+
+def _effective_date(cls, field):
+    from app.models.college_policy import CollegeDateOverride
+    override = select(getattr(CollegeDateOverride, field)).where(
+        CollegeDateOverride.college_code == cls.college_code,
+        CollegeDateOverride.term_code == cls.term_code,
+    ).correlate(cls).scalar_subquery()
+    return func.coalesce(override, getattr(cls, 'sap_' + field))
 
 
 class College(db.Model):
@@ -65,8 +76,10 @@ class Course(db.Model):
     # Dates
     course_start = db.Column(db.Date)
     course_end = db.Column(db.Date)
-    tce_start = db.Column(db.Date)
-    tce_end = db.Column(db.Date)
+    # Existing DB columns retain raw SAP values. Read access uses local overrides
+    # in both Python and SQL, so filters, counts and exports agree immediately.
+    sap_tce_start = db.Column('tce_start', db.Date)
+    sap_tce_end = db.Column('tce_end', db.Date)
     tce_reminder = db.Column(db.Date)
     
     # Status
@@ -91,6 +104,37 @@ class Course(db.Model):
     
     def __repr__(self):
         return f'<Course {self.class_code} - {self.section_id}>'
+
+    @property
+    def date_override(self):
+        from app.services.college_policy import date_overrides
+        return date_overrides().get((self.college_code, self.term_code))
+
+    @hybrid_property
+    def tce_start(self):
+        override = self.date_override
+        return override.tce_start if override else self.sap_tce_start
+
+    @tce_start.setter
+    def tce_start(self, value):
+        self.sap_tce_start = value
+
+    @tce_start.expression
+    def tce_start(cls):
+        return _effective_date(cls, 'tce_start')
+
+    @hybrid_property
+    def tce_end(self):
+        override = self.date_override
+        return override.tce_end if override else self.sap_tce_end
+
+    @tce_end.setter
+    def tce_end(self, value):
+        self.sap_tce_end = value
+
+    @tce_end.expression
+    def tce_end(cls):
+        return _effective_date(cls, 'tce_end')
     
     @property
     def display_name(self):

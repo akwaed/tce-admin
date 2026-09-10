@@ -8,6 +8,7 @@ from app.models import db
 from app.models.course import Course, College, Department, Instructor, SyncLog, CourseUser, StudentEnrollment
 from app.models.sync_history import SyncRun
 from app.models.admin import Admin
+from app.services.college_policy import visible_courses, current_term
 from sqlalchemy import func, case, asc, desc
 import csv
 import io
@@ -95,7 +96,7 @@ def list_courses():
     sort_order = request.args.get('order', 'asc')  # Default ascending
 
     # Base query based on user's access
-    query = Course.query
+    query = visible_courses(Course.query, current_user)
 
     # Apply access restrictions
     if not current_user.is_super_admin():
@@ -106,6 +107,9 @@ def list_courses():
                 Course.college_code == current_user.college_code,
                 Course.department_id == current_user.department_id
             )
+
+    if 'term' not in request.args:
+        term_filter = current_term(query)
 
     # Apply filters
     if college_filter:
@@ -197,7 +201,7 @@ def list_courses():
     courses = query.paginate(page=page, per_page=per_page, error_out=False)
     
     # Get statistics for the filtered data
-    stats = get_verification_stats(current_user, college_filter, dept_filter)
+    stats = get_verification_stats(current_user, college_filter, dept_filter, term_filter)
     
     # Get colleges/departments for filters
     if current_user.is_super_admin():
@@ -218,7 +222,7 @@ def list_courses():
         departments = []
 
     # Get distinct academic terms for filter dropdown
-    term_query = db.session.query(Course.term_code).distinct()
+    term_query = visible_courses(db.session.query(Course.term_code), current_user).distinct()
     if not current_user.is_super_admin():
         if current_user.is_college_admin():
             term_query = term_query.filter(Course.college_code == current_user.college_code)
@@ -394,7 +398,7 @@ def user_lookup():
 @login_required
 def course_detail(section_key):
     """View course details including instructors"""
-    course = Course.query.get_or_404(section_key)
+    course = visible_courses(Course.query, current_user).filter_by(section_key=section_key).first_or_404()
     
     # Check access
     if not current_user.is_super_admin():
@@ -411,7 +415,7 @@ def course_detail(section_key):
     # Get crosslisted courses
     crosslisted = []
     if course.crosslisted_id:
-        crosslisted = Course.query.filter(
+        crosslisted = visible_courses(Course.query, current_user).filter(
             Course.crosslisted_id == course.crosslisted_id,
             Course.section_key != course.section_key
         ).all()
@@ -431,7 +435,7 @@ def export_courses():
     search = request.args.get('search', '').strip()
 
     # Build query with same logic as list view
-    query = Course.query
+    query = visible_courses(Course.query, current_user)
 
     if not current_user.is_super_admin():
         if current_user.is_college_admin():
@@ -441,6 +445,9 @@ def export_courses():
                 Course.college_code == current_user.college_code,
                 Course.department_id == current_user.department_id
             )
+
+    if 'term' not in request.args:
+        term_filter = current_term(query)
 
     if college_filter:
         query = query.filter(Course.college_code == college_filter)
@@ -559,8 +566,9 @@ def get_stats_api():
     """API endpoint to get verification statistics"""
     college_filter = request.args.get('college', '')
     dept_filter = request.args.get('department', '')
+    term_filter = request.args.get('term')
     
-    stats = get_verification_stats(current_user, college_filter, dept_filter)
+    stats = get_verification_stats(current_user, college_filter, dept_filter, term_filter)
     return jsonify(stats)
 
 
@@ -689,11 +697,11 @@ def reset_departments():
     return redirect(url_for('verification.sync_data'))
 
 
-def get_verification_stats(user, college_filter='', dept_filter=''):
+def get_verification_stats(user, college_filter='', dept_filter='', term_filter=''):
     """Calculate verification statistics based on user access and filters"""
     
     # Base query
-    query = Course.query
+    query = visible_courses(Course.query, user)
     
     # Apply access restrictions
     if not user.is_super_admin():
@@ -711,6 +719,11 @@ def get_verification_stats(user, college_filter='', dept_filter=''):
     if dept_filter:
         query = query.filter(Course.department_id == dept_filter)
     
+    if term_filter is None:
+        term_filter = current_term(query)
+    if term_filter:
+        query = query.filter(Course.term_code == term_filter)
+
     # Calculate statistics
     total = query.count()
     marked = query.filter(Course.marked_for_tce == True).count()
@@ -724,25 +737,9 @@ def get_verification_stats(user, college_filter='', dept_filter=''):
         Course.student_count > 0
     ).count()
     
-    # Total students in marked courses
-    total_students = db.session.query(func.sum(Course.student_count)).filter(
-        Course.marked_for_tce == True
-    )
-    if not user.is_super_admin():
-        if user.is_college_admin():
-            total_students = total_students.filter(Course.college_code == user.college_code)
-        else:
-            total_students = total_students.filter(
-                Course.college_code == user.college_code,
-                Course.department_id == user.department_id
-            )
-    if college_filter:
-        total_students = total_students.filter(Course.college_code == college_filter)
-    if dept_filter:
-        total_students = total_students.filter(Course.department_id == dept_filter)
-    
-    total_students = total_students.scalar() or 0
-    
+    total_students = query.filter(Course.marked_for_tce.is_(True)).with_entities(
+        func.coalesce(func.sum(Course.student_count), 0)).scalar() or 0
+
     return {
         'total': total,
         'marked': marked,

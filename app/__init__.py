@@ -58,6 +58,7 @@ def create_app(config_name='default'):
     from app.routes.main import main_bp
     from app.routes.tracking import tracking_bp
     from app.routes.settings import settings_bp
+    from app.routes import college_settings  # Register college policy routes on settings_bp.
     from app.routes.reports import reports_bp
     from app.routes.checklists import checklists_bp
 

@@ -299,7 +299,9 @@
                         <td class="small">{{ course.department.name if course.department else course.department_id }}</td>
                         <td class="small">{{ course.course_start.strftime('%Y-%m-%d') if course.course_start else '-' }}</td>
                         <td class="small">{{ course.course_end.strftime('%Y-%m-%d') if course.course_end else '-' }}</td>
-                        <td class="small">{{ course.tce_start.strftime('%Y-%m-%d') if course.tce_start else '-' }}</td>
+                        <td class="small">{{ course.tce_start.strftime('%Y-%m-%d') if course.tce_start else '-' }}
+                            {% if course.date_override %}<span class="badge bg-warning text-dark" title="Local college date override; SAP dates are retained">Override</span>{% endif %}
+                        </td>
                         <td>
                             {% if course.marked_for_tce %}
                                 {% if course.student_count == 0 %}

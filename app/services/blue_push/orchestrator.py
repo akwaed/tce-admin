@@ -291,6 +291,17 @@ class BluePushOrchestrator:
         users_failed = False
 
         try:
+            # Freeze one policy snapshot before any external writes, including
+            # relation-only pushes; a missing course file must fail closed.
+            college_policy = None
+            if any(c.key in {'courses', 'students', 'instructors'} or
+                   c.datasource_id in {'Data161', 'Data162', 'Data163'} for c in configs):
+                from app.services.college_policy import BlueCollegePolicy
+                from app.services.blue_push.csv_loader import resolve_csv_path
+                courses_config = next(c for c in load_datasource_configs()
+                                      if c.key == 'courses' or c.datasource_id == 'Data161')
+                college_policy = BlueCollegePolicy(
+                    resolve_csv_path(self.datasources_path, courses_config.csv_file))
             for idx, cfg in enumerate(configs, 1):
                 self._raise_if_cancelled(sync_log.id, parent_sync_log_id)
                 is_users = cfg.is_users or cfg.datasource_id == "Data144"
@@ -341,6 +352,7 @@ class BluePushOrchestrator:
                         test_rows=test_rows,
                         cancel_check=cancel_check,
                         progress_key=cfg.key,
+                        college_policy=college_policy,
                     )
                 except SyncCancelledError:
                     self._complete_file_event(

@@ -82,6 +82,7 @@ def push_datasource(
     skip_cancel_check: bool = False,
     cancel_check: CancelCheck = None,
     progress_key: Optional[str] = None,
+    college_policy=None,
 ) -> PushResult:
     """Run the full 7-step push for one datasource.
 
@@ -111,7 +112,17 @@ def push_datasource(
         update_progress(datasource=key, step="Loading CSV...")
         _check_cancel()
         csv_path = resolve_csv_path(datasources_path, config.csv_file)
-        loaded: LoadedCsv = load_datasource_csv(csv_path, config, test_rows=test_rows)
+        policy_target = config.key in {'courses', 'students', 'instructors'} or config.datasource_id in {'Data161', 'Data162', 'Data163'}
+        if policy_target and college_policy is None:
+            from app.services.college_policy import BlueCollegePolicy
+            from app.services.blue_push.orchestrator import load_datasource_configs
+            courses_config = next(c for c in load_datasource_configs()
+                                  if c.key == 'courses' or c.datasource_id == 'Data161')
+            college_policy = BlueCollegePolicy(resolve_csv_path(datasources_path, courses_config.csv_file))
+        loaded: LoadedCsv = load_datasource_csv(
+            csv_path, config, test_rows=test_rows,
+            row_transform=college_policy.transform if policy_target else None,
+        )
 
         result.columns = list(loaded.columns)
         result.total_rows = loaded.total_rows
