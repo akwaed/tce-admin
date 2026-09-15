@@ -6,6 +6,7 @@ from flask import Blueprint, render_template, redirect, url_for, flash, request,
 from flask_login import login_user, logout_user, login_required, current_user
 from app.models import db
 from app.models.admin import Admin
+from app.services.super_admin import configured_super_admin_username
 import msal
 
 auth_bp = Blueprint('auth', __name__)
@@ -39,12 +40,12 @@ def admin_login():
         password = request.form.get('password', '')
 
         # Check for super admin credentials from config
-        config_username = current_app.config['SUPER_ADMIN_USERNAME']
+        config_username = configured_super_admin_username(current_app.config)
         config_password = current_app.config['SUPER_ADMIN_PASSWORD']
 
         if username == config_username and password == config_password:
             # Find or create the super admin user
-            admin = Admin.query.filter_by(linkblue=username).first()
+            admin = Admin.query.filter_by(linkblue=username, is_active=True).first()
             if admin and admin.role == 'super_admin':
                 login_user(admin, remember=True)
                 flash('Welcome, Super Administrator!', 'success')
