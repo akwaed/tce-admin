@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}College Settings{% endblock %}
+{% block content %}
+<div class="page-header">
+    <a href="{{ url_for('settings.index') }}">Settings</a>
+    <h1>College settings</h1>
+    <p class="text-muted">Manage professional-school exceptions. Only super administrators can change these settings.</p>
+</div>
+<form method="get" class="mb-4">
+    <label for="college" class="form-label">College</label>
+    <div class="d-flex gap-2">
+        <select id="college" name="college" class="form-select" required>
+        {% for item in colleges %}
+            <option value="{{ item.code }}" {% if college and item.code == college.code %}selected{% endif %}>{{ item.name }} ({{ item.code }})</option>
+        {% endfor %}
+        </select>
+        <button class="btn btn-uk-primary">Load settings</button>
+    </div>
+</form>
+{% if college %}
+<div class="card mb-4">
+    <div class="card-header">Course-number exclusions</div>
+    <div class="card-body">
+        <p>Courses with catalog numbers above the threshold are hidden from this college's contacts on the dashboard and verification pages, including exports. They and their student and instructor assignments are excluded from Blue syncs. Super administrators can still review them here.</p>
+        <p class="text-muted">Pharmacy defaults to <strong>greater than 500</strong>. The rule uses the catalog course number—for example, PHR 501—not the section number or SAP object ID. Courses without a recognizable numeric catalog number are retained.</p>
+        <form method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="college" value="{{ college.code }}">
+            <input type="hidden" name="action" value="exclusion">
+            <label for="threshold" class="form-label">Exclude course numbers greater than</label>
+            <input id="threshold" name="threshold" type="number" min="0" max="999999" step="1" class="form-control mb-2" value="{{ threshold if threshold is not none else '' }}" aria-describedby="threshold-help">
+            <div id="threshold-help" class="form-text mb-3">Leave blank to include all sections. Changes affect every term for this college.</div>
+            <label for="exclusion-reason" class="form-label">Reason for change</label>
+            <textarea id="exclusion-reason" name="reason" class="form-control mb-3" required maxlength="2000"></textarea>
+            <button class="btn btn-uk-primary">Save section rule</button>
+        </form>
+    </div>
+</div>
+<div class="card mb-4">
+    <div class="card-header">TCE date overrides</div>
+    <div class="card-body">
+        <div class="alert alert-warning" role="alert"><strong>Data integrity warning:</strong> Overriding SAP dates is discouraged. Use this only when absolutely necessary. Local dates take precedence in this system and in data sent to Blue, and survive daily SAP imports.</div>
+        <p>Each override applies to all courses in one college and term. SAP source dates are retained; restoring SAP dates immediately uses the latest imported values. Reminder and report dates are unchanged, so check their timing when changing the evaluation window.</p>
+        <form method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="college" value="{{ college.code }}">
+            <input type="hidden" name="action" value="dates">
+            <div class="row g-3 mb-3">
+                <div class="col-md-4"><label for="term" class="form-label">Academic term</label>
+                    <select id="term" name="term" class="form-select" required>
+                        <option value="">Select term</option>
+                        {% for term in terms %}
+                        {% set existing = override_map.get(term) %}
+                        <option value="{{ term }}" data-start="{{ existing.tce_start if existing else '' }}" data-end="{{ existing.tce_end if existing else '' }}">{{ term }}{% if existing %} (override active){% endif %}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-4"><label for="tce-start" class="form-label">TCE start</label><input id="tce-start" name="tce_start" type="date" class="form-control" required></div>
+                <div class="col-md-4"><label for="tce-end" class="form-label">TCE end</label><input id="tce-end" name="tce_end" type="date" class="form-control" required></div>
+            </div>
+            <label for="date-reason" class="form-label">Why is this override necessary?</label>
+            <textarea id="date-reason" name="reason" class="form-control mb-3" required maxlength="2000"></textarea>
+            <div class="form-check mb-3"><input id="acknowledge" name="acknowledge" value="yes" type="checkbox" class="form-check-input" required><label for="acknowledge" class="form-check-label">I understand the data integrity risk and this change is absolutely necessary.</label></div>
+            <button class="btn btn-warning" {% if not terms %}disabled{% endif %}>Save date override</button>
+        </form>
+        <h2 class="h5 mt-4">Active overrides</h2>
+        {% for rule in overrides %}
+        <div class="border rounded p-3 mb-3">
+            <strong>{{ rule.term_code }}: {{ rule.tce_start }} – {{ rule.tce_end }}</strong>
+            <p>{{ rule.reason }}</p>
+            <form method="post">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="college" value="{{ college.code }}">
+                <input type="hidden" name="term" value="{{ rule.term_code }}">
+                <input type="hidden" name="action" value="restore">
+                <label class="form-label" for="restore-{{ loop.index }}">Reason for restoring SAP dates</label>
+                <input id="restore-{{ loop.index }}" name="reason" class="form-control mb-2" required maxlength="2000">
+                <div class="form-check mb-2"><input id="restore-ack-{{ loop.index }}" name="acknowledge" value="yes" type="checkbox" class="form-check-input" required><label for="restore-ack-{{ loop.index }}" class="form-check-label">I have reviewed the warning and intend to restore the latest SAP dates.</label></div>
+                <button class="btn btn-outline-secondary">Restore SAP dates</button>
+            </form>
+        </div>
+        {% else %}<p class="text-muted">No active overrides. SAP dates are in use.</p>{% endfor %}
+    </div>
+</div>
+<div class="card mb-4">
+    <div class="card-header">Recent changes</div>
+    <div class="card-body table-responsive">
+        <table class="table table-sm"><thead><tr><th>When (UTC)</th><th>Changed by</th><th>Action / term</th><th>Before → after</th><th>Reason</th></tr></thead><tbody>
+        {% for entry in audit %}<tr><td>{{ entry.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ entry.actor.linkblue if entry.actor else entry.actor_id }}</td><td>{{ entry.action }} {{ entry.term_code or '' }}</td><td>{{ entry.before_json }} → {{ entry.after_json }}</td><td>{{ entry.reason }}</td></tr>
+        {% else %}<tr><td colspan="5" class="text-muted">No saved changes yet.</td></tr>{% endfor %}
+        </tbody></table>
+    </div>
+</div>
+{% else %}<p>No colleges have been imported yet. Sync course data to configure college settings.</p>{% endif %}
+<script>
+    document.getElementById('term')?.addEventListener('change', function () {
+        const selected = this.selectedOptions[0];
+        document.getElementById('tce-start').value = selected?.dataset.start || '';
+        document.getElementById('tce-end').value = selected?.dataset.end || '';
+        document.getElementById('acknowledge').checked = false;
+    });
+</script>
+{% endblock %}

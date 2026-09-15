@@ -166,6 +166,9 @@ def dashboard():
             department_id=current_user.department_id
         )
     
+    from app.services.college_policy import visible_courses
+    course_query = visible_courses(course_query, current_user)
+
     # Course statistics
     stats['total_courses'] = course_query.count()
     stats['courses_marked_tce'] = course_query.filter(Course.marked_for_tce == True).count()

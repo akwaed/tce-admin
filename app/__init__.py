@@ -58,6 +58,7 @@ def create_app(config_name='default'):
     from app.routes.main import main_bp
     from app.routes.tracking import tracking_bp
     from app.routes.settings import settings_bp
+    from app.routes import college_settings  # Register college policy routes on settings_bp.
     from app.routes.reports import reports_bp
     from app.routes.checklists import checklists_bp
 
@@ -80,10 +81,13 @@ def create_app(config_name='default'):
         # work is not stuck in InFailedSqlTransaction.
         try:
             from app.models.admin import Admin
-            super_admin = Admin.query.filter_by(linkblue='tceadmin').first()
+            from app.services.super_admin import configured_super_admin_username
+
+            super_admin_username = configured_super_admin_username(app.config)
+            super_admin = Admin.query.filter_by(linkblue=super_admin_username).first()
             if not super_admin:
                 super_admin = Admin(
-                    linkblue='tceadmin',
+                    linkblue=super_admin_username,
                     first_name='TCE',
                     last_name='Administrator',
                     email='tce-admin@uky.edu',

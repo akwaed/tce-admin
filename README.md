@@ -96,6 +96,11 @@ Before deploying to production, make sure secrets are provided via environment v
 
 ## Course Data Sync
 
+Professional-school exceptions are available under **Settings → College settings**.
+Pharmacy sections above 500 are excluded from contact views and Blue payloads;
+super admins can configure exclusions and college/term TCE date overrides.
+See [College settings](docs/college-policies.md) for behavior and rollout details.
+
 The system imports course data from UKDIG-generated CSV files:
 
 | File | Purpose |

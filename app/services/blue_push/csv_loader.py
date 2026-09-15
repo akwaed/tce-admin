@@ -5,7 +5,7 @@ import csv
 import logging
 import os
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 from app.services.blue_push.config import DROP_COLUMNS, DatasourceConfig
 
@@ -34,6 +34,7 @@ def load_datasource_csv(
     csv_path: str,
     config: DatasourceConfig,
     test_rows: Optional[int] = None,
+    row_transform: Optional[Callable] = None,
 ) -> LoadedCsv:
     """Load and prepare a CSV for a Blue datasource push.
 
@@ -50,6 +51,8 @@ def load_datasource_csv(
     with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         csv_fieldnames = list(reader.fieldnames or [])
+    if row_transform and 'SECTION_KEY' not in csv_fieldnames:
+        raise ValueError('SECTION_KEY is required to apply college rules to this datasource.')
 
     dropped = [c for c in csv_fieldnames if c in DROP_COLUMNS]
     usable = [c for c in csv_fieldnames if c not in DROP_COLUMNS]
@@ -94,6 +97,10 @@ def load_datasource_csv(
     with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            if row_transform:
+                row = row_transform(row)
+                if row is None:
+                    continue
             row_data = []
             for bc in blue_columns:
                 csv_col = reverse_map.get(bc, bc)

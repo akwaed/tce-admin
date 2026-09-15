@@ -9,7 +9,8 @@ Usage:
     python scripts/blue_sync_cli.py --scheduled
 
 Flags:
-    --dry-run         Validate CSVs, print column maps / samples; no SOAP calls.
+    --dry-run         Validate raw CSVs offline; excludes DB college policies.
+    --policy-dry-run  Preview effective payloads with saved college policies; no SOAP calls.
     --datasource ID   Push only this datasource (repeat for multiple).
                       Accepts ID (Data161), legacy key (courses), or name.
     --scheduled       Create a DataSyncLog entry visible in the UI.
@@ -48,6 +49,11 @@ def main() -> int:
         help="Validate CSVs without any SOAP calls to Blue.",
     )
     parser.add_argument(
+        "--policy-dry-run",
+        action="store_true",
+        help="Preview effective payloads using saved college settings (requires DB; no SOAP).",
+    )
+    parser.add_argument(
         "--datasource",
         action="append",
         dest="datasources",
@@ -78,7 +84,7 @@ def main() -> int:
     args = parser.parse_args()
 
     # Offline dry-run: no Flask app, no DB, no SOAP — pure CSV validation.
-    if args.dry_run:
+    if args.dry_run and not args.policy_dry_run:
         return _run_offline_dry_run(
             datasources_path=args.datasources_path,
             datasource_keys=args.datasources,
@@ -96,7 +102,7 @@ def main() -> int:
         try:
             result = service.push_all(
                 datasources=args.datasources,
-                dry_run=False,
+                dry_run=args.policy_dry_run,
                 trigger_type="scheduled" if args.scheduled else "manual",
                 triggered_by=None,
                 test_rows=args.test_rows,
@@ -165,6 +171,7 @@ def _run_offline_dry_run(
 
     print("=" * 60)
     print("BLUE PUSH DRY RUN (offline — no SOAP, no DB)")
+    print("College exclusions and date overrides are NOT applied. Use --policy-dry-run for effective payloads.")
     print(f"datasources_path: {datasources_path}")
     print(f"order: {[c.key for c in configs]}")
     print(f"min_non_users_gap_seconds: {MIN_NON_USERS_GAP_SECONDS}")

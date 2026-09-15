@@ -26,6 +26,7 @@ if not os.environ.get('SECRET_KEY') and os.environ.get('FLASK_SECRET_KEY'):
 
 from app import create_app, db
 from app.models.admin import Admin
+from app.services.super_admin import configured_super_admin_username
 
 app = create_app(os.environ.get('FLASK_ENV', 'development'))
 
@@ -99,7 +100,8 @@ def import_admins_from_csv(filepath):
 def create_superadmin():
     """Create or reset the super admin account"""
     with app.app_context():
-        admin = Admin.query.filter_by(linkblue='tceadmin').first()
+        super_admin_username = configured_super_admin_username(app.config)
+        admin = Admin.query.filter_by(linkblue=super_admin_username).first()
         
         if admin:
             # Reset password
@@ -109,7 +111,7 @@ def create_superadmin():
         else:
             # Create new
             admin = Admin(
-                linkblue='tceadmin',
+                linkblue=super_admin_username,
                 first_name='TCE',
                 last_name='Administrator',
                 email='tce-admin@uky.edu',
@@ -124,8 +126,8 @@ def create_superadmin():
             db.session.commit()
             print("✓ Super admin account created")
         
-        print(f"\n  Username: {app.config['SUPER_ADMIN_USERNAME']}")
-        print(f"  Password: {app.config['SUPER_ADMIN_PASSWORD']}")
+        print(f"\n  Username: {super_admin_username}")
+        print("  Password: reset from SUPER_ADMIN_PASSWORD (value hidden)")
 
 
 def sync_courses(datasources_path='./datasources'):
@@ -207,7 +209,8 @@ def main():
         print("  UK TCE Admin System")
         print("="*50)
         print(f"\n  Starting server at http://{args.host}:{args.port}")
-        print(f"  Super Admin: {app.config['SUPER_ADMIN_USERNAME']} / {app.config['SUPER_ADMIN_PASSWORD']}")
+        print(f"  Super Admin: {configured_super_admin_username(app.config)}")
+        print("  Password source: SUPER_ADMIN_PASSWORD (value hidden)")
         print("\n  Press Ctrl+C to stop\n")
         app.run(host=args.host, port=args.port, debug=True)
 

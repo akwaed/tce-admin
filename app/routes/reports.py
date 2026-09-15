@@ -230,6 +230,8 @@ def _parse_date_arg(name):
 
 
 def _course_scope_filter(query):
+    from app.services.college_policy import visible_courses
+    query = visible_courses(query, current_user)
     if current_user.is_super_admin():
         return query
 
