@@ -19,15 +19,15 @@
 </form>
 {% if college %}
 <div class="card mb-4">
-    <div class="card-header">Course section exclusions</div>
+    <div class="card-header">Course-number exclusions</div>
     <div class="card-body">
-        <p>Sections above the threshold are hidden from this college's contacts on the dashboard and verification pages, including exports. They and their student and instructor assignments are excluded from Blue syncs. Super administrators can still review them here.</p>
-        <p class="text-muted">Pharmacy defaults to <strong>greater than 500</strong>, leaving section 500 and below included for the B.Sc. pathway. This uses the displayed section number, not the course number or SAP object ID. Alphanumeric sections are retained.</p>
+        <p>Courses with catalog numbers above the threshold are hidden from this college's contacts on the dashboard and verification pages, including exports. They and their student and instructor assignments are excluded from Blue syncs. Super administrators can still review them here.</p>
+        <p class="text-muted">Pharmacy defaults to <strong>greater than 500</strong>. The rule uses the catalog course number—for example, PHR 501—not the section number or SAP object ID. Courses without a recognizable numeric catalog number are retained.</p>
         <form method="post">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="college" value="{{ college.code }}">
             <input type="hidden" name="action" value="exclusion">
-            <label for="threshold" class="form-label">Exclude section numbers greater than</label>
+            <label for="threshold" class="form-label">Exclude course numbers greater than</label>
             <input id="threshold" name="threshold" type="number" min="0" max="999999" step="1" class="form-control mb-2" value="{{ threshold if threshold is not none else '' }}" aria-describedby="threshold-help">
             <div id="threshold-help" class="form-text mb-3">Leave blank to include all sections. Changes affect every term for this college.</div>
             <label for="exclusion-reason" class="form-label">Reason for change</label>

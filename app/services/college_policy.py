@@ -19,24 +19,26 @@ def default_threshold(college_name):
 def thresholds():
     from app.models.course import College
     result = {c.code: default_threshold(c.name) for c in College.query.all()}
-    result.update({p.college_code: p.exclude_sections_above for p in CollegePolicy.query.all()})
+    result.update({p.college_code: p.exclude_course_numbers_above for p in CollegePolicy.query.all()})
     return result
 
 
-def section_number(crs_section, section_key, section_label=''):
-    """Use the displayed section, never SAP's unrelated SECTION_ID object ID."""
-    value = (crs_section or '').strip()
-    if '-' in value:
-        value = value.rsplit('-', 1)[1].strip()
-    elif section_key and len(section_key.split('-')) >= 3:
-        value = section_key.split('-')[-2].strip()
-    else:
-        value = re.sub(r'^Section\s+', '', section_label or '', flags=re.I).strip()
-    return int(value) if re.fullmatch(r'[0-9]+', value or '') else None
+def course_number(class_code, crs_section='', section_key=''):
+    """Extract the numeric catalog number, never the displayed section or SAP ID."""
+    candidates = [class_code]
+    if crs_section:
+        candidates.append(crs_section.rsplit('-', 1)[0])
+    if section_key:
+        candidates.append(section_key.split('-', 1)[0])
+    for candidate in candidates:
+        match = re.search(r'(\d+)(?:[A-Za-z]*)$', (candidate or '').strip())
+        if match:
+            return int(match.group(1))
+    return None
 
 
-def excluded(crs_section, section_key, threshold, section_label=''):
-    number = section_number(crs_section, section_key, section_label)
+def excluded(class_code, crs_section, section_key, threshold):
+    number = course_number(class_code, crs_section, section_key)
     return threshold is not None and number is not None and number > threshold
 
 
@@ -51,10 +53,10 @@ def visible_courses(query, user):
         return query
     # Parse in Python for consistent behavior on PostgreSQL and SQLite, including
     # alphanumeric sections and leading zeros. Only inspect configured colleges.
-    hidden = [key for key, code, crs in db.session.query(
-        Course.section_key, Course.college_code, Course.crs_section
+    hidden = [key for key, code, class_code, crs in db.session.query(
+        Course.section_key, Course.college_code, Course.class_code, Course.crs_section
     ).filter(Course.college_code.in_(rules)).all()
-        if excluded(crs, key, rules[code])]
+        if excluded(class_code, crs, key, rules[code])]
     return query.filter(~Course.section_key.in_(hidden)) if hidden else query
 
 
@@ -116,7 +118,7 @@ class BlueCollegePolicy:
                 code = (row.get('CLASS_COLLEGE_SHORT') or '').strip()
                 limit = self.limits.get(code, default_threshold(row.get('CLASS_COLLEGE')))
                 key = (row.get('SECTION_KEY') or '').strip()
-                if excluded(row.get('CRS_SECTION'), key, limit, row.get('SECTION')):
+                if excluded(row.get('CLASS'), row.get('CRS_SECTION'), key, limit):
                     self.hidden.add(key)
 
     def transform(self, row):

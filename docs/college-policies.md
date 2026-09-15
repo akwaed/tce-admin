@@ -4,13 +4,13 @@ Super administrators can open **Settings → College settings**. The first colle
 selected is Pharmacy, when available. All changes require a reason and are
 recorded with the actor, time, college, term (for dates), and before/after values.
 
-## Section exclusions
+## Course-number exclusions
 
-Pharmacy defaults to excluding **displayed section numbers greater than 500**.
-Section 500 and below remain included. The number comes from `CRS_SECTION`, with
-the `SECTION_KEY` as fallback; SAP's `SECTION_ID` is an object identifier and is
-never compared with the threshold. Alphanumeric or unparseable sections remain
-included. This rule does not infer degree programs from course numbers.
+Pharmacy defaults to excluding **catalog course numbers greater than 500**.
+Course 500 and below remain included. The number comes from `CLASS`, with
+`CRS_SECTION` and `SECTION_KEY` as fallbacks. The displayed section and SAP's
+`SECTION_ID` object identifier are never compared with the threshold. Courses
+whose catalog numbers cannot be parsed remain included.
 
 The rule applies to all of that college's contacts and all terms. It affects
 dashboard totals/timelines, verification lists/details/statistics/exports, and

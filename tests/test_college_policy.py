@@ -18,7 +18,7 @@ from app.models import db
 from app.models.admin import Admin
 from app.models.course import College, Course, Department
 from app.models.college_policy import CollegePolicy, CollegeDateOverride, CollegePolicyAudit
-from app.services.college_policy import BlueCollegePolicy, current_term, excluded, visible_courses
+from app.services.college_policy import BlueCollegePolicy, course_number, current_term, excluded, visible_courses
 from app.services.blue_push.config import DEFAULT_DATASOURCES
 from app.services.blue_push.csv_loader import load_datasource_csv, sample_rows
 from app.services.blue_push.pusher import push_datasource
@@ -49,8 +49,10 @@ class CollegePolicyTests(unittest.TestCase):
         db.session.commit()
         self.today = date.today()
         self.courses = []
-        for code, section in [('PH', '001'), ('PH', '500'), ('PH', '0501'), ('PH', 'A01'), ('LA', '601')]:
-            self.add_course(code, section)
+        for code, catalog, section in [('PH', '101', '001'), ('PH', '500', '500'),
+                                       ('PH', '501', '0501'), ('PH', '400', 'A01'),
+                                       ('LA', '601', '601')]:
+            self.add_course(code, section, catalog=catalog)
         self.client = self.app.test_client()
 
     def tearDown(self):
@@ -58,9 +60,9 @@ class CollegePolicyTests(unittest.TestCase):
         db.drop_all()
         self.context.pop()
 
-    def add_course(self, code='PH', section='002', term='Current', start=None, end=None):
-        course = Course(section_key=f'{code}101-{section}-{term}', crs_section=f'{code}101-{section}',
-                        class_code=f'{code} 101', section_id='97465276', section_title=f'Title {code} {section}',
+    def add_course(self, code='PH', section='002', term='Current', start=None, end=None, catalog='101'):
+        course = Course(section_key=f'{code}{catalog}-{section}-{term}', crs_section=f'{code}{catalog}-{section}',
+                        class_code=f'{code} {catalog}', section_id='97465276', section_title=f'Title {code} {section}',
                         college_code=code, department_id='pharm' if code == 'PH' else 'law',
                         term_code=term, course_start=start or self.today-timedelta(days=20),
                         course_end=end or self.today+timedelta(days=20),
@@ -104,11 +106,19 @@ class CollegePolicyTests(unittest.TestCase):
         self.post(action='dates', college='LA', term='Current', acknowledge='yes',
                   tce_start='2026-11-01', tce_end='2026-11-15')
 
-    def test_section_boundaries_and_object_id_not_used(self):
-        for section, expected in [('001', False), ('500', False), ('0501', True), ('600', True),
-                                  ('A501', False), ('501A', False), ('', False)]:
-            with self.subTest(section=section):
-                self.assertEqual(excluded(f'PH101-{section}', '', 500), expected)
+    def test_course_boundaries_ignore_section_and_object_id(self):
+        cases = [
+            ('PH 500', 'PH500-999', '', False),
+            ('PH 501', 'PH501-001', '', True),
+            ('PH 600A', 'PH600A-A01', '', True),
+            ('', 'PH 400-999', '', False),
+            ('', '', 'PHR700-001-2027010', True),
+            ('PH ABC', 'PHABC-999', 'PHABC-999-2027010', False),
+        ]
+        for class_code, crs, key, expected in cases:
+            with self.subTest(class_code=class_code, crs=crs, key=key):
+                self.assertEqual(excluded(class_code, crs, key, 500), expected)
+        self.assertEqual(course_number('PHR 411', 'PHR411-001'), 411)
         visible = visible_courses(Course.query.filter_by(college_code='PH'), self.contact).all()
         self.assertEqual({c.section_number for c in visible}, {'001', '500', 'A01'})
         self.assertEqual(visible_courses(Course.query, self.superadmin).count(), 5)
@@ -209,23 +219,25 @@ class CollegePolicyTests(unittest.TestCase):
     def test_exclusion_can_be_disabled_and_audited(self):
         self.login(self.superadmin)
         self.post(action='exclusion', threshold='')
-        self.assertIsNone(db.session.get(CollegePolicy, 'PH').exclude_sections_above)
+        self.assertIsNone(db.session.get(CollegePolicy, 'PH').exclude_course_numbers_above)
         self.assertEqual(visible_courses(Course.query.filter_by(college_code='PH'), self.contact).count(), 4)
         self.assertEqual(CollegePolicyAudit.query.first().actor_id, self.superadmin.id)
         self.post(action='exclusion', threshold='-1')
         self.assertEqual(CollegePolicyAudit.query.count(), 1)
         self.post(action='exclusion', threshold='500')
         self.assertEqual(visible_courses(Course.query.filter_by(college_code='PH'), self.contact).count(), 3)
+        self.post(action='exclusion', threshold='400')
+        self.assertEqual(visible_courses(Course.query.filter_by(college_code='PH'), self.contact).count(), 2)
 
     def write_sources(self, directory):
-        columns = ['SECTION_KEY', 'CRS_SECTION', 'CLASS_COLLEGE_SHORT', 'CLASS_COLLEGE',
+        columns = ['SECTION_KEY', 'CLASS', 'CRS_SECTION', 'CLASS_COLLEGE_SHORT', 'CLASS_COLLEGE',
                    'ACADEMIC_TERM', 'TCE_INVITE', 'TCE_END_DATE', 'TITLE']
         path = Path(directory) / 'Courses.csv'
         with path.open('w', newline='', encoding='utf-8') as file:
             writer = csv.DictWriter(file, fieldnames=columns)
             writer.writeheader()
             for course in self.courses:
-                writer.writerow(dict(zip(columns, [course.section_key, course.crs_section, course.college_code,
+                writer.writerow(dict(zip(columns, [course.section_key, course.class_code, course.crs_section, course.college_code,
                     'College of Pharmacy' if course.college_code == 'PH' else 'College of Law',
                     course.term_code, '2026-12-01 00:00:00', '2026-12-15 00:00:00', course.section_title])))
         for name in ['Instructor_Course.csv', 'Student_Course.csv']:

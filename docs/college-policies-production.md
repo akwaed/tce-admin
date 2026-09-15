@@ -1,6 +1,6 @@
 # Deploy the college settings release
 
-This release adds Pharmacy section exclusions, college/term TCE date overrides,
+This release adds Pharmacy course-number exclusions, college/term TCE date overrides,
 and the automatic verification term default. No dependency changes are required.
 The app creates three new tables; existing SAP date columns retain their data.
 

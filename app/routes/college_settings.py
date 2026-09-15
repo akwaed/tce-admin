@@ -49,15 +49,15 @@ def college_policies():
                 limit = None
                 if raw:
                     if not raw.isascii() or not raw.isdecimal() or len(raw) > 6:
-                        raise ValueError('Section threshold must be a whole number from 0 to 999999, or blank.')
+                        raise ValueError('Course-number threshold must be a whole number from 0 to 999999, or blank.')
                     limit = int(raw)
-                before = {'exclude_sections_above': limits.get(code)}
+                before = {'exclude_course_numbers_above': limits.get(code)}
                 rule = db.session.get(CollegePolicy, code)
                 if rule is None:
                     rule = CollegePolicy(college_code=code)
                     db.session.add(rule)
-                rule.exclude_sections_above = limit
-                after = {'exclude_sections_above': limit}
+                rule.exclude_course_numbers_above = limit
+                after = {'exclude_course_numbers_above': limit}
                 term = None
             elif action in {'dates', 'restore'}:
                 if request.form.get('acknowledge') != 'yes':

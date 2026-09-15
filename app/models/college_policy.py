@@ -9,7 +9,8 @@ class CollegePolicy(db.Model):
 
     college_code = db.Column(db.String(20), db.ForeignKey('colleges.code'), primary_key=True)
     # NULL explicitly disables exclusion, including the Pharmacy default.
-    exclude_sections_above = db.Column(db.Integer, nullable=True)
+    # Keep the original database column name so this correction is migration-free.
+    exclude_course_numbers_above = db.Column('exclude_sections_above', db.Integer, nullable=True)
 
 
 class CollegeDateOverride(db.Model):
