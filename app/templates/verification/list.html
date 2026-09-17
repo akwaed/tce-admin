@@ -171,12 +171,19 @@
 </div>
 
 <!-- Results Table -->
+{% if current_user.is_super_admin() %}
+{% set bulk_tce = true %}
+{% include 'verification/_tce_editor.html' %}
+{% endif %}
 <div class="card">
     <div class="card-body p-0">
         <div class="table-responsive">
             <table class="table table-uk table-hover mb-0">
                 <thead>
                     <tr>
+                        {% if current_user.is_super_admin() %}
+                        <th><input id="tce-select-page" type="checkbox" class="form-check-input" aria-label="Select all courses on this page" {% if not courses.items %}disabled{% endif %}></th>
+                        {% endif %}
                         <th style="width: 120px;" class="sortable-header" data-sort="course">
                             Course
                             <span class="sort-icon">
@@ -249,6 +256,14 @@
                                 {% else %}<i class="bi bi-caret-down text-muted opacity-25"></i>{% endif %}
                             </span>
                         </th>
+                        <th style="width: 110px;" class="sortable-header" data-sort="tce_end">
+                            TCE End
+                            <span class="sort-icon">
+                                {% if current_filters.sort == 'tce_end' %}
+                                    {% if current_filters.order == 'asc' %}<i class="bi bi-caret-up-fill"></i>{% else %}<i class="bi bi-caret-down-fill"></i>{% endif %}
+                                {% else %}<i class="bi bi-caret-down text-muted opacity-25"></i>{% endif %}
+                            </span>
+                        </th>
                         <th style="width: 100px;" class="sortable-header" data-sort="status">
                             Status
                             <span class="sort-icon">
@@ -270,6 +285,9 @@
                 <tbody>
                     {% for course in courses.items %}
                     <tr class="{% if course.marked_for_tce and course.student_count == 0 %}table-warning{% endif %}">
+                        {% if current_user.is_super_admin() %}
+                        <td><input type="checkbox" class="form-check-input tce-course-select" name="section_keys" value="{{ course.section_key }}" form="tce-edit-form" aria-label="Select {{ course.class_code }} section {{ course.section_number }} ({{ course.term_code }})"></td>
+                        {% endif %}
                         <td>
                             <strong>{{ course.class_code }}</strong>
                             {% if course.crosslisted_id %}
@@ -300,10 +318,13 @@
                         <td class="small">{{ course.course_start.strftime('%Y-%m-%d') if course.course_start else '-' }}</td>
                         <td class="small">{{ course.course_end.strftime('%Y-%m-%d') if course.course_end else '-' }}</td>
                         <td class="small">{{ course.tce_start.strftime('%Y-%m-%d') if course.tce_start else '-' }}
-                            {% if course.date_override %}<span class="badge bg-warning text-dark" title="Local college date override; SAP dates are retained">Override</span>{% endif %}
+                            {% if course.has_local_tce_dates or course.date_override %}<span class="badge bg-warning text-dark" title="Local TCE date override; SAP dates are retained">Override</span>{% endif %}
                         </td>
+                        <td class="small">{{ course.tce_end.strftime('%Y-%m-%d') if course.tce_end else '-' }}</td>
                         <td>
-                            {% if course.marked_for_tce %}
+                            {% if course.tce_blocked %}
+                            <span class="badge bg-secondary" title="Local TCE flag is off. SAP is unchanged.">Blocked from Blue</span>
+                            {% elif course.marked_for_tce %}
                                 {% if course.student_count == 0 %}
                                 <span class="badge bg-warning text-dark">
                                     <i class="bi bi-exclamation-triangle me-1"></i>Zero
@@ -329,7 +350,7 @@
                     </tr>
                     {% else %}
                     <tr>
-                        <td colspan="11" class="text-center text-muted py-5">
+                        <td colspan="{{ 13 if current_user.is_super_admin() else 12 }}" class="text-center text-muted py-5">
                             <i class="bi bi-inbox fs-1 d-block mb-2"></i>
                             No courses found.
                             {% if stats.total == 0 %}
@@ -433,6 +454,7 @@
 {% endblock %}
 
 {% block extra_js %}
+{% if current_user.is_super_admin() %}<script src="{{ url_for('static', filename='js/course_tce.js') }}"></script>{% endif %}
 <script>
 function updateDepartments() {
     const collegeCode = document.getElementById('collegeFilter').value;

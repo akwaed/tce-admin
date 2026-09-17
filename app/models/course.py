@@ -11,11 +11,15 @@ from sqlalchemy import select, func
 
 def _effective_date(cls, field):
     from app.models.college_policy import CollegeDateOverride
+    from app.models.course_tce import CourseTCEOverride
+    local = select(getattr(CourseTCEOverride, field)).where(
+        CourseTCEOverride.section_key == cls.section_key,
+    ).correlate(cls).scalar_subquery()
     override = select(getattr(CollegeDateOverride, field)).where(
         CollegeDateOverride.college_code == cls.college_code,
         CollegeDateOverride.term_code == cls.term_code,
     ).correlate(cls).scalar_subquery()
-    return func.coalesce(override, getattr(cls, 'sap_' + field))
+    return func.coalesce(local, override, getattr(cls, 'sap_' + field))
 
 
 class College(db.Model):
@@ -83,7 +87,7 @@ class Course(db.Model):
     tce_reminder = db.Column(db.Date)
     
     # Status
-    marked_for_tce = db.Column(db.Boolean, default=False, index=True)
+    sap_marked_for_tce = db.Column('marked_for_tce', db.Boolean, default=False, index=True)
     student_count = db.Column(db.Integer, default=0)
     
     # Term info (extracted from section_key)
@@ -110,8 +114,46 @@ class Course(db.Model):
         from app.services.college_policy import date_overrides
         return date_overrides().get((self.college_code, self.term_code))
 
+    @property
+    def local_tce_override(self):
+        from app.services.course_tce import course_overrides
+        return course_overrides().get(self.section_key)
+
+    @property
+    def has_local_tce_dates(self):
+        rule = self.local_tce_override
+        return rule is not None and (rule.tce_start is not None or rule.tce_end is not None)
+
+    @hybrid_property
+    def tce_blocked(self):
+        rule = self.local_tce_override
+        return bool(rule and rule.blocked)
+
+    @tce_blocked.expression
+    def tce_blocked(cls):
+        from app.models.course_tce import CourseTCEOverride
+        return select(CourseTCEOverride.section_key).where(
+            CourseTCEOverride.section_key == cls.section_key,
+            CourseTCEOverride.blocked.is_(True),
+        ).correlate(cls).exists()
+
+    @hybrid_property
+    def marked_for_tce(self):
+        return self.sap_marked_for_tce and not self.tce_blocked
+
+    @marked_for_tce.setter
+    def marked_for_tce(self, value):
+        self.sap_marked_for_tce = value
+
+    @marked_for_tce.expression
+    def marked_for_tce(cls):
+        return db.and_(cls.sap_marked_for_tce, ~cls.tce_blocked)
+
     @hybrid_property
     def tce_start(self):
+        local = self.local_tce_override
+        if local is not None and local.tce_start is not None:
+            return local.tce_start
         override = self.date_override
         return override.tce_start if override else self.sap_tce_start
 
@@ -125,6 +167,9 @@ class Course(db.Model):
 
     @hybrid_property
     def tce_end(self):
+        local = self.local_tce_override
+        if local is not None and local.tce_end is not None:
+            return local.tce_end
         override = self.date_override
         return override.tce_end if override else self.sap_tce_end
 
@@ -149,6 +194,8 @@ class Course(db.Model):
     @property
     def status_display(self):
         """Human-readable TCE status"""
+        if self.tce_blocked:
+            return "TCE Off — Blocked from Blue"
         if not self.marked_for_tce:
             return "Not Marked for TCE"
         if self.has_zero_enrollment:
@@ -191,6 +238,8 @@ class Course(db.Model):
             'tce_start': self.tce_start.isoformat() if self.tce_start else None,
             'tce_end': self.tce_end.isoformat() if self.tce_end else None,
             'marked_for_tce': self.marked_for_tce,
+            'sap_marked_for_tce': self.sap_marked_for_tce,
+            'tce_blocked': self.tce_blocked,
             'student_count': self.student_count,
             'instructors': [i.to_dict() for i in self.instructors]
         }

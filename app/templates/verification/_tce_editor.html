@@ -1,0 +1,49 @@
+{% if bulk_tce %}
+<details class="card mb-4" id="tce-editor">
+    <summary class="card-header">Bulk edit TCE settings <span class="text-muted ms-2" id="tce-selection-count" aria-live="polite">0 courses selected on this page.</span></summary>
+{% else %}
+<div class="card mb-4" id="tce-editor">
+    <div class="card-header">Edit TCE settings for this course</div>
+{% endif %}
+    <div class="card-body">
+        <p class="text-muted">Super administrators can change TCE start, TCE end, or the local TCE flag. Only the fields you select will change. Local settings survive daily SAP imports.</p>
+        <div class="alert alert-warning" role="alert"><strong>Data integrity warning:</strong> Use local date overrides only when necessary. They take precedence here and in Blue uploads. SAP source dates are retained. Reminder and report dates are unchanged.</div>
+        {% if not bulk_tce %}
+        <p class="small">SAP TCE dates: {{ course.sap_tce_start or 'Not scheduled' }} – {{ course.sap_tce_end or 'Not scheduled' }}. SAP TCE flag: {{ 'Marked' if course.sap_marked_for_tce else 'Not marked' }}.</p>
+        {% if course.has_local_tce_dates %}<p class="small">Course overrides: start {{ course.local_tce_override.tce_start or 'uses default' }}, end {{ course.local_tce_override.tce_end or 'uses default' }}.</p>{% endif %}
+        {% endif %}
+        <form method="post" id="tce-edit-form" action="{{ url_for('verification.edit_tce', **request.args.to_dict(flat=False)) if bulk_tce else url_for('verification.edit_tce') }}">
+            <input type="hidden" name="csrf_token" value="{{ tce_csrf_token }}">
+            {% if not bulk_tce %}
+            <input type="hidden" name="section_keys" value="{{ course.section_key }}">
+            <input type="hidden" name="detail_section_key" value="{{ course.section_key }}">
+            {% endif %}
+            <div class="row g-3 mb-3">
+                {% for field, label in [('tce_start', 'TCE start'), ('tce_end', 'TCE end')] %}
+                <div class="{{ 'col-md-4' if bulk_tce else 'col-md-6' }}">
+                    <label for="{{ field }}_action" class="form-label">{{ label }}</label>
+                    <select id="{{ field }}_action" name="{{ field }}_action" class="form-select mb-2" data-tce-date="{{ field }}">
+                        <option value="keep">Keep unchanged</option>
+                        <option value="set">Set date</option>
+                        <option value="restore">Remove course override</option>
+                    </select>
+                    <label for="{{ field }}" class="visually-hidden">New {{ label }} date</label>
+                    <input id="{{ field }}" name="{{ field }}" type="date" class="form-control" disabled value="{{ ((course|attr(field)) or '') if not bulk_tce else '' }}">
+                </div>
+                {% endfor %}
+                <div class="{{ 'col-md-4' if bulk_tce else 'col-12' }}">
+                    <label for="tce_flag_action" class="form-label">TCE flag / Blue upload</label>
+                    <select id="tce_flag_action" name="tce_flag_action" class="form-select">
+                        <option value="keep">Keep unchanged</option>
+                        <option value="off">Turn off — block Blue upload</option>
+                        <option value="restore">Remove local block — use SAP flag</option>
+                    </select>
+                </div>
+            </div>
+            <p class="form-text">Removing a date override uses the college override, if one exists, or the latest SAP date. Turning TCE off excludes the selected course and its student and instructor assignments from Blue uploads. Removing a block resumes normal upload rules.</p>
+            <label for="tce-reason" class="form-label">Reason for change</label>
+            <textarea id="tce-reason" name="reason" class="form-control mb-3" required maxlength="2000" rows="2"></textarea>
+            <button id="tce-save" class="btn btn-uk-primary" disabled>{{ 'Apply to selected courses' if bulk_tce else 'Save TCE settings' }}</button>
+        </form>
+    </div>
+{% if bulk_tce %}</details>{% else %}</div>{% endif %}

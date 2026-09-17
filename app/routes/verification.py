@@ -2,16 +2,20 @@
 Verification Reports Routes
 Course listings with TCE status from UKDIG data
 """
-from flask import Blueprint, render_template, request, Response, flash, redirect, url_for, jsonify
+from flask import Blueprint, render_template, request, Response, flash, redirect, url_for, jsonify, abort, session
 from flask_login import login_required, current_user
 from app.models import db
 from app.models.course import Course, College, Department, Instructor, SyncLog, CourseUser, StudentEnrollment
 from app.models.sync_history import SyncRun
 from app.models.admin import Admin
+from app.models.course_tce import CourseTCEAudit
+from app.services.course_tce import update_course_tce
 from app.services.college_policy import visible_courses, current_term
 from sqlalchemy import func, case, asc, desc
 import csv
 import io
+import secrets
+import json
 from datetime import datetime, date
 
 # Mapping of sort column names to database fields
@@ -25,6 +29,7 @@ SORT_COLUMNS = {
     'course_start': Course.course_start,
     'course_end': Course.course_end,
     'tce_start': Course.tce_start,
+    'tce_end': Course.tce_end,
     'status': Course.marked_for_tce,
     'students': Course.student_count,
 }
@@ -58,6 +63,48 @@ def format_term_code(term_code):
     return f'{semester} {year}'
 
 verification_bp = Blueprint('verification', __name__)
+
+
+def _tce_csrf_token():
+    if current_user.is_super_admin():
+        return session.setdefault('course_tce_csrf', secrets.token_urlsafe(32))
+    return None
+
+
+@verification_bp.route('/tce-overrides', methods=['POST'])
+@login_required
+def edit_tce():
+    if not current_user.is_super_admin():
+        abort(403)
+    expected = session.get('course_tce_csrf')
+    if not expected or not secrets.compare_digest(request.form.get('csrf_token', '').encode(), expected.encode()):
+        abort(400, 'Invalid form token. Reload the course page.')
+    keys = list(dict.fromkeys(request.form.getlist('section_keys')))
+    if not keys or any(not key or len(key) > 100 for key in keys):
+        abort(400, 'Select at least one valid course.')
+    courses = Course.query.filter(Course.section_key.in_(keys)).order_by(
+        Course.section_key).with_for_update().all()
+    if len(courses) != len(keys):
+        abort(404, 'A selected course no longer exists. No courses were changed.')
+
+    detail_key = request.form.get('detail_section_key')
+    if detail_key and keys == [detail_key]:
+        target = url_for('verification.course_detail', section_key=detail_key)
+    else:
+        # Preserve list filters without accepting an arbitrary redirect URL.
+        filters = {key: request.args.getlist(key) for key in
+                   ('college', 'department', 'term', 'tce_status', 'search', 'sort', 'order', 'page')
+                   if key in request.args}
+        target = url_for('verification.list_courses', **filters)
+    try:
+        changed = update_course_tce(courses, request.form, current_user)
+        db.session.commit()
+    except ValueError as exc:
+        db.session.rollback()
+        flash(str(exc), 'danger')
+    else:
+        flash(f'TCE settings updated for {changed} course(s). Changes apply here and to the next Blue upload. SAP data is unchanged.', 'success')
+    return redirect(target)
 
 
 def _course_user_search_condition(search):
@@ -245,6 +292,7 @@ def list_courses():
     )
 
     return render_template('verification/list.html',
+                         tce_csrf_token=_tce_csrf_token(),
                          courses=courses,
                          colleges=colleges,
                          departments=departments,
@@ -420,7 +468,12 @@ def course_detail(section_key):
             Course.section_key != course.section_key
         ).all()
     
-    return render_template('verification/detail.html', course=course, crosslisted=crosslisted)
+    audit = CourseTCEAudit.query.filter_by(section_key=section_key).order_by(
+        CourseTCEAudit.created_at.desc(), CourseTCEAudit.id.desc()).limit(20).all() if current_user.is_super_admin() else []
+    return render_template('verification/detail.html', course=course, crosslisted=crosslisted,
+                           tce_csrf_token=_tce_csrf_token(), tce_audit=[
+                               {'entry': entry, 'before': json.loads(entry.before_json),
+                                'after': json.loads(entry.after_json)} for entry in audit])
 
 
 @verification_bp.route('/export')
