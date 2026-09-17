@@ -10,6 +10,7 @@ from sqlalchemy import func
 
 from app.models import db
 from app.models.college_policy import CollegePolicy, CollegeDateOverride
+from app.models.course_tce import CourseTCEOverride
 
 
 def default_threshold(college_name):
@@ -106,11 +107,14 @@ class BlueCollegePolicy:
         self.limits = thresholds()
         self.dates = {(o.college_code, o.term_code): (o.tce_start, o.tce_end)
                       for o in CollegeDateOverride.query.all()}
-        self.hidden = set()
+        local = CourseTCEOverride.query.all()
+        self.course_dates = {o.section_key: (o.tce_start, o.tce_end) for o in local
+                             if o.tce_start is not None or o.tce_end is not None}
+        self.hidden = {o.section_key for o in local if o.blocked}
         with Path(courses_path).open(encoding='utf-8-sig', newline='') as source:
             reader = csv.DictReader(source)
             required = {'SECTION_KEY', 'CLASS_COLLEGE_SHORT', 'CLASS_COLLEGE', 'ACADEMIC_TERM'}
-            if self.dates:
+            if self.dates or self.course_dates:
                 required.update({'TCE_INVITE', 'TCE_END_DATE'})
             if not required.issubset(reader.fieldnames or []):
                 raise ValueError('Courses.csv is missing fields required for college policies.')
@@ -125,10 +129,14 @@ class BlueCollegePolicy:
         key = (row.get('SECTION_KEY') or '').strip()
         if key in self.hidden:
             return None
-        dates = self.dates.get(((row.get('CLASS_COLLEGE_SHORT') or '').strip(),
-                                (row.get('ACADEMIC_TERM') or '').strip()))
-        if dates:
+        # Relationship payloads have SECTION_KEY too; only course rows receive dates.
+        if 'TCE_INVITE' in row or 'TCE_END_DATE' in row:
+            dates = self.dates.get(((row.get('CLASS_COLLEGE_SHORT') or '').strip(),
+                                    (row.get('ACADEMIC_TERM') or '').strip()), (None, None))
+            local = self.course_dates.get(key, (None, None))
             row = dict(row)
-            row['TCE_INVITE'] = f'{dates[0].isoformat()} 00:00:00'
-            row['TCE_END_DATE'] = f'{dates[1].isoformat()} 00:00:00'
+            for field, value in zip(('TCE_INVITE', 'TCE_END_DATE'),
+                                    (local[0] or dates[0], local[1] or dates[1])):
+                if value is not None:
+                    row[field] = f'{value.isoformat()} 00:00:00'
         return row

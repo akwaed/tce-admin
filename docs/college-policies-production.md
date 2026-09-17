@@ -1,8 +1,9 @@
 # Deploy the college settings release
 
-This release adds Pharmacy course-number exclusions, college/term TCE date overrides,
+This release adds Pharmacy course-number exclusions, course TCE dates and Blue blocks,
 and the automatic verification term default. No dependency changes are required.
-The app creates three new tables; existing SAP date columns retain their data.
+The app creates five policy tables (including two for course settings and audit);
+existing SAP date and flag columns retain their data.
 
 ## Choose the production target
 
@@ -72,7 +73,8 @@ Do not resume Blue sync while its worker still runs the old code.
    from sqlalchemy import inspect
    app = create_app('production')
    with app.app_context():
-       required = {'college_policies', 'college_date_overrides', 'college_policy_audit'}
+       required = {'college_policies', 'college_date_overrides', 'college_policy_audit',
+                   'course_tce_overrides', 'course_tce_audit'}
        missing = required - set(inspect(db.engine).get_table_names())
        if missing:
            raise SystemExit('Missing tables: ' + ', '.join(sorted(missing)))
@@ -97,9 +99,12 @@ Do not resume Blue sync while its worker still runs the old code.
    - Pharmacy: the threshold should be **500**. Numbers strictly greater than
      500 are excluded by default; 500 and below stay included. Verify using the
      Pharmacy contact's account, since superadmins intentionally retain access.
-   - Law: choose the intended term, enter the actual TCE start/end dates, enter
-     the reason, acknowledge the integrity warning, and save. No Law dates are
-     preconfigured by this release. Check a Law course detail page and CSV export.
+   - Course TCE controls: open an intended course's detail page or select courses
+     in Verification and expand **Bulk edit TCE settings**. Set only the intended
+     fields and record a reason. Verify effective dates in details and CSV exports;
+     the SAP source values must remain unchanged. No dates or blocks are seeded.
+   - Blue blocks: verify any intentionally blocked course displays **Blocked from
+     Blue** and is omitted, along with its student/instructor rows, in the preview.
    - Verification: open the page without a `term` parameter. Verify the selected
      term has the most ongoing courses in the visible scope. Select **All Terms**
      and another term to confirm manual selection still works.

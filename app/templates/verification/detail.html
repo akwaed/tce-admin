@@ -15,9 +15,12 @@
 </div>
 
 <div class="row">
+    {% if course.has_local_tce_dates %}
+    <div class="col-12"><div class="alert alert-warning"><strong>Local TCE date override active</strong> for this course. Course overrides take precedence over college and SAP dates.</div></div>
+    {% endif %}
     {% if course.date_override %}
     <div class="col-12"><div class="alert alert-warning">
-        <strong>Local TCE date override active</strong> for {{ course.college_code }} / {{ course.term_code }}.
+        <strong>Local TCE date override active</strong> at college level for {{ course.college_code }} / {{ course.term_code }}. Course overrides take precedence.
         SAP dates: {{ course.sap_tce_start or 'Not scheduled' }} – {{ course.sap_tce_end or 'Not scheduled' }}.
         {% if current_user.is_super_admin() %}<a href="{{ url_for('settings.college_policies', college=course.college_code) }}">Manage override</a>{% endif %}
     </div></div>
@@ -87,6 +90,11 @@
             </div>
         </div>
         
+        {% if current_user.is_super_admin() %}
+        {% set bulk_tce = false %}
+        {% include 'verification/_tce_editor.html' %}
+        {% endif %}
+
         <!-- Instructors -->
         <div class="card mb-4">
             <div class="card-header">
@@ -159,7 +167,11 @@
                 <i class="bi bi-check-circle me-2"></i>TCE Status
             </div>
             <div class="card-body text-center">
-                {% if course.marked_for_tce %}
+                {% if course.tce_blocked %}
+                <div class="display-1 text-secondary mb-2"><i class="bi bi-slash-circle"></i></div>
+                <h4>TCE Off — Blocked from Blue</h4>
+                <p class="text-muted">A local setting blocks this course and its student and instructor assignments from Blue uploads. The SAP flag is {{ 'marked' if course.sap_marked_for_tce else 'not marked' }}.</p>
+                {% elif course.marked_for_tce %}
                     {% if course.student_count == 0 %}
                     <div class="display-1 text-warning mb-2">
                         <i class="bi bi-exclamation-triangle"></i>
@@ -206,4 +218,27 @@
         </div>
     </div>
 </div>
+{% if current_user.is_super_admin() and tce_audit %}
+<div class="card mt-4">
+    <div class="card-header">Recent TCE settings changes</div>
+    <div class="card-body table-responsive">
+        <table class="table table-sm"><thead><tr><th>When (UTC)</th><th>Changed by</th><th>Before → after</th><th>Reason</th></tr></thead><tbody>
+        {% for change in tce_audit %}
+        {% set entry = change.entry %}
+        <tr><td>{{ entry.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ entry.actor.linkblue if entry.actor else entry.actor_id }}</td>
+            <td>
+                {% for field, label in [('tce_start', 'TCE start'), ('tce_end', 'TCE end')] %}
+                {% if change.before[field] != change.after[field] %}<div>{{ label }}: {{ change.before[field] or 'Use default' }} → {{ change.after[field] or 'Use default' }}</div>{% endif %}
+                {% endfor %}
+                {% if change.before.blocked != change.after.blocked %}<div>Blue upload: {{ 'Blocked' if change.before.blocked else 'Use normal rules' }} → {{ 'Blocked' if change.after.blocked else 'Use normal rules' }}</div>{% endif %}
+            </td><td>{{ entry.reason }}</td></tr>
+        {% endfor %}
+        </tbody></table>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+{% if current_user.is_super_admin() %}<script src="{{ url_for('static', filename='js/course_tce.js') }}"></script>{% endif %}
 {% endblock %}
